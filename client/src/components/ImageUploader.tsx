@@ -7,20 +7,26 @@ import type { Image } from '../types';
 
 interface ImageUploaderProps {
   onUploadComplete?: (images: Image[]) => void;
+  projectId?: number | string;
 }
 
-const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete }) => {
+const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, projectId }) => {
   const dispatch = useDispatch();
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     try {
+      if (!projectId) {
+        alert('请先选择项目后再上传图片');
+        return;
+      }
+
       console.log('📁 接收到文件:', acceptedFiles.map(f => f.name));
       dispatch(setLoading(true));
       dispatch(setError(null));
       
       // 上传文件到服务器
-      console.log('📤 开始上传文件...');
-      const response = await imageApi.uploadImages(acceptedFiles);
+      console.log('📤 开始上传文件...，projectId =', projectId);
+      const response = await imageApi.uploadImages(acceptedFiles, projectId);
       console.log('📥 上传响应:', response);
       
       // 将上传的图像添加到状态中

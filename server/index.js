@@ -43,11 +43,68 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: '智能标注系统后端服务运行中' });
 });
 
+// 项目管理接口
+app.get('/api/projects', async (req, res) => {
+  try {
+    const projects = await db.getAllProjects();
+    res.json(projects);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/projects', async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    const project = await db.createProject(name, description);
+    res.json(project);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/projects/:id', async (req, res) => {
+  try {
+    const project = await db.getProjectById(req.params.id);
+    if (project) {
+      res.json(project);
+    } else {
+      res.status(404).json({ error: '项目不存在' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/projects/:id', async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    const project = await db.updateProject(req.params.id, name, description);
+    res.json(project);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/projects/:id', async (req, res) => {
+  try {
+    await db.deleteProject(req.params.id);
+    res.json({ message: '项目删除成功' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 文件上传接口
 app.post('/api/upload', upload.array('images', 10), (req, res) => {
   try {
     const files = req.files;
     const uploadedFiles = [];
+    const { projectId } = req.body;
+
+    if (!projectId) {
+      console.warn('⚠️ /api/upload 调用时未提供 projectId，本次上传的图片不会关联到任何项目');
+    }
     
     // 逐个保存到数据库
     let completed = 0;
@@ -65,17 +122,39 @@ app.post('/api/upload', upload.array('images', 10), (req, res) => {
       db.insertImage(fileInfo, (err, lastId) => {
         if (err) {
           console.error('保存图片信息失败:', err);
-        } else {
-          uploadedFiles.push(fileInfo);
+          completed++;
+          if (completed === files.length) {
+            res.json({
+              success: true,
+              files: uploadedFiles,
+              message: `${uploadedFiles.length}个文件上传成功（部分可能保存失败）`
+            });
+          }
+          return;
         }
-        
-        completed++;
-        if (completed === files.length) {
-          res.json({
-            success: true,
-            files: uploadedFiles,
-            message: `${uploadedFiles.length}个文件上传成功`
+
+        const finishOne = () => {
+          uploadedFiles.push(fileInfo);
+          completed++;
+          if (completed === files.length) {
+            res.json({
+              success: true,
+              files: uploadedFiles,
+              message: `${uploadedFiles.length}个文件上传成功`
+            });
+          }
+        };
+
+        // 如果提供了项目ID，则将图片关联到项目
+        if (projectId) {
+          db.linkImageToProject(projectId, fileInfo.id, (linkErr) => {
+            if (linkErr) {
+              console.error('关联图片到项目失败:', linkErr);
+            }
+            finishOne();
           });
+        } else {
+          finishOne();
         }
       });
     });
@@ -200,7 +279,9 @@ app.put('/api/annotations/:imageId', (req, res) => {
 // 获取图像列表
 app.get('/api/images', (req, res) => {
   try {
-    db.getAllImages((err, images) => {
+    const { projectId } = req.query;
+
+    const handleResult = (err, images) => {
       if (err) {
         console.error('获取图片列表失败:', err);
         return res.status(500).json({
@@ -223,7 +304,13 @@ app.get('/api/images', (req, res) => {
       }));
       
       res.json({ success: true, images: formattedImages });
-    });
+    };
+
+    if (projectId) {
+      db.getImagesByProjectId(projectId, handleResult);
+    } else {
+      db.getAllImages(handleResult);
+    }
   } catch (error) {
     res.status(500).json({
       success: false,

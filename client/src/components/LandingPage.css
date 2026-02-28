@@ -1,0 +1,423 @@
+/* 项目管理区域 */
+.project-selection {
+  margin: 2rem 0;
+}
+
+.project-selection h2 {
+  color: #333;
+  margin-bottom: 1rem;
+  font-size: 1.5rem;
+}
+
+.project-actions {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: space-between;
+  align-items: stretch;
+  margin: 2rem 0;
+}
+
+.project-actions-left {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+}
+
+.project-action-btn {
+  padding: 1rem 2rem;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border: none;
+  font-size: 1rem;
+  min-width: 150px;
+}
+
+.project-action-btn.primary {
+  /* 采用与 module-card 相近的灰白色块风格 */
+  background: #fafafa;
+  color: #333;
+  border: 2px solid #e9ecef;
+}
+
+.project-action-btn.primary:hover {
+  border-color: #667eea;
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(102, 126, 234, 0.2);
+}
+
+.project-action-btn.secondary {
+  /* 次级按钮使用更轻的灰白配色，但保持同一体系 */
+  background: #ffffff;
+  color: #555;
+  border: 2px solid #e9ecef;
+}
+
+.project-action-btn.secondary:hover {
+  background: #fafafa;
+  border-color: #667eea;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.2);
+}
+
+.project-description {
+  background: rgba(102, 126, 234, 0.05);
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-top: 2rem;
+  border: 1px solid rgba(102, 126, 234, 0.1);
+}
+
+/* 当前项目信息卡片 */
+.current-project-card {
+  min-width: 260px;
+  max-width: 320px;
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  border: 1px solid #e9ecef;
+  background: #fafafa;
+  text-align: left;
+  box-sizing: border-box;
+}
+
+.current-project-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #666;
+  margin-bottom: 0.5rem;
+}
+
+.current-project-name {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 0.25rem;
+  word-break: break-all;
+}
+
+.current-project-meta {
+  font-size: 0.85rem;
+  color: #777;
+}
+
+.current-project-id {
+  word-break: break-all;
+}
+
+.current-project-empty {
+  font-size: 0.9rem;
+  color: #999;
+}
+
+.project-description p {
+  color: #666;
+  margin: 0.5rem 0;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+/* 项目选择列表样式 */
+.project-list-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+
+.project-list-container {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  max-width: 600px;
+  overflow: hidden;
+}
+
+.project-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  background: rgba(102, 126, 234, 0.05);
+  border-bottom: 1px solid rgba(102, 126, 234, 0.1);
+}
+
+.project-list-header h2 {
+  color: #333;
+  font-size: 1.3rem;
+  margin: 0;
+}
+
+.close-project-list-btn {
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  color: #666;
+  transition: all 0.2s ease;
+}
+
+.close-project-list-btn:hover {
+  color: #dc3545;
+  transform: scale(1.1);
+}
+
+.project-list {
+  padding: 0;
+  overflow-x: auto;
+}
+
+/* 项目列表表头 */
+.project-list-header-row {
+  display: grid;
+  grid-template-columns: 1fr 100px 180px 180px;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: rgba(102, 126, 234, 0.05);
+  border-bottom: 2px solid #667eea;
+  font-weight: 600;
+  color: #333;
+  font-size: 0.9rem;
+}
+
+/* 项目列表行 */
+.project-list-row {
+  display: grid;
+  grid-template-columns: 1fr 100px 180px 180px;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #eee;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  align-items: center;
+}
+
+.project-list-row:hover {
+  background: rgba(102, 126, 234, 0.05);
+}
+
+/* 项目列 */
+.project-column {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: #333;
+}
+
+.project-column.name {
+  gap: 0.75rem;
+}
+
+.project-column.id {
+  color: #667eea;
+  font-weight: 500;
+}
+
+.project-column.created,
+.project-column.updated {
+  color: #666;
+  font-size: 0.8rem;
+}
+
+/* 项目图标 */
+.project-icon {
+  font-size: 1.2rem;
+  color: #667eea;
+  width: 24px;
+  text-align: center;
+}
+
+/* 项目名称 */
+.project-name {
+  font-weight: 600;
+  color: #333;
+  font-size: 1rem;
+}
+
+/* 项目元信息 */
+.project-meta {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.project-meta span {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.no-projects-message {
+  text-align: center;
+  padding: 2rem;
+  color: #666;
+}
+
+.folder-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+  color: #667eea;
+}
+
+.create-first-project-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-top: 1rem;
+}
+
+.create-first-project-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .project-actions {
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+  }
+  
+  .project-action-btn {
+    width: 100%;
+    max-width: 250px;
+  }
+  
+  .project-name-id {
+    justify-content: center;
+  }
+  
+  .project-time {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+}
+
+/* 新建项目弹窗样式 */
+.create-project-modal {
+  background: rgba(255, 255, 255, 0.98);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  max-width: 480px;
+  width: 100%;
+  padding: 1.75rem 2rem 1.5rem;
+  box-sizing: border-box;
+}
+
+.create-project-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.create-project-header h2 {
+  margin: 0;
+  font-size: 1.4rem;
+  color: #333;
+}
+
+.create-project-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+}
+
+.form-group label {
+  font-size: 0.9rem;
+  color: #444;
+  margin-bottom: 0.4rem;
+}
+
+.required {
+  color: #dc3545;
+  margin-left: 0.25rem;
+}
+
+.form-group input,
+.form-group textarea {
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  padding: 0.6rem 0.75rem;
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  resize: vertical;
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.15);
+}
+
+.form-group input:disabled,
+.form-group textarea:disabled {
+  background: #f5f5f5;
+  cursor: not-allowed;
+}
+
+.create-project-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.create-project-btn {
+  padding: 0.6rem 1.4rem;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.create-project-btn.primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+}
+
+.create-project-btn.primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.create-project-btn.primary:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.create-project-btn.secondary {
+  background: #f5f5f5;
+  color: #555;
+}
+
+.create-project-btn.secondary:hover {
+  background: #e9ecef;
+}

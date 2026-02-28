@@ -1,0 +1,470 @@
+.manual-annotation {
+  height: 100vh;
+  width: 100vw;
+  display: flex;
+  flex-direction: column;
+  background: #f8f9fa; /* 更浅的背景色 */
+  overflow: hidden;
+}
+
+/* 顶部导航栏 */
+.annotation-header {
+  height: 60px;
+  background: white;
+  border-bottom: 1px solid #e1e5e9;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 2rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  flex-shrink: 0;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.back-button {
+  background: #667eea;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s ease;
+}
+
+.back-button:hover {
+  background: #5a6fd8;
+}
+
+.annotation-header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #333;
+}
+
+.current-image-name {
+  color: #666;
+  font-size: 0.9rem;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-right .image-counter {
+  background: #e9ecef;
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  color: #495057;
+}
+
+/* 主工作区域 */
+.annotation-main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* 左侧面板 */
+.annotation-left-panel {
+  width: 280px;
+  background: white;
+  border-right: 1px solid #dee2e6;
+  padding: 1.5rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.05); /* 添加轻微阴影增强层次感 */
+}
+
+.tool-section h3 {
+  margin: 0 0 1rem 0;
+  color: #212529; /* 更深的文字颜色 */
+  font-size: 1.05rem;
+  font-weight: 600;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.1); /* 添加文字阴影增强可读性 */
+}
+
+.tools-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.tool-button {
+  background: #ffffff;
+  border: 2px solid #ced4da;
+  border-radius: 8px;
+  padding: 1rem 0.5rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08); /* 添加阴影 */
+}
+
+.tool-button:hover {
+  background: #f8f9fa;
+  border-color: #adb5bd;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.12);
+}
+
+.tool-button.active {
+  background: #667eea;
+  border-color: #667eea;
+  color: white;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.tool-button.active:hover {
+  background: #5a6fd8;
+  border-color: #5a6fd8;
+  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+}
+
+.tool-icon {
+  font-size: 1.5rem;
+}
+
+.tool-label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #212529; /* 深色文字提高对比度 */
+  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.5); /* 白色阴影增强可读性 */
+}
+
+/* 画笔控制 */
+.brush-controls {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.brush-controls h3 {
+  margin: 0 0 1rem 0;
+  color: #333;
+  font-size: 0.95rem;
+}
+
+.size-slider {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.size-slider input[type="range"] {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: #dee2e6;
+  outline: none;
+}
+
+.size-slider input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #667eea;
+  cursor: pointer;
+}
+
+.size-slider input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #667eea;
+  cursor: pointer;
+  border: none;
+}
+
+.size-value {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #495057;
+  min-width: 40px;
+}
+
+.brush-preview {
+  display: flex;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.brush-circle {
+  background: rgba(102, 126, 234, 0.3);
+  border: 2px solid #667eea;
+  border-radius: 50%;
+}
+
+.action-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: auto;
+}
+
+.primary-button {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  padding: 0.75rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.primary-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.secondary-button {
+  background: white;
+  color: #495057;
+  border: 1px solid #e9ecef;
+  padding: 0.75rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.secondary-button:hover {
+  background: #f8f9fa;
+  border-color: #adb5bd;
+}
+
+/* 中间面板 */
+.annotation-center-panel {
+  flex: 1;
+  background: #f8f9fa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  overflow: hidden;
+}
+
+.canvas-area {
+  width: 100%;
+  height: 100%;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.image-container {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.annotation-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+}
+
+.annotation-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* 右侧面板 */
+.annotation-right-panel {
+  width: 300px;
+  background: white;
+  border-left: 1px solid #e1e5e9;
+  overflow-y: auto;
+}
+
+.properties-panel {
+  padding: 1.5rem;
+}
+
+.properties-panel h3 {
+  margin: 0 0 1.5rem 0;
+  color: #333;
+  font-size: 1.1rem;
+}
+
+.property-section {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.property-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.property-section h4 {
+  margin: 0 0 0.75rem 0;
+  color: #495057;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.current-tool {
+  background: #e9ecef;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  color: #495057;
+  text-align: center;
+}
+
+.stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.stat-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.5rem;
+  background: #f8f9fa;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.stat-item span:first-child {
+  color: #666;
+}
+
+.stat-item span:last-child {
+  color: #333;
+  font-weight: 500;
+}
+
+.layers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.layer-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  background: #f8f9fa;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.layer-item:hover {
+  background: #e9ecef;
+}
+
+.layer-item.active {
+  background: #667eea;
+  color: white;
+}
+
+.layer-item.active .layer-visible {
+  filter: brightness(0) invert(1);
+}
+
+.layer-visible {
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+/* 滚动条样式 */
+.annotation-left-panel::-webkit-scrollbar,
+.annotation-right-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.annotation-left-panel::-webkit-scrollbar-track,
+.annotation-right-panel::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 3px;
+}
+
+.annotation-left-panel::-webkit-scrollbar-thumb,
+.annotation-right-panel::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 3px;
+}
+
+.annotation-left-panel::-webkit-scrollbar-thumb:hover,
+.annotation-right-panel::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* 响应式设计 */
+@media (max-width: 1200px) {
+  .annotation-left-panel {
+    width: 240px;
+  }
+  
+  .annotation-right-panel {
+    width: 260px;
+  }
+}
+
+@media (max-width: 768px) {
+  .annotation-header {
+    padding: 0 1rem;
+  }
+  
+  .header-left {
+    gap: 0.5rem;
+  }
+  
+  .current-image-name {
+    max-width: 150px;
+  }
+  
+  .annotation-main {
+    flex-direction: column;
+  }
+  
+  .annotation-left-panel,
+  .annotation-right-panel {
+    width: 100%;
+    height: auto;
+    max-height: 200px;
+  }
+  
+  .annotation-center-panel {
+    flex: 1;
+  }
+  
+  .tools-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}

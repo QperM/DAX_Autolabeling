@@ -23,6 +23,17 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 // 初始化数据库表
 function initializeDatabase() {
+  // 创建projects表
+  db.run(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  
   // 创建images表
   db.run(`
     CREATE TABLE IF NOT EXISTS images (
@@ -65,6 +76,34 @@ function initializeDatabase() {
       console.log('✅ annotations表创建成功');
     }
   });
+  
+  // 创建项目-图片关联表
+  db.run(`
+    CREATE TABLE IF NOT EXISTS project_images (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      image_id TEXT NOT NULL,
+      added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+      FOREIGN KEY (image_id) REFERENCES images (id) ON DELETE CASCADE,
+      UNIQUE(project_id, image_id)
+    )
+  `, (err) => {
+    if (err) {
+      console.error('创建project_images表失败:', err.message);
+    } else {
+      console.log('✅ project_images表创建成功');
+    }
+  });
+  
+  // 创建索引提高查询性能
+  db.run('CREATE INDEX IF NOT EXISTS idx_project_images_project_id ON project_images(project_id)', (err) => {
+    if (err) console.error('创建索引失败:', err.message);
+  });
+  
+  db.run('CREATE INDEX IF NOT EXISTS idx_project_images_image_id ON project_images(image_id)', (err) => {
+    if (err) console.error('创建索引失败:', err.message);
+  });
 }
 
 // 数据库操作方法
@@ -101,6 +140,18 @@ const database = {
     db.all(sql, [], callback);
   },
 
+  // 根据项目ID获取图片（通过项目-图片关联表）
+  getImagesByProjectId: (projectId, callback) => {
+    const sql = `
+      SELECT i.id, i.filename, i.original_name, i.file_path, i.file_size, i.width, i.height, i.upload_time
+      FROM images i
+      INNER JOIN project_images pi ON pi.image_id = i.id
+      WHERE pi.project_id = ?
+      ORDER BY i.upload_time DESC
+    `;
+    db.all(sql, [projectId], callback);
+  },
+
   // 根据ID获取图片
   getImageById: (id, callback) => {
     const sql = `
@@ -116,6 +167,19 @@ const database = {
     const sql = 'DELETE FROM images WHERE id = ?';
     db.run(sql, [id], function(err) {
       callback(err, this.changes);
+    });
+  },
+
+  // 将图片关联到项目
+  linkImageToProject: (projectId, imageId, callback) => {
+    const sql = `
+      INSERT OR IGNORE INTO project_images (project_id, image_id)
+      VALUES (?, ?)
+    `;
+    db.run(sql, [projectId, imageId], function(err) {
+      if (callback) {
+        callback(err, this.lastID);
+      }
     });
   },
 
@@ -197,6 +261,70 @@ const database = {
       } else {
         console.log('数据库连接已关闭');
       }
+    });
+  },
+  
+  // 项目管理方法
+  getAllProjects: () => {
+    return new Promise((resolve, reject) => {
+      db.all('SELECT * FROM projects ORDER BY created_at DESC', (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+  },
+  
+  createProject: (name, description = '') => {
+    return new Promise((resolve, reject) => {
+      const stmt = db.prepare('INSERT INTO projects (name, description) VALUES (?, ?)');
+      stmt.run([name, description], function(err) {
+        if (err) reject(err);
+        else {
+          resolve({
+            id: this.lastID,
+            name,
+            description,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+        }
+      });
+      stmt.finalize();
+    });
+  },
+  
+  getProjectById: (id) => {
+    return new Promise((resolve, reject) => {
+      db.get('SELECT * FROM projects WHERE id = ?', [id], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+  
+  updateProject: (id, name, description) => {
+    return new Promise((resolve, reject) => {
+      const stmt = db.prepare('UPDATE projects SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+      stmt.run([name, description, id], function(err) {
+        if (err) reject(err);
+        else {
+          // 获取更新后的项目信息
+          db.get('SELECT * FROM projects WHERE id = ?', [id], (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
+          });
+        }
+      });
+      stmt.finalize();
+    });
+  },
+  
+  deleteProject: (id) => {
+    return new Promise((resolve, reject) => {
+      db.run('DELETE FROM projects WHERE id = ?', [id], function(err) {
+        if (err) reject(err);
+        else resolve(this.changes);
+      });
     });
   }
 };
