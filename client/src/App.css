@@ -77,13 +77,34 @@ body {
 /* 主内容区域 */
 .main-content {
   flex: 1;
-  overflow: hidden;
+  overflow-y: auto; /* 允许垂直滚动 */
+  overflow-x: hidden; /* 隐藏水平滚动 */
+}
+
+/* 滚动条样式美化 */
+.main-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.main-content::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+}
+
+.main-content::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+.main-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
 }
 
 /* 欢迎页面 */
 .welcome-section {
-  height: 100%;
+  min-height: 100%; /* 改为最小高度，允许内容撑开 */
   background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  background-attachment: fixed; /* 固定背景，滚动时保持不变 */
 }
 
 /* 三区域布局 */
@@ -92,7 +113,7 @@ body {
   grid-template-columns: 40% 60%;
   grid-template-rows: auto 1fr;
   gap: 2rem;
-  height: 100%;
+  min-height: 100%; /* 改为最小高度 */
   width: 100%;
   max-width: 100%;
   margin: 0;
@@ -991,6 +1012,42 @@ body {
   transform: translateY(-4px) scale(1.05);
   box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
   border-color: #667eea;
+}
+
+/* 选中状态 - 橙色高亮边框 */
+.thumbnail-item-small.selected {
+  border-color: #ff6b35; /* 橙色边框 */
+  box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.3); /* 橙色光晕效果 */
+  transform: translateY(-2px) scale(1.02);
+}
+
+/* 更多指示器样式 */
+.thumbnail-item-small.more-indicator {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background: rgba(102, 126, 234, 0.1);
+  border: 2px dashed #667eea;
+}
+
+.thumbnail-item-small.more-indicator:hover {
+  background: rgba(102, 126, 234, 0.2);
+  border-style: solid;
+  transform: translateY(-2px);
+}
+
+.more-count {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: #667eea;
+  margin-bottom: 0.5rem;
+}
+
+.more-text {
+  font-size: 0.9rem;
+  color: #667eea;
+  opacity: 0.8;
 }
 
 .thumbnail-item-small img {

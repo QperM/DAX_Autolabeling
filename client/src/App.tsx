@@ -190,7 +190,7 @@ const AnnotationPage: React.FC = () => {
                       {images.slice(0, 12).map((image: Image) => (
                         <div 
                           key={image.id}
-                          className="thumbnail-item-small"
+                          className={`thumbnail-item-small ${selectedPreviewImage?.id === image.id ? 'selected' : ''}`}
                           onClick={() => setSelectedPreviewImage(image)}
                         >
                           <img 
