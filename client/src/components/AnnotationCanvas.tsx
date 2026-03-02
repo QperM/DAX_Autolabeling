@@ -28,8 +28,10 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   const stageRef = useRef<any>(null);
   const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
   const [imageScale, setImageScale] = useState(1);
-  const [isDrawing, setIsDrawing] = useState(false);
+  const [isDrawing, setIsDrawing] = useState(false); // 多边形绘制状态
+  const [isErasing, setIsErasing] = useState(false); // 橡皮擦状态
   const [currentPoints, setCurrentPoints] = useState<number[]>([]);
+  const [eraserCenter, setEraserCenter] = useState<{ x: number; y: number } | null>(null);
 
   // 计算图像尺寸和位置
   useEffect(() => {
@@ -57,20 +59,66 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     }
   }, [image]);
 
+  const applyEraser = (stagePos: { x: number; y: number }) => {
+    if (!imageScale || brushSize <= 0) return;
+
+    const cx = stagePos.x / imageScale;
+    const cy = stagePos.y / imageScale;
+    const radius = brushSize;
+    const radiusSq = radius * radius;
+
+    const updatedMasks = masks.map((mask) => {
+      if (!mask.points || mask.points.length < 2) return mask;
+
+      const newPoints = [...mask.points];
+
+      for (let i = 0; i < newPoints.length; i += 2) {
+        const px = newPoints[i];
+        const py = newPoints[i + 1];
+        const dx = px - cx;
+        const dy = py - cy;
+        const distSq = dx * dx + dy * dy;
+
+        if (distSq > 0 && distSq < radiusSq) {
+          const dist = Math.sqrt(distSq);
+          const scale = radius / dist;
+          const nx = cx + dx * scale;
+          const ny = cy + dy * scale;
+          newPoints[i] = nx;
+          newPoints[i + 1] = ny;
+        }
+      }
+
+      return {
+        ...mask,
+        points: newPoints,
+      };
+    });
+
+    onMaskUpdate(updatedMasks);
+  };
+
   // 处理鼠标事件
   const handleMouseDown = (e: any) => {
     if (toolMode === 'polygon') {
       const pos = e.target.getStage().getPointerPosition();
       setCurrentPoints(prev => [...prev, pos.x, pos.y]);
       setIsDrawing(true);
+    } else if (toolMode === 'eraser') {
+      const pos = e.target.getStage().getPointerPosition();
+      if (!pos) return;
+      setIsErasing(true);
+      setEraserCenter(pos);
+      applyEraser(pos);
     }
   };
 
   const handleMouseMove = (e: any) => {
-    if (toolMode === 'eraser' && isDrawing) {
-      // 擦除逻辑
+    if (toolMode === 'eraser' && isErasing) {
       const pos = e.target.getStage().getPointerPosition();
-      // 实现擦除功能
+      if (!pos) return;
+      setEraserCenter(pos);
+      applyEraser(pos);
     }
   };
 
@@ -88,8 +136,9 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         onPolygonUpdate([...polygons, newPolygon]);
         setCurrentPoints([]);
       }
-    } else if (toolMode === 'eraser') {
-      setIsDrawing(false);
+    } else if (toolMode === 'eraser' && isErasing) {
+      setIsErasing(false);
+      setEraserCenter(null);
     }
   };
 
@@ -224,6 +273,18 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
               image={image}
               width={stageSize.width}
               height={stageSize.height}
+            />
+          )}
+
+          {toolMode === 'eraser' && eraserCenter && (
+            <Circle
+              x={eraserCenter.x}
+              y={eraserCenter.y}
+              radius={brushSize * imageScale}
+              fill="rgba(255, 255, 255, 0.15)"
+              stroke="#333"
+              strokeWidth={1}
+              listening={false}
             />
           )}
           
