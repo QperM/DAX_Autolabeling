@@ -569,8 +569,39 @@
   border-top: 1px solid #eee;
   background: rgba(255, 255, 255, 0.7);
   display: flex;
-  justify-content: center;
+  justify-content: space-between;
+  align-items: center;
   gap: 1rem;
+}
+
+.preview-actions-center {
+  display: flex;
+  gap: 1rem;
+}
+
+.nav-image-btn {
+  background: #f8f9fa;
+  color: #495057;
+  border: 1px solid #dee2e6;
+  padding: 0.6rem 1.1rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 96px;
+}
+
+.nav-image-btn:hover:not(:disabled) {
+  background: #e9ecef;
+  border-color: #ced4da;
+  transform: translateY(-1px);
+}
+
+.nav-image-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .start-annotation-btn {

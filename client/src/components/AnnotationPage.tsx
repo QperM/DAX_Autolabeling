@@ -44,6 +44,41 @@ const AnnotationPage: React.FC = () => {
     latestUpdatedAt: string | null;
   } | null>(null);
 
+  // 统一的颜色调色板（与 AIAnnotationPreview 中保持一致）
+  const COLOR_PALETTE = [
+    '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
+    '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B739', '#52BE80',
+  ];
+
+  const assignColorsForAnnotations = (input: { masks: Mask[]; boundingBoxes: BoundingBox[] }) => {
+    const labelColorMap = new Map<string, string>();
+
+    const getColorForLabel = (label: string | undefined, fallbackIndex: number): string => {
+      const key = label && label.trim().length > 0 ? label.trim() : `__unnamed_${fallbackIndex}`;
+      if (labelColorMap.has(key)) {
+        return labelColorMap.get(key)!;
+      }
+      const color = COLOR_PALETTE[labelColorMap.size % COLOR_PALETTE.length];
+      labelColorMap.set(key, color);
+      return color;
+    };
+
+    const coloredMasks: Mask[] = input.masks.map((mask, index) => ({
+      ...mask,
+      color: mask.color || getColorForLabel(mask.label, index),
+    }));
+
+    const coloredBBoxes: BoundingBox[] = input.boundingBoxes.map((bbox, index) => ({
+      ...bbox,
+      color: bbox.color || getColorForLabel(bbox.label, input.masks.length + index),
+    }));
+
+    return {
+      masks: coloredMasks,
+      boundingBoxes: coloredBBoxes,
+    };
+  };
+
   // 从 localStorage 恢复当前项目
   useEffect(() => {
     const savedProject = localStorage.getItem('currentProject');
@@ -154,18 +189,21 @@ const AnnotationPage: React.FC = () => {
         try {
           // 调用后端AI标注API
           const result = await annotationApi.autoAnnotate(image.id, aiPrompt || undefined);
-          
-          // 自动保存标注结果
+
+          // 为本次结果分配颜色（同一标签复用同一颜色）
+          const colored = assignColorsForAnnotations(result.annotations);
+
+          // 自动保存标注结果（带颜色信息）
           await annotationApi.saveAnnotation(image.id, {
-            masks: result.annotations.masks,
-            boundingBoxes: result.annotations.boundingBoxes,
+            masks: colored.masks,
+            boundingBoxes: colored.boundingBoxes,
             polygons: [],
           });
 
           results.push({
             image,
             success: true,
-            annotations: result.annotations
+            annotations: colored
           });
 
           setBatchProgress(prev => ({
@@ -233,9 +271,18 @@ const AnnotationPage: React.FC = () => {
 
     try {
       dispatch(setLoading(true));
+      // 如果当前结果还没有颜色，则为其分配颜色；否则沿用已有颜色
+      const hasAnyColor =
+        aiAnnotationResult.annotations.masks.some(m => !!m.color) ||
+        aiAnnotationResult.annotations.boundingBoxes.some(b => !!b.color);
+
+      const colored = hasAnyColor
+        ? aiAnnotationResult.annotations
+        : assignColorsForAnnotations(aiAnnotationResult.annotations);
+
       await annotationApi.saveAnnotation(aiAnnotationResult.image.id, {
-        masks: aiAnnotationResult.annotations.masks,
-        boundingBoxes: aiAnnotationResult.annotations.boundingBoxes,
+        masks: colored.masks,
+        boundingBoxes: colored.boundingBoxes,
         polygons: [],
       });
       alert('标注已保存！');
@@ -426,6 +473,22 @@ const AnnotationPage: React.FC = () => {
     }
   };
 
+  const handlePreviewNavigate = (direction: 'prev' | 'next') => {
+    if (!selectedPreviewImage || images.length === 0) return;
+    const currentIndex = images.findIndex((img: Image) => img.id === selectedPreviewImage.id);
+    if (currentIndex === -1) return;
+
+    if (direction === 'prev') {
+      if (currentIndex === 0) return;
+      const prevImage = images[currentIndex - 1];
+      setSelectedPreviewImage(prevImage);
+    } else {
+      if (currentIndex === images.length - 1) return;
+      const nextImage = images[currentIndex + 1];
+      setSelectedPreviewImage(nextImage);
+    }
+  };
+
   return (
     <div className="annotation-page">
       {/* 顶部导航栏 */}
@@ -574,15 +637,26 @@ const AnnotationPage: React.FC = () => {
                     />
                   </div>
                   <div className="preview-actions">
-                    <button 
-                      className="start-annotation-btn"
-                      onClick={() => handleStartManualAnnotation(selectedPreviewImage)}
+                    <button
+                      className="nav-image-btn prev-image-btn"
+                      onClick={() => handlePreviewNavigate('prev')}
+                      disabled={
+                        images.findIndex((img: Image) => img.id === selectedPreviewImage.id) <= 0
+                      }
                     >
-                      开始人工标注
+                      ← 上一张
                     </button>
-                    <button 
-                      className="delete-image-btn"
-                      onClick={async (e) => {
+
+                    <div className="preview-actions-center">
+                      <button 
+                        className="start-annotation-btn"
+                        onClick={() => handleStartManualAnnotation(selectedPreviewImage)}
+                      >
+                        开始人工标注
+                      </button>
+                      <button 
+                        className="delete-image-btn"
+                        onClick={async (e) => {
                         e.stopPropagation();
                         if (window.confirm(`确定要删除图片 "${selectedPreviewImage.originalName}" 吗？`)) {
                           const imageId = selectedPreviewImage.id;
@@ -625,8 +699,20 @@ const AnnotationPage: React.FC = () => {
                           }
                         }
                       }}
+                        >
+                        🗑️ 删除图片
+                      </button>
+                    </div>
+
+                    <button
+                      className="nav-image-btn next-image-btn"
+                      onClick={() => handlePreviewNavigate('next')}
+                      disabled={
+                        images.findIndex((img: Image) => img.id === selectedPreviewImage.id) ===
+                        images.length - 1
+                      }
                     >
-                      🗑️ 删除图片
+                      下一张 →
                     </button>
                   </div>
                 </div>

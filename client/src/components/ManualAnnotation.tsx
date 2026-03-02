@@ -11,7 +11,7 @@ const ManualAnnotation: React.FC = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { currentImage, images, annotations } = useSelector((state: any) => state.annotation);
-  const [selectedTool, setSelectedTool] = useState('eraser');
+  const [selectedTool, setSelectedTool] = useState<'eraser' | 'select'>('eraser');
   const [brushSize, setBrushSize] = useState(20);
   const [activeLayer, setActiveLayer] = useState<'background' | 'annotation'>('background');
   const [masks, setMasks] = useState<Mask[]>([]);
@@ -89,6 +89,60 @@ const ManualAnnotation: React.FC = () => {
     navigate('/annotate');
   };
 
+  const handleSaveAnnotation = async () => {
+    if (!currentImage) return;
+    try {
+      console.log('[ManualAnnotation] 保存标注，imageId =', currentImage.id);
+      await annotationApi.saveAnnotation(currentImage.id, {
+        masks,
+        boundingBoxes,
+        polygons,
+      });
+      alert('标注已保存');
+    } catch (e: any) {
+      console.error('[ManualAnnotation] 保存标注失败:', e);
+      alert(e?.message || '保存标注失败');
+    }
+  };
+
+  // 统计当前标注中的标签及其颜色，用于右侧标签图例展示
+  const labelColorEntries: Array<[string, string]> = (() => {
+    const map = new Map<string, string>();
+
+    masks.forEach((mask) => {
+      if (!mask.label) return;
+      if (!map.has(mask.label)) {
+        map.set(mask.label, mask.color || 'rgba(255, 0, 0, 0.7)');
+      }
+    });
+
+    boundingBoxes.forEach((bbox) => {
+      if (!bbox.label) return;
+      if (!map.has(bbox.label)) {
+        map.set(bbox.label, bbox.color || 'rgba(0, 255, 0, 0.7)');
+      }
+    });
+
+    return Array.from(map.entries());
+  })();
+
+  const handleLabelRename = (oldLabel: string, newLabel: string) => {
+    const trimmed = newLabel.trim();
+    if (!trimmed || trimmed === oldLabel) return;
+
+    setMasks(prev =>
+      prev.map(mask =>
+        mask.label === oldLabel ? { ...mask, label: trimmed } : mask
+      )
+    );
+
+    setBoundingBoxes(prev =>
+      prev.map(bbox =>
+        bbox.label === oldLabel ? { ...bbox, label: trimmed } : bbox
+      )
+    );
+  };
+
   if (!currentImage) {
     return null;
   }
@@ -130,6 +184,19 @@ const ManualAnnotation: React.FC = () => {
                 <div className="eraser-title">橡皮擦</div>
               </div>
             </button>
+
+            <button
+              className={`select-card ${selectedTool === 'select' ? 'active' : ''}`}
+              onClick={() => handleToolSelect('select')}
+              title="选择（拖动Mask顶点微调）"
+            >
+              <div className="select-icon-box">
+                <span className="select-icon">🎯</span>
+              </div>
+              <div className="select-text-box">
+                <div className="select-title">选择</div>
+              </div>
+            </button>
           </div>
         </div>
 
@@ -163,24 +230,7 @@ const ManualAnnotation: React.FC = () => {
               <h4>当前工具</h4>
               <div className="current-tool">
                 {selectedTool === 'eraser' && '橡皮擦'}
-              </div>
-            </div>
-            
-            <div className="property-section">
-              <h4>标注统计</h4>
-              <div className="stats">
-                <div className="stat-item">
-                  <span>多边形:</span>
-                  <span>0</span>
-                </div>
-                <div className="stat-item">
-                  <span>边界框:</span>
-                  <span>0</span>
-                </div>
-                <div className="stat-item">
-                  <span>Mask区域:</span>
-                  <span>0</span>
-                </div>
+                {selectedTool === 'select' && '选择（拖动Mask顶点）'}
               </div>
             </div>
 
@@ -208,6 +258,44 @@ const ManualAnnotation: React.FC = () => {
                   <span className="layer-visible">👁️</span>
                 </div>
               </div>
+            </div>
+
+            {labelColorEntries.length > 0 && (
+              <div className="property-section">
+                <h4>标签图例</h4>
+                <div className="label-legend">
+                  {labelColorEntries.map(([label, color]) => (
+                    <div className="label-legend-item" key={label}>
+                      <span
+                        className="label-color-dot"
+                        style={{ backgroundColor: color }}
+                      />
+                      <input
+                        className="label-name"
+                        title={label}
+                        defaultValue={label}
+                        onBlur={(e) => handleLabelRename(label, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            (e.target as HTMLInputElement).blur();
+                          }
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="property-section">
+              <h4>保存</h4>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={handleSaveAnnotation}
+              >
+                保存标注（JSON）
+              </button>
             </div>
           </div>
         </div>

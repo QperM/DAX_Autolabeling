@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Stage, Layer, Image, Line, Rect } from 'react-konva';
+import { Stage, Layer, Image, Line, Rect, Circle } from 'react-konva';
 import useImage from 'use-image';
 import type { Mask, BoundingBox, Polygon } from '../types';
 
@@ -98,7 +98,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     return masks.map(mask => (
       <Line
         key={mask.id}
-        points={mask.points.map((value, index) => 
+        points={mask.points.map((value) => 
           // 统一按 imageScale 进行缩放，保证与图片缩放比例一致
           value * imageScale
         )}
@@ -109,6 +109,60 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         opacity={mask.opacity || 0.5}
       />
     ));
+  };
+
+  // 渲染 Mask 顶点控制点（仅在 select 模式下显示）
+  const renderMaskControlPoints = () => {
+    if (toolMode !== 'select') return null;
+
+    const handlePointDrag = (maskId: string, pointIndex: number, x: number, y: number) => {
+      if (imageScale === 0) return;
+
+      const originalX = x / imageScale;
+      const originalY = y / imageScale;
+
+      const updatedMasks = masks.map(mask => {
+        if (mask.id !== maskId) return mask;
+        const newPoints = [...mask.points];
+        newPoints[pointIndex * 2] = originalX;
+        newPoints[pointIndex * 2 + 1] = originalY;
+        return {
+          ...mask,
+          points: newPoints,
+        };
+      });
+
+      onMaskUpdate(updatedMasks);
+    };
+
+    const radius = 5;
+
+    return masks.flatMap(mask => {
+      const circles: JSX.Element[] = [];
+      for (let i = 0; i < mask.points.length; i += 2) {
+        const x = mask.points[i] * imageScale;
+        const y = mask.points[i + 1] * imageScale;
+        const key = `${mask.id}-pt-${i / 2}`;
+
+        circles.push(
+          <Circle
+            key={key}
+            x={x}
+            y={y}
+            radius={radius}
+            fill="#ffffff"
+            stroke={mask.color || '#ff0000'}
+            strokeWidth={2}
+            draggable
+            onDragEnd={(e) => {
+              const node = e.target;
+              handlePointDrag(mask.id, i / 2, node.x(), node.y());
+            }}
+          />
+        );
+      }
+      return circles;
+    });
   };
 
   // 渲染边界框
@@ -174,6 +228,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
           )}
           
           {renderMasks()}
+          {renderMaskControlPoints()}
           {renderBoundingBoxes()}
           {renderPolygons()}
           
