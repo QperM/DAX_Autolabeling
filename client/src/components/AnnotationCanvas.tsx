@@ -255,7 +255,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     const baseRadius = 5;
 
     return masks.flatMap(mask => {
-      const circles: JSX.Element[] = [];
+      const circles: React.ReactElement[] = [];
       for (let i = 0; i < mask.points.length; i += 2) {
         const x = mask.points[i] * imageScale;
         const y = mask.points[i + 1] * imageScale;

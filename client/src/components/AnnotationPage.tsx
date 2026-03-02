@@ -5,7 +5,6 @@ import { setImages, setLoading, setError, setCurrentImage } from '../store/annot
 import { imageApi, annotationApi, projectApi } from '../services/api';
 import type { Image, Mask, BoundingBox } from '../types';
 import ImageUploader from './ImageUploader';
-import AIAnnotationPreview from './AIAnnotationPreview';
 import './AnnotationPage.css';
 
 const AnnotationPage: React.FC = () => {
@@ -13,14 +12,15 @@ const AnnotationPage: React.FC = () => {
   const navigate = useNavigate();
   const { images, loading, error } = useSelector((state: any) => state.annotation);
   const [selectedPreviewImage, setSelectedPreviewImage] = useState<Image | null>(null);
+  const [previewDisplayMode, setPreviewDisplayMode] = useState<'image' | 'mask'>('image');
+  const [previewMasks, setPreviewMasks] = useState<Mask[]>([]);
+  const [previewAnnoLoading, setPreviewAnnoLoading] = useState(false);
+  const [previewImageSize, setPreviewImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [thumbnailMasks, setThumbnailMasks] = useState<Record<number, Mask[]>>({});
+  const [thumbnailSizes, setThumbnailSizes] = useState<Record<number, { width: number; height: number }>>({});
+  const [showThumbnailMasks, setShowThumbnailMasks] = useState(true);
   const [currentProject, setCurrentProject] = useState<any>(null);  // 当前项目
-  const [aiAnnotating, setAiAnnotating] = useState(false);  // AI标注进行中
   const [aiProgress, setAiProgress] = useState(0);  // AI标注进度 0-100
-  const [aiProgressMessage, setAiProgressMessage] = useState('');  // 进度消息
-  const [aiAnnotationResult, setAiAnnotationResult] = useState<{
-    image: Image;
-    annotations: { masks: Mask[]; boundingBoxes: BoundingBox[] };
-  } | null>(null);  // AI标注结果（单张预览）
   const [batchAnnotating, setBatchAnnotating] = useState(false);  // 批量标注进行中
   const [batchProgress, setBatchProgress] = useState<{
     total: number;
@@ -36,7 +36,6 @@ const AnnotationPage: React.FC = () => {
   const [aiPrompt, setAiPrompt] = useState<string>(''); // AI提示词（传给 Grounded SAM2 / Mask R-CNN，逗号分隔多个）
   const [aiPrompts, setAiPrompts] = useState<string[]>([]); // 多条提示词输入
   const [showPromptModal, setShowPromptModal] = useState(false); // 是否显示提示词配置弹窗
-  const [previewAnnotatedImages, setPreviewAnnotatedImages] = useState<Image[]>([]); // 预览中可切换的已标注图片列表
   const [annotationSummary, setAnnotationSummary] = useState<{
     totalImages: number;
     annotatedImages: number;
@@ -44,7 +43,7 @@ const AnnotationPage: React.FC = () => {
     latestUpdatedAt: string | null;
   } | null>(null);
 
-  // 统一的颜色调色板（与 AIAnnotationPreview 中保持一致）
+  // 统一的颜色调色板（用于确保不同标签分配不同颜色）
   const COLOR_PALETTE = [
     '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
     '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B739', '#52BE80',
@@ -77,6 +76,51 @@ const AnnotationPage: React.FC = () => {
       masks: coloredMasks,
       boundingBoxes: coloredBBoxes,
     };
+  };
+
+  const loadPreviewMasks = async (imageId: number) => {
+    try {
+      setPreviewAnnoLoading(true);
+      const resp = await annotationApi.getAnnotation(imageId);
+      const anno = resp?.annotation;
+      setPreviewMasks(anno?.masks || []);
+    } catch (e) {
+      console.warn('[AnnotationPage] 预览加载 masks 失败, imageId =', imageId, e);
+      setPreviewMasks([]);
+    } finally {
+      setPreviewAnnoLoading(false);
+    }
+  };
+
+  // 预览图切换时：重置 overlay 相关状态
+  useEffect(() => {
+    setPreviewMasks([]);
+    setPreviewImageSize(null);
+    if (!selectedPreviewImage) return;
+    if (previewDisplayMode === 'mask') {
+      loadPreviewMasks(selectedPreviewImage.id);
+    }
+  }, [selectedPreviewImage]);
+
+  // 切换到 mask 显示时：按需拉取标注
+  useEffect(() => {
+    if (!selectedPreviewImage) return;
+    if (previewDisplayMode !== 'mask') return;
+    loadPreviewMasks(selectedPreviewImage.id);
+  }, [previewDisplayMode]);
+
+  const ensureThumbnailMasks = async (imageId: number) => {
+    if (!showThumbnailMasks) return;
+    if (thumbnailMasks[imageId]) return;
+    try {
+      const resp = await annotationApi.getAnnotation(imageId);
+      const anno = resp?.annotation;
+      if (anno?.masks) {
+        setThumbnailMasks(prev => ({ ...prev, [imageId]: anno.masks }));
+      }
+    } catch (e) {
+      console.warn('[AnnotationPage] 缩略图加载 masks 失败, imageId =', imageId, e);
+    }
   };
 
   // 从 localStorage 恢复当前项目
@@ -265,214 +309,6 @@ const AnnotationPage: React.FC = () => {
     }
   };
 
-  // 保存AI标注结果
-  const handleSaveAIAnnotation = async () => {
-    if (!aiAnnotationResult) return;
-
-    try {
-      dispatch(setLoading(true));
-      // 如果当前结果还没有颜色，则为其分配颜色；否则沿用已有颜色
-      const hasAnyColor =
-        aiAnnotationResult.annotations.masks.some(m => !!m.color) ||
-        aiAnnotationResult.annotations.boundingBoxes.some(b => !!b.color);
-
-      const colored = hasAnyColor
-        ? aiAnnotationResult.annotations
-        : assignColorsForAnnotations(aiAnnotationResult.annotations);
-
-      await annotationApi.saveAnnotation(aiAnnotationResult.image.id, {
-        masks: colored.masks,
-        boundingBoxes: colored.boundingBoxes,
-        polygons: [],
-      });
-      alert('标注已保存！');
-      setAiAnnotationResult(null);
-    } catch (error: any) {
-      console.error('保存标注失败:', error);
-      alert(`保存标注失败: ${error.message || '未知错误'}`);
-    } finally {
-      dispatch(setLoading(false));
-    }
-  };
-
-  // 编辑AI标注结果（跳转到手动标注页面）
-  const handleEditAIAnnotation = () => {
-    if (!aiAnnotationResult) return;
-    dispatch(setCurrentImage(aiAnnotationResult.image));
-    setAiAnnotationResult(null);
-    navigate('./manual-annotation');
-  };
-
-  // 在AI预览弹窗中切换图片
-  const handleSelectPreviewImage = async (targetImage: Image) => {
-    try {
-      const resp = await annotationApi.getAnnotation(targetImage.id);
-      const anno = resp?.annotation;
-      if (!anno) {
-        alert('该图片暂无AI标注数据');
-        return;
-      }
-      setAiAnnotationResult({
-        image: targetImage,
-        annotations: {
-          masks: anno.masks || [],
-          boundingBoxes: anno.boundingBoxes || [],
-        },
-      });
-    } catch (e: any) {
-      console.error('切换预览图片失败:', e);
-      alert(e?.message || '切换预览图片失败');
-    }
-  };
-
-  // 打开批量结果的预览（默认查看最新一张已标注的图片）
-  const handleOpenBatchPreview = async () => {
-    console.log('🔍 handleOpenBatchPreview 调用');
-    console.log('当前项目:', currentProject);
-    console.log('annotationSummary:', annotationSummary);
-    console.log('当前内存中的图片列表(images):', images);
-
-    const latestIdRaw = annotationSummary?.latestAnnotatedImageId;
-    const latestId = latestIdRaw != null ? Number(latestIdRaw) : null;
-    console.log('最新已标注图片ID latestAnnotatedImageId(raw):', latestIdRaw, ' parsed:', latestId);
-
-    if (!latestId) {
-      console.warn('handleOpenBatchPreview: latestAnnotatedImageId 为空');
-      alert('当前还没有AI标注结果');
-      return;
-    }
-
-    // 先在当前内存中的图片列表里查找
-    let image = images.find((img: Image) => img.id === latestId);
-    console.log('在当前 images 中匹配到的图片:', image);
-
-    // 如果没找到，尝试重新加载一次项目图片列表
-    if (!image && currentProject) {
-      try {
-        console.log('在当前 images 中未找到，尝试重新加载项目图片列表，项目ID:', currentProject.id);
-        const freshImages = await imageApi.getImages(currentProject.id);
-        console.log('重新加载的图片列表 freshImages:', freshImages);
-        dispatch(setImages(freshImages));
-        image = freshImages.find((img: Image) => img.id === latestId) || null;
-        console.log('在 freshImages 中匹配到的图片:', image);
-      } catch (e) {
-        console.warn('刷新项目图片列表失败:', e);
-      }
-    }
-
-    if (!image) {
-      console.error('handleOpenBatchPreview: 依然找不到图片, latestId =', latestId);
-      // 退一步兜底：遍历当前项目所有图片，找到第一张已经有标注的图片
-      if (!currentProject) {
-        alert('找不到可预览的图片（请刷新页面后重试）');
-        return;
-      }
-      try {
-        console.log('尝试兜底：遍历项目全部图片，查找已有标注的图片，项目ID:', currentProject.id);
-        const freshImages = await imageApi.getImages(currentProject.id);
-        console.log('兜底 freshImages:', freshImages);
-
-        const annotatedList: Image[] = [];
-        let firstAnnotatedImage: Image | null = null;
-        let firstAnnotatedAnno: any = null;
-
-        for (const img of freshImages as Image[]) {
-          try {
-            console.log('尝试获取图片标注, imageId =', img.id);
-            const resp = await annotationApi.getAnnotation(img.id);
-            console.log('标注响应 resp:', resp);
-            if (resp?.annotation) {
-              annotatedList.push(img);
-              if (!firstAnnotatedImage) {
-                firstAnnotatedImage = img;
-                firstAnnotatedAnno = resp.annotation;
-              }
-            }
-          } catch (e) {
-            console.warn('获取单张图片标注失败, imageId =', img.id, e);
-          }
-        }
-
-        if (!firstAnnotatedImage || !firstAnnotatedAnno) {
-          alert('该项目暂无可预览的AI标注结果');
-          return;
-        }
-
-        console.log('兜底找到可预览图片及标注:', {
-          image: firstAnnotatedImage,
-          masks: firstAnnotatedAnno.masks,
-          boundingBoxes: firstAnnotatedAnno.boundingBoxes,
-        });
-
-        setAiAnnotationResult({
-          image: firstAnnotatedImage,
-          annotations: {
-            masks: firstAnnotatedAnno.masks || [],
-            boundingBoxes: firstAnnotatedAnno.boundingBoxes || [],
-          },
-        });
-        // 兜底时也构建一个已标注图片列表，方便在预览中切换
-        if (annotatedList.length > 0) {
-          setPreviewAnnotatedImages(annotatedList);
-        }
-        return;
-      } catch (e) {
-        console.error('兜底查找可预览图片失败:', e);
-        alert('找不到可预览的图片（请刷新页面后重试）');
-        return;
-      }
-    }
-
-    try {
-      console.log('开始从后端获取标注数据, imageId =', latestId);
-      const resp = await annotationApi.getAnnotation(latestId);
-      console.log('后端返回的标注响应 resp:', resp);
-      const anno = resp?.annotation;
-      if (!anno) {
-        console.warn('handleOpenBatchPreview: annotation 为空');
-        alert('该图片暂无标注数据');
-        return;
-      }
-      console.log('解析到的标注数据 masks/boundingBoxes:', {
-        masks: anno.masks,
-        boundingBoxes: anno.boundingBoxes,
-      });
-      setAiAnnotationResult({
-        image,
-        annotations: {
-          masks: anno.masks || [],
-          boundingBoxes: anno.boundingBoxes || [],
-        },
-      });
-
-      // 打开预览时，根据当前项目构建一个“已有AI标注的图片”列表，用于右侧缩略图切换
-      if (currentProject) {
-        try {
-          const freshImages = await imageApi.getImages(currentProject.id);
-          const annotatedList: Image[] = [];
-          for (const img of freshImages as Image[]) {
-            try {
-              const r = await annotationApi.getAnnotation(img.id);
-              if (r?.annotation) {
-                annotatedList.push(img);
-              }
-            } catch {
-              // 单张失败忽略
-            }
-          }
-          if (annotatedList.length > 0) {
-            setPreviewAnnotatedImages(annotatedList);
-          }
-        } catch (e) {
-          console.warn('构建已标注图片列表失败:', e);
-        }
-      }
-    } catch (err) {
-      console.error('获取标注数据失败:', err);
-      alert('获取标注数据失败，请检查后端服务');
-    }
-  };
-
   const handlePreviewNavigate = (direction: 'prev' | 'next') => {
     if (!selectedPreviewImage || images.length === 0) return;
     const currentIndex = images.findIndex((img: Image) => img.id === selectedPreviewImage.id);
@@ -532,55 +368,47 @@ const AnnotationPage: React.FC = () => {
                   <h3>AI自动标注</h3>
                   </div>
                   <div className="ai-controls">
-                    <div className="ai-prompt-group">
-                  <button 
-                        type="button"
-                        className="ai-prompt-manage-btn"
-                    onClick={() => {
-                          if (aiPrompts.length === 0) {
-                            setAiPrompts(['']);
-                          }
-                          setShowPromptModal(true);
-                        }}
-                      >
-                        {aiPrompts.filter((p) => p.trim().length > 0).length > 0
-                          ? `已配置 ${aiPrompts.filter((p) => p.trim().length > 0).length} 条提示词`
-                          : '点击配置提示词'}
-                      </button>
-                      <div className="ai-prompt-helper">
-                        点击上方按钮，在弹窗中添加/编辑提示词。多条提示词会按顺序传给模型，例如：person, dog, car。
+                    <div className="ai-controls-top">
+                      <div className="ai-prompt-group">
+                        <button 
+                          type="button"
+                          className="ai-prompt-manage-btn"
+                          onClick={() => {
+                            if (aiPrompts.length === 0) {
+                              setAiPrompts(['']);
+                            }
+                            setShowPromptModal(true);
+                          }}
+                        >
+                          {aiPrompts.filter((p) => p.trim().length > 0).length > 0
+                            ? `已配置 ${aiPrompts.filter((p) => p.trim().length > 0).length} 条提示词`
+                            : '点击配置提示词'}
+                        </button>
+                        <div className="ai-prompt-helper">
+                          点击上方按钮，在弹窗中添加/编辑提示词。多条提示词会按顺序传给模型，例如：person, dog, car。
+                        </div>
+                      </div>
+                      {/* 标注结果汇总模块（移动到提示词右侧） */}
+                      <div className="ai-summary">
+                        <div className="ai-summary-left">
+                          <div className="ai-summary-label">已完成AI标注</div>
+                          <div className="ai-summary-count">
+                            {annotationSummary?.annotatedImages ?? 0} 张
+                          </div>
+                        </div>
                       </div>
                     </div>
                     <button 
                       className="ai-annotation-btn"
                       onClick={handleBatchAIAutoAnnotation}
                       disabled={images.length === 0 || batchAnnotating}
-                  >
+                    >
                       {batchAnnotating ? '批量标注中...' : `🤖 批量AI标注 (${images.length}张)`}
-                  </button>
+                    </button>
                   </div>
                   <p className="ai-description">
                     使用Grounded SAM2模型自动识别所有图像中的对象并生成标注
                   </p>
-                  
-                  {/* 标注结果汇总模块 */}
-                  <div className="ai-summary">
-                    <div className="ai-summary-left">
-                      <div className="ai-summary-label">已完成AI标注</div>
-                      <div className="ai-summary-count">
-                        {annotationSummary?.annotatedImages ?? 0} 张
-                      </div>
-                    </div>
-                    <div className="ai-summary-right">
-                      <button 
-                        className="ai-summary-btn"
-                        onClick={handleOpenBatchPreview}
-                        disabled={!annotationSummary?.annotatedImages}
-                      >
-                        查看预览
-                      </button>
-                    </div>
-                  </div>
                   
                   {/* 批量标注进度 */}
                   {batchAnnotating && (
@@ -630,11 +458,78 @@ const AnnotationPage: React.FC = () => {
                     </button>
                   </div>
                   <div className="image-preview-wrapper">
-                    <img 
-                      src={`http://localhost:3001${selectedPreviewImage.url}?t=${Date.now()}`} 
-                      alt={selectedPreviewImage.originalName}
-                      className="preview-image"
-                    />
+                    {/* 左上角悬浮窗：原图 / Mask 切换 */}
+                    <div className="preview-floating-panel">
+                      <button
+                        type="button"
+                        className={`preview-mode-btn ${previewDisplayMode === 'image' ? 'active' : ''}`}
+                        onClick={() => setPreviewDisplayMode('image')}
+                      >
+                        原图
+                      </button>
+                      <button
+                        type="button"
+                        className={`preview-mode-btn ${previewDisplayMode === 'mask' ? 'active' : ''}`}
+                        onClick={() => setPreviewDisplayMode('mask')}
+                      >
+                        Mask
+                      </button>
+                      {previewDisplayMode === 'mask' && previewAnnoLoading && (
+                        <span className="preview-mode-loading">加载中...</span>
+                      )}
+                    </div>
+
+                    <div className="preview-image-layer">
+                      <img 
+                        src={`http://localhost:3001${selectedPreviewImage.url}?t=${Date.now()}`} 
+                        alt={selectedPreviewImage.originalName}
+                        className="preview-image"
+                        onLoad={(e) => {
+                          const img = e.currentTarget;
+                          setPreviewImageSize({
+                            width: img.naturalWidth,
+                            height: img.naturalHeight,
+                          });
+                        }}
+                      />
+
+                      {previewDisplayMode === 'mask' && previewImageSize && (
+                        <svg
+                          className="preview-mask-overlay"
+                          viewBox={`0 0 ${previewImageSize.width} ${previewImageSize.height}`}
+                          preserveAspectRatio="xMidYMid meet"
+                        >
+                          {previewMasks.map((mask) => {
+                            const pointsStr = mask.points
+                              .reduce<string[]>((acc, val, idx, arr) => {
+                                if (idx % 2 === 0) {
+                                  const x = val;
+                                  const y = arr[idx + 1];
+                                  acc.push(`${x},${y}`);
+                                }
+                                return acc;
+                              }, [])
+                              .join(' ');
+
+                            return (
+                              <polygon
+                                key={mask.id}
+                                points={pointsStr}
+                                fill={mask.color || '#ff0000'}
+                                fillOpacity={mask.opacity ?? 0.25}
+                                stroke={mask.color || '#ff0000'}
+                                strokeWidth={2}
+                                strokeOpacity={0.9}
+                              />
+                            );
+                          })}
+                        </svg>
+                      )}
+
+                      {previewDisplayMode === 'mask' && !previewAnnoLoading && previewMasks.length === 0 && (
+                        <div className="preview-mask-empty">暂无 Mask</div>
+                      )}
+                    </div>
                   </div>
                   <div className="preview-actions">
                     <button
@@ -730,8 +625,19 @@ const AnnotationPage: React.FC = () => {
             {currentProject && images.length > 0 && (
               <div className="welcome-bottom">
                 <div className="uploaded-images-preview">
-                  <div className="preview-header">
+                  <div className="preview-header uploaded-preview-header">
                     <h3>已上传图片 ({images.length})</h3>
+                    <button
+                      type="button"
+                      className={`thumbnail-mask-toggle ${showThumbnailMasks ? 'active' : ''}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowThumbnailMasks((v) => !v);
+                      }}
+                      title="切换缩略图Mask预览"
+                    >
+                      Mask预览：{showThumbnailMasks ? '开' : '关'}
+                    </button>
                     <div className="project-info">
                       <span className="project-name">项目: {currentProject.name}</span>
                       <span className="project-id">ID: {currentProject.id}</span>
@@ -743,17 +649,62 @@ const AnnotationPage: React.FC = () => {
                         key={image.id}
                         className={`thumbnail-item-small ${selectedPreviewImage?.id === image.id ? 'selected' : ''}`}
                         onClick={() => setSelectedPreviewImage(image)}
+                        onMouseEnter={() => ensureThumbnailMasks(image.id)}
                       >
-                        <img 
-                          src={`http://localhost:3001${image.url}?t=${Date.now()}`} 
-                          alt={image.originalName}
-                          onError={() => {
-                            console.error('❌ 图片加载失败:', image.url);
-                          }}
-                          onLoad={() => {
-                            console.log('✅ 图片加载成功:', image.url);
-                          }}
-                        />
+                        <div className="thumbnail-image-layer">
+                          <img 
+                            src={`http://localhost:3001${image.url}?t=${Date.now()}`} 
+                            alt={image.originalName}
+                            onError={() => {
+                              console.error('❌ 图片加载失败:', image.url);
+                            }}
+                            onLoad={(e) => {
+                              const imgEl = e.currentTarget;
+                              setThumbnailSizes(prev => ({
+                                ...prev,
+                                [image.id]: {
+                                  width: imgEl.naturalWidth,
+                                  height: imgEl.naturalHeight,
+                                },
+                              }));
+                              console.log('✅ 图片加载成功:', image.url);
+                            }}
+                          />
+
+                          {showThumbnailMasks && thumbnailMasks[image.id] && thumbnailSizes[image.id] && (
+                            <svg
+                              className="thumbnail-mask-overlay"
+                              viewBox={`0 0 ${thumbnailSizes[image.id].width} ${thumbnailSizes[image.id].height}`}
+                              preserveAspectRatio="xMidYMid slice"
+                            >
+                              {thumbnailMasks[image.id].map((mask) => {
+                                const pointsStr = mask.points
+                                  .reduce<string[]>((acc, val, idx, arr) => {
+                                    if (idx % 2 === 0) {
+                                      const x = val;
+                                      const y = arr[idx + 1];
+                                      acc.push(`${x},${y}`);
+                                    }
+                                    return acc;
+                                  }, [])
+                                  .join(' ');
+
+                                return (
+                                  <polygon
+                                    key={mask.id}
+                                    points={pointsStr}
+                                    fill={mask.color || '#ff0000'}
+                                    fillOpacity={mask.opacity ?? 0.25}
+                                    stroke={mask.color || '#ff0000'}
+                                    strokeWidth={1.5}
+                                    strokeOpacity={0.9}
+                                  />
+                                );
+                              })}
+                            </svg>
+                          )}
+                        </div>
+
                         <div className="thumbnail-overlay">
                           <span className="thumbnail-name">{image.originalName}</span>
                         </div>
@@ -828,19 +779,6 @@ const AnnotationPage: React.FC = () => {
         </div>
       )}
 
-      {/* AI标注结果预览 */}
-      {aiAnnotationResult && (
-        <AIAnnotationPreview
-          image={aiAnnotationResult.image}
-          annotations={aiAnnotationResult.annotations}
-          images={previewAnnotatedImages}
-          currentImageId={aiAnnotationResult.image.id}
-          onSelectImage={handleSelectPreviewImage}
-          onClose={() => setAiAnnotationResult(null)}
-          onSave={handleSaveAIAnnotation}
-          onEdit={handleEditAIAnnotation}
-        />
-      )}
     </div>
   );
 };

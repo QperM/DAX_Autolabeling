@@ -82,7 +82,7 @@ const ManualAnnotation: React.FC = () => {
     loadAnnotation();
   }, [currentImage, annotations]);
 
-  const handleToolSelect = (tool: string) => {
+  const handleToolSelect = (tool: 'eraser' | 'select') => {
     setSelectedTool(tool);
   };
 

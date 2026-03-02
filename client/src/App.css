@@ -610,20 +610,17 @@ body {
 
 /* Landing Page 样式 */
 .landing-page {
-  min-height: 100vh;
-  height: 100vh;
+  position: fixed;
+  inset: 0;
   width: 100vw;
+  height: 100vh;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   padding: 2rem;
   margin: 0;
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  overflow-y: auto;
 }
 
 .landing-content {
@@ -635,6 +632,7 @@ body {
   width: 100%;
   position: relative;
   z-index: 10;
+  margin: 0 auto;
 }
 
 .landing-header {
