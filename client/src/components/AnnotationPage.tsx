@@ -154,17 +154,47 @@ const AnnotationPage: React.FC = () => {
                     </button>
                     <button 
                       className="delete-image-btn"
-                      onClick={(e) => {
+                      onClick={async (e) => {
                         e.stopPropagation();
                         if (window.confirm(`确定要删除图片 "${selectedPreviewImage.originalName}" 吗？`)) {
-                          // TODO: 实现图片删除功能
-                          console.log('删除图片:', selectedPreviewImage.id);
-                          setSelectedPreviewImage(null);
-                          // 从Redux状态中移除图片
-                          dispatch({
-                            type: 'annotation/removeImage',
-                            payload: selectedPreviewImage.id
-                          });
+                          const imageId = selectedPreviewImage.id;
+                          console.log(`[前端] 开始删除图片，ID: ${imageId}`, selectedPreviewImage);
+                          
+                          try {
+                            dispatch(setLoading(true));
+                            
+                            // 调用后端API删除图片
+                            console.log(`[前端] 调用API删除图片: DELETE /api/images/${imageId}`);
+                            await imageApi.deleteImage(imageId);
+                            console.log(`[前端] API调用成功，图片ID ${imageId} 已从数据库删除`);
+                            
+                            // 从Redux状态中移除图片
+                            dispatch({
+                              type: 'annotation/removeImage',
+                              payload: imageId
+                            });
+                            console.log(`[前端] 已从Redux状态中移除图片ID: ${imageId}`);
+                            
+                            // 清空预览
+                            setSelectedPreviewImage(null);
+                            console.log(`[前端] 已清空预览图片`);
+                            
+                            // 重新加载图片列表以确保数据同步
+                            if (currentProject) {
+                              console.log(`[前端] 重新加载项目图片列表，项目ID: ${currentProject.id}`);
+                              const loadedImages = await imageApi.getImages(currentProject.id);
+                              dispatch(setImages(loadedImages));
+                              console.log(`[前端] 图片列表已刷新，当前图片数量: ${loadedImages.length}`);
+                            }
+                            
+                            console.log(`[前端] 删除图片流程完成，图片ID: ${imageId}`);
+                          } catch (error: any) {
+                            console.error(`[前端] 删除图片失败，图片ID: ${imageId}:`, error);
+                            dispatch(setError(error.message || '删除图片失败'));
+                            alert(`删除图片失败: ${error.message || '未知错误'}`);
+                          } finally {
+                            dispatch(setLoading(false));
+                          }
                         }
                       }}
                     >

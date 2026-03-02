@@ -1,6 +1,7 @@
 import React from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import { setCurrentImage, removeImage } from '../store/annotationSlice';
+import { setCurrentImage, removeImage, setLoading, setError } from '../store/annotationSlice';
+import { imageApi } from '../services/api';
 import type { Image } from '../types';
 
 const ImageList: React.FC = () => {
@@ -11,10 +12,31 @@ const ImageList: React.FC = () => {
     dispatch(setCurrentImage(image));
   };
 
-  const handleImageDelete = (imageId: string, e: React.MouseEvent) => {
+  const handleImageDelete = async (imageId: number, e: React.MouseEvent) => {
     e.stopPropagation();
     if (window.confirm('确定要删除这张图片吗？')) {
-      dispatch(removeImage(imageId));
+      console.log(`[ImageList] 开始删除图片，ID: ${imageId}`);
+      
+      try {
+        dispatch(setLoading(true));
+        
+        // 调用后端API删除图片
+        console.log(`[ImageList] 调用API删除图片: DELETE /api/images/${imageId}`);
+        await imageApi.deleteImage(imageId);
+        console.log(`[ImageList] API调用成功，图片ID ${imageId} 已从数据库删除`);
+        
+        // 从Redux状态中移除图片
+        dispatch(removeImage(imageId));
+        console.log(`[ImageList] 已从Redux状态中移除图片ID: ${imageId}`);
+        
+        console.log(`[ImageList] 删除图片流程完成，图片ID: ${imageId}`);
+      } catch (error: any) {
+        console.error(`[ImageList] 删除图片失败，图片ID: ${imageId}:`, error);
+        dispatch(setError(error.message || '删除图片失败'));
+        alert(`删除图片失败: ${error.message || '未知错误'}`);
+      } finally {
+        dispatch(setLoading(false));
+      }
     }
   };
 

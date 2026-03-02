@@ -17,7 +17,15 @@ const db = new sqlite3.Database(dbPath, (err) => {
     console.error('数据库连接失败:', err.message);
   } else {
     console.log('✅ 数据库连接成功');
-    initializeDatabase();
+    // 启用外键约束
+    db.run('PRAGMA foreign_keys = ON', (pragmaErr) => {
+      if (pragmaErr) {
+        console.error('启用外键约束失败:', pragmaErr.message);
+      } else {
+        console.log('✅ 外键约束已启用');
+      }
+      initializeDatabase();
+    });
   }
 });
 
@@ -37,16 +45,12 @@ function initializeDatabase() {
   // 创建images表
   db.run(`
     CREATE TABLE IF NOT EXISTS images (
-      id TEXT PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       filename TEXT NOT NULL,
       original_name TEXT NOT NULL,
       file_path TEXT NOT NULL,
       file_size INTEGER,
-      width INTEGER,
-      height INTEGER,
-      upload_time TEXT NOT NULL,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      upload_time TEXT NOT NULL
     )
   `, (err) => {
     if (err) {
@@ -60,7 +64,7 @@ function initializeDatabase() {
   db.run(`
     CREATE TABLE IF NOT EXISTS annotations (
       id TEXT PRIMARY KEY,
-      image_id TEXT NOT NULL,
+      image_id INTEGER NOT NULL,
       mask_data TEXT, -- JSON格式存储Mask点坐标
       bbox_data TEXT, -- JSON格式存储边界框数据
       polygon_data TEXT, -- JSON格式存储多边形数据
@@ -82,7 +86,7 @@ function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS project_images (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id INTEGER NOT NULL,
-      image_id TEXT NOT NULL,
+      image_id INTEGER NOT NULL,
       added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
       FOREIGN KEY (image_id) REFERENCES images (id) ON DELETE CASCADE,
@@ -111,29 +115,31 @@ const database = {
   // 插入图片信息
   insertImage: (imageData, callback) => {
     const sql = `
-      INSERT INTO images (id, filename, original_name, file_path, file_size, width, height, upload_time)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO images (filename, original_name, file_path, file_size, upload_time)
+      VALUES (?, ?, ?, ?, ?)
     `;
     const params = [
-      imageData.id,
       imageData.filename,
       imageData.originalName,
       imageData.path,
       imageData.size,
-      imageData.width || null,
-      imageData.height || null,
       imageData.uploadTime
     ];
     
     db.run(sql, params, function(err) {
-      callback(err, this.lastID);
+      if (err) {
+        return callback(err, null);
+      }
+      // 确保正确获取 lastID
+      const lastID = this.lastID;
+      callback(null, lastID);
     });
   },
 
   // 获取所有图片
   getAllImages: (callback) => {
     const sql = `
-      SELECT id, filename, original_name, file_path, file_size, width, height, upload_time
+      SELECT id, filename, original_name, file_path, file_size, upload_time
       FROM images
       ORDER BY upload_time DESC
     `;
@@ -143,7 +149,7 @@ const database = {
   // 根据项目ID获取图片（通过项目-图片关联表）
   getImagesByProjectId: (projectId, callback) => {
     const sql = `
-      SELECT i.id, i.filename, i.original_name, i.file_path, i.file_size, i.width, i.height, i.upload_time
+      SELECT i.id, i.filename, i.original_name, i.file_path, i.file_size, i.upload_time
       FROM images i
       INNER JOIN project_images pi ON pi.image_id = i.id
       WHERE pi.project_id = ?
@@ -155,7 +161,7 @@ const database = {
   // 根据ID获取图片
   getImageById: (id, callback) => {
     const sql = `
-      SELECT id, filename, original_name, file_path, file_size, width, height, upload_time
+      SELECT id, filename, original_name, file_path, file_size, upload_time
       FROM images
       WHERE id = ?
     `;
@@ -324,6 +330,108 @@ const database = {
       db.run('DELETE FROM projects WHERE id = ?', [id], function(err) {
         if (err) reject(err);
         else resolve(this.changes);
+      });
+    });
+  },
+
+  // 删除项目及其关联的图片/标注（仅删除不再被其他项目引用的图片）
+  deleteProjectWithRelated: (projectId, callback) => {
+    db.serialize(() => {
+      // 找到该项目关联的所有图片
+      const sqlImages = `
+        SELECT DISTINCT i.id, i.file_path
+        FROM images i
+        INNER JOIN project_images pi ON pi.image_id = i.id
+        WHERE pi.project_id = ?
+      `;
+
+      db.all(sqlImages, [projectId], (err, images) => {
+        if (err) {
+          console.error('查询项目关联图片失败:', err);
+          return callback(err);
+        }
+
+        if (!images || images.length === 0) {
+          // 没有关联图片，直接删除项目
+          db.run('DELETE FROM projects WHERE id = ?', [projectId], function (delErr) {
+            if (delErr) {
+              console.error('删除项目失败:', delErr);
+              return callback(delErr);
+            }
+            callback(null, this.changes);
+          });
+          return;
+        }
+
+        const imagesToDelete = [];
+        let checked = 0;
+        let hasError = false;
+
+        // 检查每张图片是否还被其他项目引用
+        images.forEach((img) => {
+          const sqlCount = `
+            SELECT COUNT(*) AS cnt
+            FROM project_images
+            WHERE image_id = ? AND project_id != ?
+          `;
+          db.get(sqlCount, [img.id, projectId], (countErr, row) => {
+            if (countErr) {
+              console.error('查询图片引用计数失败:', countErr);
+              if (!hasError) {
+                hasError = true;
+                return callback(countErr);
+              }
+              return;
+            }
+
+            if (row && row.cnt === 0) {
+              imagesToDelete.push(img);
+            }
+
+            checked++;
+            if (checked === images.length && !hasError) {
+              // 删除无需保留的图片记录和物理文件
+              if (imagesToDelete.length === 0) {
+                // 直接删除项目（project_images 通过外键 ON DELETE CASCADE 自动清理）
+                db.run('DELETE FROM projects WHERE id = ?', [projectId], function (delErr2) {
+                  if (delErr2) {
+                    console.error('删除项目失败:', delErr2);
+                    return callback(delErr2);
+                  }
+                  callback(null, this.changes);
+                });
+                return;
+              }
+
+              let deleted = 0;
+              imagesToDelete.forEach((imgToDel) => {
+                db.run('DELETE FROM images WHERE id = ?', [imgToDel.id], function (imgDelErr) {
+                  if (imgDelErr) {
+                    console.error('删除图片记录失败:', imgDelErr);
+                  } else if (imgToDel.file_path && fs.existsSync(imgToDel.file_path)) {
+                    fs.unlink(imgToDel.file_path, (fsErr) => {
+                      if (fsErr) {
+                        console.error('删除图片文件失败:', fsErr);
+                      }
+                    });
+                  }
+
+                  deleted++;
+                  if (deleted === imagesToDelete.length) {
+                    // 最后删除项目
+                    db.run('DELETE FROM projects WHERE id = ?', [projectId], function (delErr3) {
+                      if (delErr3) {
+                        console.error('删除项目失败:', delErr3);
+                        return callback(delErr3);
+                      }
+                      callback(null, this.changes);
+                    });
+                  }
+                });
+              });
+            }
+          });
+        });
       });
     });
   }

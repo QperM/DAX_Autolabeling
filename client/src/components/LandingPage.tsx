@@ -18,6 +18,9 @@ const LandingPage: React.FC = () => {
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectDescription, setNewProjectDescription] = useState('');
   const [isCreatingProject, setIsCreatingProject] = useState(false);
+
+  // 删除项目时的加载状态
+  const [deletingProjectId, setDeletingProjectId] = useState<number | null>(null);
   const navigate = useNavigate();
 
   // 初始化：加载当前项目和项目列表
@@ -135,6 +138,37 @@ const LandingPage: React.FC = () => {
     console.log('状态更新: 选择项目并保持在主页');
   };
 
+  // 删除项目
+  const handleDeleteProject = async (project: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (deletingProjectId !== null) return;
+
+    const confirmed = window.confirm(`确定要删除项目 "${project.name}" 以及其相关数据吗？该操作不可恢复！`);
+    if (!confirmed) return;
+
+    try {
+      setDeletingProjectId(project.id);
+      await projectApi.deleteProject(project.id);
+
+      // 从项目列表中移除
+      setProjects(prev => prev.filter(p => p.id !== project.id));
+
+      // 如果当前项目被删除，清空当前项目和模块选择
+      if (currentProject && currentProject.id === project.id) {
+        setCurrentProject(null);
+        localStorage.removeItem('currentProject');
+        setSelectedModules([]);
+      }
+
+      alert(`项目 "${project.name}" 已删除`);
+    } catch (error) {
+      console.error('删除项目失败:', error);
+      alert('删除项目失败，请检查后端服务是否正常运行');
+    } finally {
+      setDeletingProjectId(null);
+    }
+  };
+
   const handleStart = () => {
     console.log('开始标注，选中模块:', selectedModules, '当前项目:', currentProject);
     if (!currentProject) {
@@ -240,6 +274,7 @@ const LandingPage: React.FC = () => {
                       <div className="project-column id">ID</div>
                       <div className="project-column created">创建时间</div>
                       <div className="project-column updated">更新时间</div>
+                      <div className="project-column actions">操作</div>
                     </div>
                     {/* 项目列表 */}
                     {projects.map(project => (
@@ -255,6 +290,15 @@ const LandingPage: React.FC = () => {
                         <div className="project-column id">{project.id}</div>
                         <div className="project-column created">{new Date(project.created_at).toLocaleString()}</div>
                         <div className="project-column updated">{new Date(project.updated_at).toLocaleString()}</div>
+                        <div className="project-column actions">
+                          <button
+                            className="project-delete-btn"
+                            onClick={(e) => handleDeleteProject(project, e)}
+                            disabled={deletingProjectId === project.id}
+                          >
+                            {deletingProjectId === project.id ? '删除中...' : '删除'}
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </>

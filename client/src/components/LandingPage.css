@@ -134,8 +134,11 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.2);
-  max-width: 600px;
+  width: 90%;
+  max-width: 800px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .project-list-header {
@@ -145,6 +148,7 @@
   padding: 1rem 1.5rem;
   background: rgba(102, 126, 234, 0.05);
   border-bottom: 1px solid rgba(102, 126, 234, 0.1);
+  flex-shrink: 0;
 }
 
 .project-list-header h2 {
@@ -170,31 +174,37 @@
 .project-list {
   padding: 0;
   overflow-x: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 /* 项目列表表头 */
 .project-list-header-row {
   display: grid;
-  grid-template-columns: 1fr 100px 180px 180px;
+  grid-template-columns: 1fr 80px 140px 140px 80px;
   gap: 1rem;
-  padding: 0.75rem 1rem;
+  padding: 0.75rem 1.5rem;
   background: rgba(102, 126, 234, 0.05);
   border-bottom: 2px solid #667eea;
   font-weight: 600;
   color: #333;
   font-size: 0.9rem;
+  align-items: center;
+  min-width: 0;
 }
 
 /* 项目列表行 */
 .project-list-row {
   display: grid;
-  grid-template-columns: 1fr 100px 180px 180px;
+  grid-template-columns: 1fr 80px 140px 140px 80px;
   gap: 1rem;
-  padding: 0.75rem 1rem;
+  padding: 0.75rem 1.5rem;
   border-bottom: 1px solid #eee;
   cursor: pointer;
   transition: all 0.2s ease;
   align-items: center;
+  min-width: 0;
 }
 
 .project-list-row:hover {
@@ -208,6 +218,10 @@
   gap: 0.5rem;
   font-size: 0.85rem;
   color: #333;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .project-column.name {
@@ -217,6 +231,10 @@
 .project-column.id {
   color: #667eea;
   font-weight: 500;
+}
+
+.project-column.actions {
+  justify-content: flex-end;
 }
 
 .project-column.created,
@@ -252,6 +270,27 @@
   display: flex;
   align-items: center;
   gap: 0.25rem;
+}
+
+.project-delete-btn {
+  padding: 0.3rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid #dc3545;
+  background: #fff5f5;
+  color: #dc3545;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.project-delete-btn:hover:not(:disabled) {
+  background: #dc3545;
+  color: #fff;
+}
+
+.project-delete-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .no-projects-message {

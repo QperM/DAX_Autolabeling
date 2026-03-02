@@ -52,7 +52,7 @@ export const imageApi = {
   },
 
   // 删除图像
-  deleteImage: async (imageId: string): Promise<void> => {
+  deleteImage: async (imageId: number): Promise<void> => {
     await apiClient.delete(`/images/${imageId}`);
   },
 };
@@ -60,7 +60,7 @@ export const imageApi = {
 // 标注相关API
 export const annotationApi = {
   // 自动标注
-  autoAnnotate: async (imageId: string, prompt?: string): Promise<AutoAnnotationResponse> => {
+  autoAnnotate: async (imageId: number, prompt?: string): Promise<AutoAnnotationResponse> => {
     const response = await apiClient.post<AutoAnnotationResponse>('/annotate/auto', {
       imageId,
       prompt,
@@ -69,13 +69,13 @@ export const annotationApi = {
   },
 
   // 保存标注
-  saveAnnotation: async (imageId: string, annotationData: any): Promise<any> => {
+  saveAnnotation: async (imageId: number, annotationData: any): Promise<any> => {
     const response = await apiClient.post(`/annotations/${imageId}`, annotationData);
     return response.data;
   },
 
   // 获取标注
-  getAnnotation: async (imageId: string): Promise<any> => {
+  getAnnotation: async (imageId: number): Promise<any> => {
     const response = await apiClient.get(`/annotations/${imageId}`);
     return response.data;
   },

@@ -30,7 +30,7 @@ export const annotationSlice = createSlice({
       state.images.push(action.payload);
     },
     
-    removeImage: (state, action: PayloadAction<string>) => {
+    removeImage: (state, action: PayloadAction<number>) => {
       state.images = state.images.filter(img => img.id !== action.payload);
       if (state.currentImage?.id === action.payload) {
         state.currentImage = null;
@@ -46,7 +46,7 @@ export const annotationSlice = createSlice({
       state.brushSize = action.payload;
     },
     
-    setAnnotation: (state, action: PayloadAction<{ imageId: string; annotation: Annotation }>) => {
+    setAnnotation: (state, action: PayloadAction<{ imageId: number; annotation: Annotation }>) => {
       const { imageId, annotation } = action.payload;
       state.annotations[imageId] = annotation;
       
@@ -56,7 +56,7 @@ export const annotationSlice = createSlice({
       state.historyIndex = state.history.length - 1;
     },
     
-    updateAnnotation: (state, action: PayloadAction<{ imageId: string; annotation: Partial<Annotation> }>) => {
+    updateAnnotation: (state, action: PayloadAction<{ imageId: number; annotation: Partial<Annotation> }>) => {
       const { imageId, annotation } = action.payload;
       if (state.annotations[imageId]) {
         state.annotations[imageId] = {

@@ -1,12 +1,10 @@
 // 图像类型定义
 export interface Image {
-  id: string;
+  id: number;
   filename: string;
   url: string;
   originalName: string;
   size?: number;
-  width?: number;
-  height?: number;
   uploadTime: string;
 }
 
@@ -41,7 +39,7 @@ export interface Polygon {
 
 // 标注数据类型
 export interface Annotation {
-  imageId: string;
+  imageId: number;
   masks: Mask[];
   boundingBoxes: BoundingBox[];
   polygons: Polygon[];
@@ -56,7 +54,7 @@ export type ToolMode = 'select' | 'eraser' | 'polygon' | 'bbox';
 export interface AppState {
   currentImage: Image | null;
   images: Image[];
-  annotations: Record<string, Annotation>;
+  annotations: Record<number, Annotation>;
   toolMode: ToolMode;
   brushSize: number;
   selectedAnnotationId: string | null;
