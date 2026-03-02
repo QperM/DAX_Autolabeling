@@ -67,3 +67,6 @@ Desktop.ini
 
 # Local development files
 *.local
+
+# Uploaded runtime files (should not be committed)
+server/uploads/

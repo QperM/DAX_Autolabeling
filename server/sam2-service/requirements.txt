@@ -1,0 +1,25 @@
+# Web 框架
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# 图像处理
+pillow==10.1.0
+numpy==1.24.3
+
+# PyTorch（CUDA 12.1 版本，支持 RTX 4080）
+# 注意：如果使用 conda，可以用以下命令安装：
+# conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+# 如果使用 pip，取消下面的注释：
+# --index-url https://download.pytorch.org/whl/cu121
+# torch>=2.0.0
+# torchvision>=0.15.0
+# torchaudio>=2.0.0
+
+# Grounded SAM2 相关依赖（待添加）
+# 根据选择的 Grounded SAM2 实现，添加相应依赖
+# 例如：
+# segment-anything-2
+# groundingdino
+# transformers
+# opencv-python

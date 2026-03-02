@@ -10,6 +10,13 @@ interface Project {
   updated_at: string;
 }
 
+export interface ProjectAnnotationSummary {
+  totalImages: number;
+  annotatedImages: number;
+  latestAnnotatedImageId: number | null;
+  latestUpdatedAt: string | null;
+}
+
 interface CreateProjectRequest {
   name: string;
   description?: string;
@@ -55,6 +62,12 @@ export const imageApi = {
   deleteImage: async (imageId: number): Promise<void> => {
     await apiClient.delete(`/images/${imageId}`);
   },
+
+  // （可选扩展）按ID获取单张图像（目前前端未使用，如需可启用）
+  // getImage: async (imageId: number): Promise<Image> => {
+  //   const response = await apiClient.get<Image>(`/images/${imageId}`);
+  //   return response.data;
+  // },
 };
 
 // 标注相关API
@@ -110,6 +123,14 @@ export const projectApi = {
   // 删除项目
   deleteProject: async (projectId: number): Promise<void> => {
     await apiClient.delete(`/projects/${projectId}`);
+  },
+
+  // 获取项目标注汇总
+  getAnnotationSummary: async (projectId: number): Promise<ProjectAnnotationSummary> => {
+    const response = await apiClient.get<{ success: boolean; summary: ProjectAnnotationSummary }>(
+      `/projects/${projectId}/annotation-summary`
+    );
+    return response.data.summary;
   },
 };
 

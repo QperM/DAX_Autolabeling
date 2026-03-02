@@ -2,9 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { setImages, setLoading, setError, setCurrentImage } from '../store/annotationSlice';
-import { imageApi } from '../services/api';
-import type { Image } from '../types';
+import { imageApi, annotationApi, projectApi } from '../services/api';
+import type { Image, Mask, BoundingBox } from '../types';
 import ImageUploader from './ImageUploader';
+import AIAnnotationPreview from './AIAnnotationPreview';
 import './AnnotationPage.css';
 
 const AnnotationPage: React.FC = () => {
@@ -13,6 +14,32 @@ const AnnotationPage: React.FC = () => {
   const { images, loading, error } = useSelector((state: any) => state.annotation);
   const [selectedPreviewImage, setSelectedPreviewImage] = useState<Image | null>(null);
   const [currentProject, setCurrentProject] = useState<any>(null);  // 当前项目
+  const [aiAnnotating, setAiAnnotating] = useState(false);  // AI标注进行中
+  const [aiProgress, setAiProgress] = useState(0);  // AI标注进度 0-100
+  const [aiProgressMessage, setAiProgressMessage] = useState('');  // 进度消息
+  const [aiAnnotationResult, setAiAnnotationResult] = useState<{
+    image: Image;
+    annotations: { masks: Mask[]; boundingBoxes: BoundingBox[] };
+  } | null>(null);  // AI标注结果（单张预览）
+  const [batchAnnotating, setBatchAnnotating] = useState(false);  // 批量标注进行中
+  const [batchProgress, setBatchProgress] = useState<{
+    total: number;
+    completed: number;
+    current: string;
+    results: Array<{ image: Image; success: boolean; annotations?: any; error?: string }>;
+  }>({
+    total: 0,
+    completed: 0,
+    current: '',
+    results: []
+  });  // 批量标注进度
+  const [aiPrompt, setAiPrompt] = useState<string>(''); // AI提示词（传给 Grounded SAM2）
+  const [annotationSummary, setAnnotationSummary] = useState<{
+    totalImages: number;
+    annotatedImages: number;
+    latestAnnotatedImageId: number | null;
+    latestUpdatedAt: string | null;
+  } | null>(null);
 
   // 从 localStorage 恢复当前项目
   useEffect(() => {
@@ -40,6 +67,10 @@ const AnnotationPage: React.FC = () => {
           // 根据项目ID加载该项目的图片
           const loadedImages = await imageApi.getImages(currentProject.id);
           dispatch(setImages(loadedImages));
+
+          // 同步拉取项目标注汇总（用于“已完成AI标注数量”）
+          const summary = await projectApi.getAnnotationSummary(currentProject.id);
+          setAnnotationSummary(summary);
         } catch (err: any) {
           dispatch(setError(err.message || '加载图像失败'));
         } finally {
@@ -50,6 +81,16 @@ const AnnotationPage: React.FC = () => {
       loadImages();
     }
   }, [dispatch, currentProject]);
+
+  const refreshAnnotationSummary = async () => {
+    if (!currentProject) return;
+    try {
+      const summary = await projectApi.getAnnotationSummary(currentProject.id);
+      setAnnotationSummary(summary);
+    } catch (e) {
+      console.warn('刷新标注汇总失败:', e);
+    }
+  };
 
   const handleUploadComplete = (newImages: Image[]) => {
     if (!currentProject) {
@@ -67,6 +108,275 @@ const AnnotationPage: React.FC = () => {
 
   const handleBack = () => {
     navigate('/');
+  };
+
+  // 处理批量AI自动标注
+  const handleBatchAIAutoAnnotation = async () => {
+    if (images.length === 0) {
+      alert('当前没有可标注的图片');
+      return;
+    }
+
+    if (!currentProject) {
+      alert('请先选择项目');
+      return;
+    }
+
+    const confirmMessage = `确定要对所有 ${images.length} 张图片进行批量AI自动标注吗？\n\n` +
+      `当前提示词: ${aiPrompt ? `"${aiPrompt}"` : '（空，自动识别常见目标）'}\n\n` +
+      `将使用Grounded SAM2模型进行对象检测和分割。\n\n注意：批量标注可能需要较长时间，请耐心等待。`;
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    try {
+      setBatchAnnotating(true);
+      setBatchProgress({
+        total: images.length,
+        completed: 0,
+        current: '',
+        results: []
+      });
+
+      const results: Array<{ image: Image; success: boolean; annotations?: any; error?: string }> = [];
+
+      // 逐个处理每张图片
+      for (let i = 0; i < images.length; i++) {
+        const image = images[i];
+        setBatchProgress(prev => ({
+          ...prev,
+          current: `正在处理: ${image.originalName} (${i + 1}/${images.length})`
+        }));
+
+        try {
+          // 调用后端AI标注API
+          const result = await annotationApi.autoAnnotate(image.id, aiPrompt || undefined);
+          
+          // 自动保存标注结果
+          await annotationApi.saveAnnotation(image.id, {
+            masks: result.annotations.masks,
+            boundingBoxes: result.annotations.boundingBoxes,
+            polygons: [],
+          });
+
+          results.push({
+            image,
+            success: true,
+            annotations: result.annotations
+          });
+
+          setBatchProgress(prev => ({
+            ...prev,
+            completed: prev.completed + 1,
+            results: [...results]
+          }));
+        } catch (error: any) {
+          console.error(`图片 ${image.originalName} 标注失败:`, error);
+          results.push({
+            image,
+            success: false,
+            error: error.message || '未知错误'
+          });
+
+          setBatchProgress(prev => ({
+            ...prev,
+            completed: prev.completed + 1,
+            results: [...results]
+          }));
+        }
+
+        // 更新总进度
+        const progress = Math.round(((i + 1) / images.length) * 100);
+        setAiProgress(progress);
+      }
+
+      // 批量标注完成
+      setBatchProgress(prev => ({
+        ...prev,
+        current: '批量标注完成！',
+        results: [...results]
+      }));
+      setAiProgress(100);
+      await refreshAnnotationSummary();
+
+      // 如果有成功的结果，默认打开第一张的预览界面
+      const firstSuccess = results.find(r => r.success && r.annotations);
+      if (firstSuccess && firstSuccess.annotations) {
+        setAiAnnotationResult({
+          image: firstSuccess.image,
+          annotations: firstSuccess.annotations
+        });
+      }
+
+      // 显示汇总结果
+      const successCount = results.filter(r => r.success).length;
+      const failCount = results.filter(r => !r.success).length;
+      
+      setTimeout(() => {
+        alert(`批量标注完成！\n\n成功: ${successCount} 张\n失败: ${failCount} 张`);
+        setBatchAnnotating(false);
+        setAiProgress(0);
+        // 保留批量结果，方便后续查看；如需清空可在页面刷新时重置
+      }, 1000);
+
+    } catch (error: any) {
+      console.error('批量AI标注失败:', error);
+      alert(`批量标注失败: ${error.message || '未知错误'}`);
+      setBatchAnnotating(false);
+      setAiProgress(0);
+      setBatchProgress({
+        total: 0,
+        completed: 0,
+        current: '',
+        results: []
+      });
+    }
+  };
+
+  // 保存AI标注结果
+  const handleSaveAIAnnotation = async () => {
+    if (!aiAnnotationResult) return;
+
+    try {
+      dispatch(setLoading(true));
+      await annotationApi.saveAnnotation(aiAnnotationResult.image.id, {
+        masks: aiAnnotationResult.annotations.masks,
+        boundingBoxes: aiAnnotationResult.annotations.boundingBoxes,
+        polygons: [],
+      });
+      alert('标注已保存！');
+      setAiAnnotationResult(null);
+    } catch (error: any) {
+      console.error('保存标注失败:', error);
+      alert(`保存标注失败: ${error.message || '未知错误'}`);
+    } finally {
+      dispatch(setLoading(false));
+    }
+  };
+
+  // 编辑AI标注结果（跳转到手动标注页面）
+  const handleEditAIAnnotation = () => {
+    if (!aiAnnotationResult) return;
+    dispatch(setCurrentImage(aiAnnotationResult.image));
+    setAiAnnotationResult(null);
+    navigate('./manual-annotation');
+  };
+
+  // 打开批量结果的预览（默认查看最新一张已标注的图片）
+  const handleOpenBatchPreview = async () => {
+    console.log('🔍 handleOpenBatchPreview 调用');
+    console.log('当前项目:', currentProject);
+    console.log('annotationSummary:', annotationSummary);
+    console.log('当前内存中的图片列表(images):', images);
+
+    const latestId = annotationSummary?.latestAnnotatedImageId;
+    console.log('最新已标注图片ID latestAnnotatedImageId:', latestId);
+
+    if (!latestId) {
+      console.warn('handleOpenBatchPreview: latestAnnotatedImageId 为空');
+      alert('当前还没有AI标注结果');
+      return;
+    }
+
+    // 先在当前内存中的图片列表里查找
+    let image = images.find((img: Image) => img.id === latestId);
+    console.log('在当前 images 中匹配到的图片:', image);
+
+    // 如果没找到，尝试重新加载一次项目图片列表
+    if (!image && currentProject) {
+      try {
+        console.log('在当前 images 中未找到，尝试重新加载项目图片列表，项目ID:', currentProject.id);
+        const freshImages = await imageApi.getImages(currentProject.id);
+        console.log('重新加载的图片列表 freshImages:', freshImages);
+        dispatch(setImages(freshImages));
+        image = freshImages.find((img: Image) => img.id === latestId) || null;
+        console.log('在 freshImages 中匹配到的图片:', image);
+      } catch (e) {
+        console.warn('刷新项目图片列表失败:', e);
+      }
+    }
+
+    if (!image) {
+      console.error('handleOpenBatchPreview: 依然找不到图片, latestId =', latestId);
+      // 退一步兜底：遍历当前项目所有图片，找到第一张已经有标注的图片
+      if (!currentProject) {
+        alert('找不到可预览的图片（请刷新页面后重试）');
+        return;
+      }
+      try {
+        console.log('尝试兜底：遍历项目全部图片，查找已有标注的图片，项目ID:', currentProject.id);
+        const freshImages = await imageApi.getImages(currentProject.id);
+        console.log('兜底 freshImages:', freshImages);
+
+        let fallbackImage: Image | null = null;
+        let fallbackAnno: any = null;
+
+        for (const img of freshImages as Image[]) {
+          try {
+            console.log('尝试获取图片标注, imageId =', img.id);
+            const resp = await annotationApi.getAnnotation(img.id);
+            console.log('标注响应 resp:', resp);
+            if (resp?.annotation) {
+              fallbackImage = img;
+              fallbackAnno = resp.annotation;
+              break;
+            }
+          } catch (e) {
+            console.warn('获取单张图片标注失败, imageId =', img.id, e);
+          }
+        }
+
+        if (!fallbackImage || !fallbackAnno) {
+          alert('该项目暂无可预览的AI标注结果');
+          return;
+        }
+
+        console.log('兜底找到可预览图片及标注:', {
+          image: fallbackImage,
+          masks: fallbackAnno.masks,
+          boundingBoxes: fallbackAnno.boundingBoxes,
+        });
+
+        setAiAnnotationResult({
+          image: fallbackImage,
+          annotations: {
+            masks: fallbackAnno.masks || [],
+            boundingBoxes: fallbackAnno.boundingBoxes || [],
+          },
+        });
+        return;
+      } catch (e) {
+        console.error('兜底查找可预览图片失败:', e);
+        alert('找不到可预览的图片（请刷新页面后重试）');
+        return;
+      }
+    }
+
+    try {
+      console.log('开始从后端获取标注数据, imageId =', latestId);
+      const resp = await annotationApi.getAnnotation(latestId);
+      console.log('后端返回的标注响应 resp:', resp);
+      const anno = resp?.annotation;
+      if (!anno) {
+        console.warn('handleOpenBatchPreview: annotation 为空');
+        alert('该图片暂无标注数据');
+        return;
+      }
+      console.log('解析到的标注数据 masks/boundingBoxes:', {
+        masks: anno.masks,
+        boundingBoxes: anno.boundingBoxes,
+      });
+      setAiAnnotationResult({
+        image,
+        annotations: {
+          masks: anno.masks || [],
+          boundingBoxes: anno.boundingBoxes || [],
+        },
+      });
+    } catch (err) {
+      console.error('获取标注数据失败:', err);
+      alert('获取标注数据失败，请检查后端服务');
+    }
   };
 
   return (
@@ -108,19 +418,84 @@ const AnnotationPage: React.FC = () => {
                 
                 {/* AI标注功能区域 */}
                 <div className="ai-section">
-                  <h3>AI自动标注</h3>
-                  <button 
-                    className="ai-annotation-btn"
-                    onClick={() => {
-                      // TODO: 调用大模型进行AI标注
-                      alert('AI标注功能待实现');
-                    }}
-                  >
-                    🤖 开始AI标注
-                  </button>
+                  <div className="ai-header-row">
+                    <h3>AI自动标注</h3>
+                  </div>
+                  <div className="ai-controls">
+                    <div className="ai-prompt-group">
+                      <label className="ai-prompt-label" htmlFor="ai-prompt-input">
+                        提示词
+                      </label>
+                      <input
+                        id="ai-prompt-input"
+                        className="ai-prompt-input"
+                        type="text"
+                        placeholder="例如：person, car, text（留空=自动识别常见目标）"
+                        value={aiPrompt}
+                        onChange={(e) => setAiPrompt(e.target.value)}
+                      />
+                    </div>
+                    <button 
+                      className="ai-annotation-btn"
+                      onClick={handleBatchAIAutoAnnotation}
+                      disabled={images.length === 0 || batchAnnotating}
+                    >
+                      {batchAnnotating ? '批量标注中...' : `🤖 批量AI标注 (${images.length}张)`}
+                    </button>
+                  </div>
                   <p className="ai-description">
-                    使用SAM等大模型自动识别图像中的对象并生成标注
+                    使用Grounded SAM2模型自动识别所有图像中的对象并生成标注
                   </p>
+                  
+                  {/* 标注结果汇总模块 */}
+                  <div className="ai-summary">
+                    <div className="ai-summary-left">
+                      <div className="ai-summary-label">已完成AI标注</div>
+                      <div className="ai-summary-count">
+                        {annotationSummary?.annotatedImages ?? 0} 张
+                      </div>
+                    </div>
+                    <div className="ai-summary-right">
+                      <button 
+                        className="ai-summary-btn"
+                        onClick={handleOpenBatchPreview}
+                        disabled={!annotationSummary?.annotatedImages}
+                      >
+                        查看预览
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* 批量标注进度 */}
+                  {batchAnnotating && (
+                    <div className="ai-progress-container">
+                      <div className="batch-progress-info">
+                        <div className="batch-progress-stats">
+                          <span>进度: {batchProgress.completed}/{batchProgress.total}</span>
+                          <span>{Math.round((batchProgress.completed / batchProgress.total) * 100)}%</span>
+                        </div>
+                        {batchProgress.current && (
+                          <div className="batch-progress-current">
+                            {batchProgress.current}
+                          </div>
+                        )}
+                      </div>
+                      <div className="ai-progress-bar">
+                        <div 
+                          className="ai-progress-fill"
+                          style={{ width: `${aiProgress}%` }}
+                        />
+                      </div>
+                      <div className="ai-progress-text">
+                        {batchProgress.completed > 0 && (
+                          <div className="batch-results-summary">
+                            成功: {batchProgress.results.filter(r => r.success).length} | 
+                            失败: {batchProgress.results.filter(r => !r.success).length}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -258,6 +633,17 @@ const AnnotationPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* AI标注结果预览 */}
+      {aiAnnotationResult && (
+        <AIAnnotationPreview
+          image={aiAnnotationResult.image}
+          annotations={aiAnnotationResult.annotations}
+          onClose={() => setAiAnnotationResult(null)}
+          onSave={handleSaveAIAnnotation}
+          onEdit={handleEditAIAnnotation}
+        />
+      )}
     </div>
   );
 };

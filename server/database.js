@@ -2,6 +2,10 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 
+// 兼容 image-size 不同导出形式（v2+ 通常是 { imageSize }）
+const imageSizeModule = require('image-size');
+const sizeOf = imageSizeModule.imageSize || imageSizeModule;
+
 // 确保database目录存在
 const dbDir = path.join(__dirname, '../database');
 if (!fs.existsSync(dbDir)) {
@@ -50,6 +54,8 @@ function initializeDatabase() {
       original_name TEXT NOT NULL,
       file_path TEXT NOT NULL,
       file_size INTEGER,
+      width INTEGER,
+      height INTEGER,
       upload_time TEXT NOT NULL
     )
   `, (err) => {
@@ -57,6 +63,19 @@ function initializeDatabase() {
       console.error('创建images表失败:', err.message);
     } else {
       console.log('✅ images表创建成功');
+    }
+  });
+
+  // 为已有的images表补充width和height列（如果不存在）
+  db.run('ALTER TABLE images ADD COLUMN width INTEGER', (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.error('为images表添加width列失败:', err.message);
+    }
+  });
+
+  db.run('ALTER TABLE images ADD COLUMN height INTEGER', (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.error('为images表添加height列失败:', err.message);
     }
   });
 
@@ -114,15 +133,29 @@ function initializeDatabase() {
 const database = {
   // 插入图片信息
   insertImage: (imageData, callback) => {
+    // 计算图片宽高
+    let width = null;
+    let height = null;
+    try {
+      const buffer = fs.readFileSync(imageData.path);
+      const dimensions = sizeOf(buffer);
+      width = dimensions.width;
+      height = dimensions.height;
+    } catch (e) {
+      console.warn('获取图片尺寸失败:', e.message);
+    }
+
     const sql = `
-      INSERT INTO images (filename, original_name, file_path, file_size, upload_time)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO images (filename, original_name, file_path, file_size, width, height, upload_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `;
     const params = [
       imageData.filename,
       imageData.originalName,
       imageData.path,
       imageData.size,
+      width,
+      height,
       imageData.uploadTime
     ];
     
@@ -139,7 +172,7 @@ const database = {
   // 获取所有图片
   getAllImages: (callback) => {
     const sql = `
-      SELECT id, filename, original_name, file_path, file_size, upload_time
+      SELECT id, filename, original_name, file_path, file_size, width, height, upload_time
       FROM images
       ORDER BY upload_time DESC
     `;
@@ -149,7 +182,7 @@ const database = {
   // 根据项目ID获取图片（通过项目-图片关联表）
   getImagesByProjectId: (projectId, callback) => {
     const sql = `
-      SELECT i.id, i.filename, i.original_name, i.file_path, i.file_size, i.upload_time
+      SELECT i.id, i.filename, i.original_name, i.file_path, i.file_size, i.width, i.height, i.upload_time
       FROM images i
       INNER JOIN project_images pi ON pi.image_id = i.id
       WHERE pi.project_id = ?
@@ -161,7 +194,7 @@ const database = {
   // 根据ID获取图片
   getImageById: (id, callback) => {
     const sql = `
-      SELECT id, filename, original_name, file_path, file_size, upload_time
+      SELECT id, filename, original_name, file_path, file_size, width, height, upload_time
       FROM images
       WHERE id = ?
     `;
@@ -189,24 +222,54 @@ const database = {
     });
   },
 
-  // 保存标注数据
+  // 保存标注数据（按 imageId 覆盖旧结果，保证每张图片只有一条标注记录）
   saveAnnotation: (annotationData, callback) => {
-    const sql = `
-      INSERT OR REPLACE INTO annotations 
-      (id, image_id, mask_data, bbox_data, polygon_data, labels, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `;
-    const params = [
-      annotationData.id || `anno_${Date.now()}_${Math.random()}`,
-      annotationData.imageId,
-      JSON.stringify(annotationData.masks || []),
-      JSON.stringify(annotationData.boundingBoxes || []),
-      JSON.stringify(annotationData.polygons || []),
-      JSON.stringify(annotationData.labels || [])
-    ];
-    
-    db.run(sql, params, function(err) {
-      callback(err, this.lastID);
+    const masks = JSON.stringify(annotationData.masks || []);
+    const bboxes = JSON.stringify(annotationData.boundingBoxes || []);
+    const polygons = JSON.stringify(annotationData.polygons || []);
+    const labels = JSON.stringify(annotationData.labels || []);
+
+    // 先检查该图片是否已有标注
+    db.get('SELECT id FROM annotations WHERE image_id = ?', [annotationData.imageId], (err, row) => {
+      if (err) {
+        console.error('查询现有标注失败:', err);
+        return callback(err, null);
+      }
+
+      if (row) {
+        // 已存在标注，执行覆盖更新
+        const sqlUpdate = `
+          UPDATE annotations 
+          SET mask_data = ?, bbox_data = ?, polygon_data = ?, labels = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE image_id = ?
+        `;
+        const paramsUpdate = [masks, bboxes, polygons, labels, annotationData.imageId];
+
+        db.run(sqlUpdate, paramsUpdate, function(updateErr) {
+          if (updateErr) {
+            console.error('更新标注失败:', updateErr);
+            return callback(updateErr, null);
+          }
+          callback(null, row.id);
+        });
+      } else {
+        // 不存在标注，新建一条记录
+        const sqlInsert = `
+          INSERT INTO annotations 
+          (id, image_id, mask_data, bbox_data, polygon_data, labels, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `;
+        const annotationId = annotationData.id || `anno_${Date.now()}_${Math.random()}`;
+        const paramsInsert = [annotationId, annotationData.imageId, masks, bboxes, polygons, labels];
+
+        db.run(sqlInsert, paramsInsert, function(insertErr) {
+          if (insertErr) {
+            console.error('插入标注失败:', insertErr);
+            return callback(insertErr, null);
+          }
+          callback(null, annotationId);
+        });
+      }
     });
   },
 
@@ -236,6 +299,47 @@ const database = {
       }
       
       callback(null, row);
+    });
+  },
+
+  // 获取项目的标注汇总信息：总图片数、已标注图片数、最新标注的图片ID
+  // 注意：只统计当前仍然存在于 images 表中的图片，避免引用已删除或旧格式数据
+  getProjectAnnotationSummary: (projectId, callback) => {
+    const sql = `
+      SELECT
+        COUNT(DISTINCT i.id) AS total_images,
+        COUNT(DISTINCT a.image_id) AS annotated_images,
+        MAX(a.updated_at) AS latest_updated_at
+      FROM images i
+      INNER JOIN project_images pi ON pi.image_id = i.id
+      LEFT JOIN annotations a ON a.image_id = i.id
+      WHERE pi.project_id = ?
+    `;
+
+    db.get(sql, [projectId], (err, row) => {
+      if (err) return callback(err);
+
+      // 找到最新标注的那张图片（按 updated_at 排序），且确保图片仍存在于 images 表
+      const sqlLatest = `
+        SELECT a.image_id AS image_id
+        FROM annotations a
+        INNER JOIN project_images pi ON pi.image_id = a.image_id
+        INNER JOIN images i ON i.id = a.image_id
+        WHERE pi.project_id = ?
+        ORDER BY a.updated_at DESC
+        LIMIT 1
+      `;
+
+      db.get(sqlLatest, [projectId], (latestErr, latestRow) => {
+        if (latestErr) return callback(latestErr);
+
+        callback(null, {
+          totalImages: row?.total_images || 0,
+          annotatedImages: row?.annotated_images || 0,
+          latestAnnotatedImageId: latestRow?.image_id || null,
+          latestUpdatedAt: row?.latest_updated_at || null,
+        });
+      });
     });
   },
 

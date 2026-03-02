@@ -1,6 +1,6 @@
 # 智能图像标注系统
 
-**版本：V1.1**  
+**版本：V1.3**  
 **最后更新：2026年3月2日**
 
 ## 项目概述
@@ -94,6 +94,7 @@
 - **文件处理**: Multer
 - **跨域支持**: CORS
 - **图片处理**: image-size
+- **AI 标注服务**: Python FastAPI + Grounded SAM2 服务框架（当前接入 torchvision Mask R-CNN COCO 预训练模型作为检测/分割后端，集成在 `server/sam2-service/`）
 
 ## 项目结构
 
@@ -120,10 +121,15 @@ DAXautolabeling/
 │   │   ├── App.css        # 样式文件
 │   │   └── main.tsx       # 入口文件
 ├── server/                # 后端服务
-│   ├── index.js           # 服务器入口
+│   ├── index.js           # Node.js 服务器入口
 │   ├── database.js        # 数据库操作
 │   ├── package.json       # 后端依赖配置
 │   ├── uploads/           # 上传文件存储目录
+│   ├── sam2-service/      # Grounded SAM2 API 服务（Python）
+│   │   ├── app.py         # FastAPI 服务主文件
+│   │   ├── requirements.txt # Python 依赖
+│   │   ├── README.md      # SAM2 服务说明
+│   │   └── start_sam2.bat # SAM2 服务启动脚本
 │   └── *.js               # 工具脚本
 ├── database/              # 数据库文件目录
 │   └── annotations.db     # SQLite数据库文件
@@ -193,7 +199,24 @@ cd ../client
 npm install
 ```
 
-4. **启动服务**
+4. **配置 Python 环境（用于 Grounded SAM2 AI 标注服务）**
+```bash
+# 创建 conda 环境
+conda create -n sam2 python=3.10 -y
+conda activate sam2
+
+# 安装 Python 依赖
+cd server/sam2-service
+pip install -r requirements.txt
+
+# 安装 PyTorch（CUDA 12.1，支持 RTX 4080）
+conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+
+# 验证安装
+python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
+```
+
+5. **启动服务**
 
 **方式一：分别启动**
 ```bash
@@ -211,6 +234,24 @@ npm run dev
 **方式二：使用批处理文件一键启动（Windows）**
 ```bash
 start.bat
+```
+这会同时启动：
+- Node.js 后端服务（端口 3001）
+- Grounded SAM2 API 服务（端口 7860）
+- React 前端应用（端口 5173）
+
+**注意：首次使用需要配置 Python 环境**
+```bash
+# 1. 创建 conda 环境
+conda create -n sam2 python=3.10 -y
+conda activate sam2
+
+# 2. 安装 Python 依赖
+cd server/sam2-service
+pip install -r requirements.txt
+
+# 3. 安装 PyTorch（CUDA 12.1，支持 RTX 4080）
+conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
 ```
 
 ### 数据库初始化
@@ -289,7 +330,18 @@ start.bat
 
 ## 开发进展
 
-### V1.1 最新功能（2026年3月2日）
+### V1.3 最新功能（2026年3月2日）
+- [x] 在 Python AI 服务中接入真实检测/分割模型（torchvision Mask R-CNN COCO 预训练），替代纯模拟多边形
+- [x] 支持通过提示词（prompt）过滤类别（例如：person, car 等），并打通前端提示词输入框 → Node → Python 全链路
+- [x] 批量 AI 标注改为调用真实模型推理，自动保存结果到数据库（同一图片多次批量标注会覆盖上一版 AI 结果）
+- [x] 为模型输出增加置信度阈值、多轮筛选和兜底逻辑，在难图像上尽量保证至少返回一个合理目标
+
+### V1.2 最新功能（2026年3月2日）
+- [x] 集成 Grounded SAM2 API 服务（Python FastAPI）
+- [x] 统一启动脚本（Node.js + Python + React）
+- [x] AI 自动标注服务框架（当前返回模拟数据，待模型集成）
+
+### V1.1 功能（2026年3月2日）
 - [x] 项目管理系统（创建、查看、编辑、删除）
 - [x] 项目与图片数据集关联
 - [x] 图片按项目分类管理
@@ -308,7 +360,8 @@ start.bat
 - [x] 状态管理和数据持久化
 
 ### 待完善功能
-- [ ] 自动化标注算法集成（SAM3等）
+- [ ] 集成真正的 Grounded SAM2 模型与权重（当前使用 Mask R-CNN 作为基础检测/分割后端）
+- [ ] 9D Pose标注模块开发
 - [ ] 9D Pose标注模块开发
 - [ ] 标注数据导出功能（JSON、COCO格式等）
 - [ ] 更丰富的标注工具

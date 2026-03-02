@@ -150,6 +150,73 @@
 }
 
 /* AI标注区域 */
+/* AI标注进度条样式 */
+.ai-progress-container {
+  margin-top: 1rem;
+  width: 100%;
+}
+
+.batch-progress-info {
+  margin-bottom: 0.75rem;
+}
+
+.batch-progress-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  color: #667eea;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.batch-progress-current {
+  font-size: 0.85rem;
+  color: #666;
+  text-align: left;
+  padding: 0.5rem;
+  background: #f8f9fa;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.ai-progress-bar {
+  width: 100%;
+  height: 8px;
+  background: #e9ecef;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.ai-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+  animation: progress-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes progress-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.ai-progress-text {
+  font-size: 0.85rem;
+  color: #666;
+  text-align: center;
+}
+
+.batch-results-summary {
+  font-size: 0.8rem;
+  color: #28a745;
+  margin-top: 0.25rem;
+}
+
 .ai-section {
   margin-top: 2rem;
   padding: 1.5rem;
@@ -162,6 +229,48 @@
   margin: 0 0 1rem 0;
   color: #667eea;
   font-size: 1.2rem;
+}
+
+.ai-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.ai-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.ai-prompt-group {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.ai-prompt-label {
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.ai-prompt-input {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid #d0d7e2;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.ai-prompt-input:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.15);
 }
 
 .ai-annotation-btn {
@@ -186,6 +295,59 @@
   font-size: 0.9rem;
   margin: 0;
   line-height: 1.5;
+}
+
+.ai-summary {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #e9ecef;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.ai-summary-left {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.ai-summary-label {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.ai-summary-count {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #28a745;
+}
+
+.ai-summary-right {
+}
+
+.ai-summary-btn {
+  padding: 0.5rem 1.2rem;
+  border-radius: 6px;
+  border: 1px solid #667eea;
+  background: #fff;
+  color: #667eea;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ai-summary-btn:hover:not(:disabled) {
+  background: #f0f3ff;
+}
+
+.ai-summary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* 右侧预览区域 */

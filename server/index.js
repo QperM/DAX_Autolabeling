@@ -3,6 +3,8 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const axios = require('axios');
+const FormData = require('form-data');
 const db = require('./database');
 
 const app = express();
@@ -100,6 +102,41 @@ app.delete('/api/projects/:id', async (req, res) => {
   }
 });
 
+// 项目标注汇总（用于前端显示“已完成AI标注数量/查看预览”）
+app.get('/api/projects/:id/annotation-summary', (req, res) => {
+  try {
+    const projectId = parseInt(req.params.id);
+    if (isNaN(projectId)) {
+      return res.status(400).json({
+        success: false,
+        message: '无效的项目ID',
+      });
+    }
+
+    db.getProjectAnnotationSummary(projectId, (err, summary) => {
+      if (err) {
+        console.error('获取项目标注汇总失败:', err);
+        return res.status(500).json({
+          success: false,
+          message: '获取项目标注汇总失败',
+          error: err.message,
+        });
+      }
+
+      res.json({
+        success: true,
+        summary,
+      });
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: '获取项目标注汇总失败',
+      error: error.message,
+    });
+  }
+});
+
 // 文件上传接口
 app.post('/api/upload', upload.array('images', 10), (req, res) => {
   try {
@@ -179,43 +216,299 @@ app.post('/api/upload', upload.array('images', 10), (req, res) => {
   }
 });
 
-// 自动标注接口
+// Grounded SAM2 服务健康检查
+async function checkGroundedSAM2Health(apiUrl) {
+  try {
+    // 尝试访问健康检查端点或根路径
+    const healthUrl = apiUrl.replace('/api/auto-label', '/health').replace('/api/auto-label', '');
+    const response = await axios.get(healthUrl, { timeout: 5000 });
+    return { available: true, status: response.status };
+  } catch (error) {
+    // 如果健康检查失败，尝试访问主端点（HEAD请求）
+    try {
+      const baseUrl = apiUrl.replace('/api/auto-label', '');
+      await axios.head(baseUrl, { timeout: 5000 });
+      return { available: true, status: 200 };
+    } catch (headError) {
+      return { 
+        available: false, 
+        error: error.message || headError.message,
+        code: error.code || headError.code
+      };
+    }
+  }
+}
+
+// 自动标注接口 - 集成Grounded SAM2
 app.post('/api/annotate/auto', async (req, res) => {
   try {
     const { imageId, prompt } = req.body;
     
-    // 这里集成SAM3或其他大模型API
-    // 模拟返回标注数据
-    const mockAnnotations = {
-      masks: [
-        {
-          id: 'mask-1',
-          points: [100, 100, 200, 100, 200, 200, 100, 200],
-          label: 'object'
-        }
-      ],
-      boundingBoxes: [
-        {
-          id: 'bbox-1',
-          x: 100,
-          y: 100,
-          width: 100,
-          height: 100,
-          label: 'object'
-        }
-      ]
-    };
+    console.log(`[AI标注] 开始处理图片ID: ${imageId}, prompt: ${prompt || '无'}`);
     
-    res.json({
-      success: true,
-      annotations: mockAnnotations,
-      message: '自动标注完成'
+    // 获取图片信息
+    const image = await new Promise((resolve, reject) => {
+      db.getImageById(imageId, (err, img) => {
+        if (err) reject(err);
+        else resolve(img);
+      });
     });
+    
+    if (!image) {
+      return res.status(404).json({
+        success: false,
+        message: '图片不存在',
+        error: `未找到ID为 ${imageId} 的图片`
+      });
+    }
+    
+    const imagePath = image.file_path;
+    const imageUrl = `http://localhost:3001/uploads/${encodeURIComponent(image.filename)}`;
+    
+    console.log(`[AI标注] 图片路径: ${imagePath}, URL: ${imageUrl}`);
+    
+    // 检查文件是否存在
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({
+        success: false,
+        message: '图片文件不存在',
+        error: `图片文件路径不存在: ${imagePath}`
+      });
+    }
+    
+    // 调用Grounded SAM2 API
+    // 注意：这里需要配置Grounded SAM2服务的地址
+    // 如果Grounded SAM2运行在本地，默认端口可能是7860或其他
+    const GROUNDED_SAM2_API_URL = process.env.GROUNDED_SAM2_API_URL || 'http://localhost:7860/api/auto-label';
+    
+    // 先检查服务是否可用（可选，避免每次都检查）
+    const healthCheck = await checkGroundedSAM2Health(GROUNDED_SAM2_API_URL);
+    if (!healthCheck.available) {
+      console.warn(`[AI标注] Grounded SAM2服务健康检查失败: ${healthCheck.error} (${healthCheck.code})`);
+      console.warn(`[AI标注] API地址: ${GROUNDED_SAM2_API_URL}`);
+      console.warn(`[AI标注] 提示: 请确保Grounded SAM2服务正在运行，或检查环境变量 GROUNDED_SAM2_API_URL`);
+    }
+    
+    try {
+      console.log(`[AI标注] 调用Grounded SAM2 API: ${GROUNDED_SAM2_API_URL}`);
+      console.log(`[AI标注] 请求参数: imageId=${imageId}, prompt=${prompt || '无'}`);
+      
+      // 读取图片文件并发送到Grounded SAM2
+      const formData = new FormData();
+      
+      // 使用 image 字段名（Grounded SAM2 常用）
+      const imageStream = fs.createReadStream(imagePath);
+      formData.append('image', imageStream, path.basename(imagePath));
+      
+      // 如果 API 需要 file 字段，可以取消下面的注释
+      // const fileStream = fs.createReadStream(imagePath);
+      // formData.append('file', fileStream, path.basename(imagePath));
+      
+      if (prompt) {
+        formData.append('text_prompt', prompt);
+        // 某些 API 可能使用 prompt 字段
+        // formData.append('prompt', prompt);
+      }
+      
+      // 添加图片URL作为备用参数（某些 API 可能支持）
+      // formData.append('image_url', imageUrl);
+      
+      console.log(`[AI标注] FormData字段: image${prompt ? ', text_prompt' : ''}`);
+      
+      // 调用Grounded SAM2 API
+      const samResponse = await axios.post(GROUNDED_SAM2_API_URL, formData, {
+        headers: {
+          ...formData.getHeaders(),
+          // 某些API可能需要特定的Content-Type
+          // 'Content-Type': 'multipart/form-data'
+        },
+        timeout: 120000, // 120秒超时（AI处理可能需要更长时间）
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      });
+      
+      console.log(`[AI标注] Grounded SAM2响应状态: ${samResponse.status}`);
+      console.log(`[AI标注] Grounded SAM2响应头:`, JSON.stringify(samResponse.headers, null, 2));
+      console.log(`[AI标注] Grounded SAM2响应数据:`, JSON.stringify(samResponse.data, null, 2));
+      
+      // 解析Grounded SAM2的响应并转换为我们的格式
+      const samData = samResponse.data;
+      
+      // 转换标注数据格式
+      const annotations = {
+        masks: [],
+        boundingBoxes: []
+      };
+      
+      // 如果Grounded SAM2返回的是标准格式
+      if (samData.masks || samData.segments) {
+        const segments = samData.masks || samData.segments || [];
+        console.log(`[AI标注] 检测到 ${segments.length} 个标注段`);
+        
+        segments.forEach((segment, index) => {
+          // 处理Mask数据
+          if (segment.points || segment.contour) {
+            const points = segment.points || segment.contour || [];
+            annotations.masks.push({
+              id: `mask-${imageId}-${index}`,
+              points: points.flat(), // 展平点数组 [x1, y1, x2, y2, ...]
+              label: segment.label || segment.class || 'object',
+            });
+          }
+          
+          // 处理边界框数据
+          if (segment.bbox || (segment.x && segment.y && segment.width && segment.height)) {
+            const bbox = segment.bbox || {
+              x: segment.x,
+              y: segment.y,
+              width: segment.width,
+              height: segment.height
+            };
+            annotations.boundingBoxes.push({
+              id: `bbox-${imageId}-${index}`,
+              x: bbox.x || bbox[0] || 0,
+              y: bbox.y || bbox[1] || 0,
+              width: bbox.width || (bbox[2] - bbox[0]) || 0,
+              height: bbox.height || (bbox[3] - bbox[1]) || 0,
+              label: segment.label || segment.class || 'object',
+            });
+          }
+        });
+      } else if (samData.annotations) {
+        // 如果返回的是 annotations 字段
+        console.log(`[AI标注] 检测到 annotations 字段格式`);
+        const segments = Array.isArray(samData.annotations) ? samData.annotations : [samData.annotations];
+        segments.forEach((segment, index) => {
+          if (segment.mask || segment.points) {
+            const points = segment.mask || segment.points || [];
+            annotations.masks.push({
+              id: `mask-${imageId}-${index}`,
+              points: points.flat(),
+              label: segment.label || segment.class || 'object',
+            });
+          }
+          if (segment.bbox || segment.bounding_box) {
+            const bbox = segment.bbox || segment.bounding_box;
+            annotations.boundingBoxes.push({
+              id: `bbox-${imageId}-${index}`,
+              x: bbox.x || bbox[0] || 0,
+              y: bbox.y || bbox[1] || 0,
+              width: bbox.width || (bbox[2] - bbox[0]) || 0,
+              height: bbox.height || (bbox[3] - bbox[1]) || 0,
+              label: segment.label || segment.class || 'object',
+            });
+          }
+        });
+      } else {
+        // 如果返回格式不同，尝试适配
+        console.warn('[AI标注] Grounded SAM2返回格式未识别，尝试直接使用原始数据');
+        console.warn('[AI标注] 原始响应结构:', Object.keys(samData));
+        // 可以在这里添加更多格式适配逻辑
+      }
+      
+      console.log(`[AI标注] 转换后的标注数据:`, JSON.stringify(annotations, null, 2));
+      console.log(`[AI标注] 标注统计: ${annotations.masks.length} 个masks, ${annotations.boundingBoxes.length} 个boundingBoxes`);
+      
+      res.json({
+        success: true,
+        annotations: annotations,
+        message: `自动标注完成，检测到 ${annotations.masks.length + annotations.boundingBoxes.length} 个对象`
+      });
+      
+    } catch (samError) {
+      // 详细的错误日志
+      console.error('[AI标注] ========== Grounded SAM2 API调用失败 ==========');
+      console.error('[AI标注] 错误类型:', samError.constructor.name);
+      console.error('[AI标注] 错误消息:', samError.message);
+      console.error('[AI标注] 错误代码:', samError.code);
+      console.error('[AI标注] 错误状态码:', samError.response?.status);
+      console.error('[AI标注] 错误响应数据:', samError.response?.data);
+      console.error('[AI标注] 请求URL:', GROUNDED_SAM2_API_URL);
+      console.error('[AI标注] 请求配置:', {
+        timeout: samError.config?.timeout,
+        method: samError.config?.method,
+        headers: samError.config?.headers
+      });
+      if (samError.stack) {
+        console.error('[AI标注] 错误堆栈:', samError.stack);
+      }
+      console.error('[AI标注] ============================================');
+      
+      // 如果Grounded SAM2服务不可用，返回模拟数据（用于测试）
+      if (samError.code === 'ECONNREFUSED' || samError.code === 'ETIMEDOUT' || samError.code === 'ENOTFOUND') {
+        console.warn('[AI标注] Grounded SAM2服务不可用，返回模拟数据用于测试');
+        console.warn(`[AI标注] 解决方案:`);
+        console.warn(`[AI标注] 1. 确保Grounded SAM2服务正在运行`);
+        console.warn(`[AI标注] 2. 检查服务地址是否正确: ${GROUNDED_SAM2_API_URL}`);
+        console.warn(`[AI标注] 3. 可以通过环境变量设置: GROUNDED_SAM2_API_URL=http://your-service:port/api/auto-label`);
+        
+        // 获取图片尺寸（用于生成合理的模拟标注）
+        let imgWidth = image.width || 800;
+        let imgHeight = image.height || 600;
+        if (!imgWidth || !imgHeight) {
+          const imageSizeModule = require('image-size');
+          const sizeFn = imageSizeModule.imageSize || imageSizeModule;
+          try {
+            const buffer = fs.readFileSync(imagePath);
+            const dimensions = sizeFn(buffer);
+            imgWidth = dimensions.width;
+            imgHeight = dimensions.height;
+            console.log(`[AI标注] 从文件读取图片尺寸: ${imgWidth}x${imgHeight}`);
+          } catch (e) {
+            console.warn('[AI标注] 无法获取图片尺寸，使用默认值:', e.message);
+          }
+        } else {
+          console.log(`[AI标注] 使用数据库中的图片尺寸: ${imgWidth}x${imgHeight}`);
+        }
+        
+        const mockAnnotations = {
+          masks: [
+            {
+              id: `mask-${imageId}-1`,
+              points: [
+                imgWidth * 0.2, imgHeight * 0.2,
+                imgWidth * 0.4, imgHeight * 0.2,
+                imgWidth * 0.4, imgHeight * 0.4,
+                imgWidth * 0.2, imgHeight * 0.4
+              ],
+              label: prompt || 'object'
+            }
+          ],
+          boundingBoxes: [
+            {
+              id: `bbox-${imageId}-1`,
+              x: imgWidth * 0.2,
+              y: imgHeight * 0.2,
+              width: imgWidth * 0.2,
+              height: imgHeight * 0.2,
+              label: prompt || 'object'
+            }
+          ]
+        };
+        
+        res.json({
+          success: true,
+          annotations: mockAnnotations,
+          message: '自动标注完成（使用模拟数据，Grounded SAM2服务未连接）',
+          warning: `Grounded SAM2服务不可用: ${samError.message}。请检查服务是否运行在 ${GROUNDED_SAM2_API_URL}`
+        });
+      } else {
+        throw samError;
+      }
+    }
+    
   } catch (error) {
+    console.error('[AI标注] ========== 处理失败 ==========');
+    console.error('[AI标注] 错误类型:', error.constructor.name);
+    console.error('[AI标注] 错误消息:', error.message);
+    console.error('[AI标注] 错误堆栈:', error.stack);
+    console.error('[AI标注] =============================');
+    
     res.status(500).json({
       success: false,
       message: '自动标注失败',
-      error: error.message
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
@@ -310,6 +603,8 @@ app.get('/api/images', (req, res) => {
         originalName: img.original_name,
         url: `/uploads/${encodeURIComponent(img.filename)}`,
         size: img.file_size,
+        width: img.width,
+        height: img.height,
         uploadTime: img.upload_time
       }));
       
