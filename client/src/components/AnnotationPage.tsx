@@ -529,14 +529,14 @@ const AnnotationPage: React.FC = () => {
                 {/* AI标注功能区域 */}
                 <div className="ai-section">
                   <div className="ai-header-row">
-                    <h3>AI自动标注</h3>
+                  <h3>AI自动标注</h3>
                   </div>
                   <div className="ai-controls">
                     <div className="ai-prompt-group">
-                      <button
+                  <button 
                         type="button"
                         className="ai-prompt-manage-btn"
-                        onClick={() => {
+                    onClick={() => {
                           if (aiPrompts.length === 0) {
                             setAiPrompts(['']);
                           }
@@ -555,9 +555,9 @@ const AnnotationPage: React.FC = () => {
                       className="ai-annotation-btn"
                       onClick={handleBatchAIAutoAnnotation}
                       disabled={images.length === 0 || batchAnnotating}
-                    >
+                  >
                       {batchAnnotating ? '批量标注中...' : `🤖 批量AI标注 (${images.length}张)`}
-                    </button>
+                  </button>
                   </div>
                   <p className="ai-description">
                     使用Grounded SAM2模型自动识别所有图像中的对象并生成标注
@@ -648,14 +648,14 @@ const AnnotationPage: React.FC = () => {
                     </button>
 
                     <div className="preview-actions-center">
-                      <button 
-                        className="start-annotation-btn"
-                        onClick={() => handleStartManualAnnotation(selectedPreviewImage)}
-                      >
-                        开始人工标注
-                      </button>
-                      <button 
-                        className="delete-image-btn"
+                    <button 
+                      className="start-annotation-btn"
+                      onClick={() => handleStartManualAnnotation(selectedPreviewImage)}
+                    >
+                      开始人工标注
+                    </button>
+                    <button 
+                      className="delete-image-btn"
                         onClick={async (e) => {
                         e.stopPropagation();
                         if (window.confirm(`确定要删除图片 "${selectedPreviewImage.originalName}" 吗？`)) {
@@ -670,9 +670,9 @@ const AnnotationPage: React.FC = () => {
                             await imageApi.deleteImage(imageId);
                             console.log(`[前端] API调用成功，图片ID ${imageId} 已从数据库删除`);
                             
-                            // 从Redux状态中移除图片
-                            dispatch({
-                              type: 'annotation/removeImage',
+                          // 从Redux状态中移除图片
+                          dispatch({
+                            type: 'annotation/removeImage',
                               payload: imageId
                             });
                             console.log(`[前端] 已从Redux状态中移除图片ID: ${imageId}`);
@@ -699,8 +699,8 @@ const AnnotationPage: React.FC = () => {
                           }
                         }
                       }}
-                        >
-                        🗑️ 删除图片
+                    >
+                      🗑️ 删除图片
                       </button>
                     </div>
 

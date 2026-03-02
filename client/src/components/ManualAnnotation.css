@@ -167,6 +167,33 @@
   margin-top: 2px;
 }
 
+.eraser-wrapper {
+  position: relative;
+  margin-right: 0.75rem;
+}
+
+.eraser-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 0.5rem;
+  background: #ffffff;
+  border-radius: 10px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+  border: 1px solid #e9ecef;
+  padding: 0.75rem 0.9rem;
+  min-width: 220px;
+  z-index: 10;
+}
+
+.eraser-wrapper .eraser-dropdown {
+  display: none;
+}
+
+.eraser-wrapper.open .eraser-dropdown {
+  display: block;
+}
+
 /* 画笔控制 */
 .brush-controls {
   background: #f8f9fa;

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { setCurrentImage } from '../store/annotationSlice';
@@ -17,6 +17,8 @@ const ManualAnnotation: React.FC = () => {
   const [masks, setMasks] = useState<Mask[]>([]);
   const [boundingBoxes, setBoundingBoxes] = useState<BoundingBox[]>([]);
   const [polygons, setPolygons] = useState<Polygon[]>([]);
+  const [showEraserDropdown, setShowEraserDropdown] = useState(false);
+  const eraserWrapperRef = useRef<HTMLDivElement | null>(null);
 
   // 检查是否有选中的图片
   useEffect(() => {
@@ -83,6 +85,21 @@ const ManualAnnotation: React.FC = () => {
   const handleToolSelect = (tool: string) => {
     setSelectedTool(tool);
   };
+
+  // 点击外部时关闭橡皮擦笔刷下拉
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!showEraserDropdown) return;
+      if (eraserWrapperRef.current && !eraserWrapperRef.current.contains(event.target as Node)) {
+        setShowEraserDropdown(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showEraserDropdown]);
 
   const handleBack = () => {
     dispatch(setCurrentImage(null));
@@ -169,21 +186,50 @@ const ManualAnnotation: React.FC = () => {
 
       {/* 主工作区域 */}
       <div className="annotation-main">
-        {/* 左侧悬浮面板 - 仅保留橡皮擦工具 */}
+        {/* 左侧悬浮面板 - 橡皮擦 / 选择工具 */}
         <div className="annotation-left-panel">
           <div className="tool-section">
-            <button
-              className={`eraser-card ${selectedTool === 'eraser' ? 'active' : ''}`}
-              onClick={() => handleToolSelect('eraser')}
-              title="橡皮擦"
-            >
-              <div className="eraser-icon-box">
-                <span className="eraser-icon">🧹</span>
+            <div className={`eraser-wrapper ${showEraserDropdown ? 'open' : ''}`} ref={eraserWrapperRef}>
+              <button
+                className={`eraser-card ${selectedTool === 'eraser' ? 'active' : ''}`}
+                onClick={() => {
+                  handleToolSelect('eraser');
+                  setShowEraserDropdown(prev => !prev);
+                }}
+                title="橡皮擦"
+              >
+                <div className="eraser-icon-box">
+                  <span className="eraser-icon">🧹</span>
+                </div>
+                <div className="eraser-text-box">
+                  <div className="eraser-title">橡皮擦</div>
+                </div>
+              </button>
+              <div className="eraser-dropdown">
+                <div className="brush-controls">
+                  <div className="size-slider">
+                    <input
+                      type="range"
+                      min={5}
+                      max={80}
+                      step={1}
+                      value={brushSize}
+                      onChange={(e) => setBrushSize(Number(e.target.value))}
+                    />
+                    <span className="size-value">{brushSize}px</span>
+                  </div>
+                  <div className="brush-preview">
+                    <div
+                      className="brush-circle"
+                      style={{
+                        width: `${brushSize}px`,
+                        height: `${brushSize}px`,
+                      }}
+                    />
+                  </div>
+                </div>
               </div>
-              <div className="eraser-text-box">
-                <div className="eraser-title">橡皮擦</div>
-              </div>
-            </button>
+            </div>
 
             <button
               className={`select-card ${selectedTool === 'select' ? 'active' : ''}`}

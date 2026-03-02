@@ -32,6 +32,74 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   const [isErasing, setIsErasing] = useState(false); // 橡皮擦状态
   const [currentPoints, setCurrentPoints] = useState<number[]>([]);
   const [eraserCenter, setEraserCenter] = useState<{ x: number; y: number } | null>(null);
+  const [selectedPoint, setSelectedPoint] = useState<{ maskId: string; pointIndex: number } | null>(null);
+
+  // 键盘快捷键：Delete 删除点，I 插入新点
+  useEffect(() => {
+    if (toolMode !== 'select') return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!selectedPoint) return;
+      const { maskId, pointIndex } = selectedPoint;
+
+      // 删除当前点
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const updatedMasks = masks.map(mask => {
+          if (mask.id !== maskId) return mask;
+          if (!mask.points || mask.points.length <= 6) {
+            // 至少保留三角形
+            return mask;
+          }
+          const newPoints = [...mask.points];
+          // 删除该点的 x,y
+          newPoints.splice(pointIndex * 2, 2);
+          return {
+            ...mask,
+            points: newPoints,
+          };
+        });
+        onMaskUpdate(updatedMasks);
+        setSelectedPoint(null);
+      }
+
+      // 插入新点（在当前点和下一个点之间插值）
+      if (e.key === 'i' || e.key === 'I') {
+        const updatedMasks = masks.map(mask => {
+          if (mask.id !== maskId) return mask;
+          const pts = mask.points;
+          if (!pts || pts.length < 6) return mask;
+
+          const count = pts.length / 2;
+          const currentIdx = pointIndex;
+          const nextIdx = (currentIdx + 1) % count;
+
+          const cx = pts[currentIdx * 2];
+          const cy = pts[currentIdx * 2 + 1];
+          const nx = pts[nextIdx * 2];
+          const ny = pts[nextIdx * 2 + 1];
+
+          const mx = (cx + nx) / 2;
+          const my = (cy + ny) / 2;
+
+          const newPoints = [...pts];
+          newPoints.splice((currentIdx + 1) * 2, 0, mx, my);
+
+          return {
+            ...mask,
+            points: newPoints,
+          };
+        });
+        onMaskUpdate(updatedMasks);
+        // 选中新插入的点（当前点之后）
+        setSelectedPoint({ maskId, pointIndex: pointIndex + 1 });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [toolMode, selectedPoint, masks, onMaskUpdate]);
 
   // 计算图像尺寸和位置
   useEffect(() => {
@@ -184,28 +252,35 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       onMaskUpdate(updatedMasks);
     };
 
-    const radius = 5;
+    const baseRadius = 5;
 
     return masks.flatMap(mask => {
       const circles: JSX.Element[] = [];
       for (let i = 0; i < mask.points.length; i += 2) {
         const x = mask.points[i] * imageScale;
         const y = mask.points[i + 1] * imageScale;
-        const key = `${mask.id}-pt-${i / 2}`;
+        const idx = i / 2;
+        const key = `${mask.id}-pt-${idx}`;
+        const isSelected =
+          selectedPoint && selectedPoint.maskId === mask.id && selectedPoint.pointIndex === idx;
 
         circles.push(
           <Circle
             key={key}
             x={x}
             y={y}
-            radius={radius}
-            fill="#ffffff"
-            stroke={mask.color || '#ff0000'}
-            strokeWidth={2}
+            radius={isSelected ? baseRadius + 2 : baseRadius}
+            fill={isSelected ? '#667eea' : '#ffffff'}
+            stroke={isSelected ? '#667eea' : (mask.color || '#ff0000')}
+            strokeWidth={isSelected ? 3 : 2}
             draggable
             onDragEnd={(e) => {
               const node = e.target;
-              handlePointDrag(mask.id, i / 2, node.x(), node.y());
+              handlePointDrag(mask.id, idx, node.x(), node.y());
+            }}
+            onClick={(e) => {
+              e.cancelBubble = true;
+              setSelectedPoint({ maskId: mask.id, pointIndex: idx });
             }}
           />
         );
