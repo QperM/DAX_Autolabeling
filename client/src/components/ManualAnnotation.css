@@ -69,78 +69,95 @@
   flex: 1;
   display: flex;
   overflow: hidden;
+  position: relative;
 }
 
-/* 左侧面板 */
+/* 顶部工具栏（类似浏览器上边栏样式） */
 .annotation-left-panel {
-  width: 280px;
-  background: white;
-  border-right: 1px solid #dee2e6;
-  padding: 1.5rem;
-  overflow-y: auto;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 300px; /* 预留右侧属性面板宽度 */
+  height: 56px;
+  z-index: 5;
+  padding: 0 1.5rem;
   display: flex;
-  flex-direction: column;
-  gap: 2rem;
-  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.05); /* 添加轻微阴影增强层次感 */
+  align-items: center;
+  justify-content: flex-start;
+  background: #ffffff;
+  border-bottom: 1px solid #e1e5e9;
+}
+
+.annotation-left-panel .tool-section {
+  display: inline-flex;
 }
 
 .tool-section h3 {
-  margin: 0 0 1rem 0;
-  color: #212529; /* 更深的文字颜色 */
-  font-size: 1.05rem;
-  font-weight: 600;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.1); /* 添加文字阴影增强可读性 */
+  display: none;
 }
 
 .tools-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
+  display: none;
 }
 
-.tool-button {
+/* 橡皮擦卡片：一个大框，里面左右两个小区域（图标 + 文字说明） */
+.eraser-card {
+  display: flex;
+  align-items: center;
+  border-radius: 10px;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid #ced4da;
   background: #ffffff;
-  border: 2px solid #ced4da;
-  border-radius: 8px;
-  padding: 1rem 0.5rem;
   cursor: pointer;
   transition: all 0.2s ease;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.5rem;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08); /* 添加阴影 */
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
 }
 
-.tool-button:hover {
+.eraser-card:hover {
   background: #f8f9fa;
   border-color: #adb5bd;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
 }
 
-.tool-button.active {
-  background: #667eea;
+.eraser-card.active {
   border-color: #667eea;
-  color: white;
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+  background: #eef1ff;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.25);
 }
 
-.tool-button.active:hover {
-  background: #5a6fd8;
-  border-color: #5a6fd8;
-  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+.eraser-icon-box {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #667eea;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  margin-right: 0.75rem;
+  flex-shrink: 0;
 }
 
-.tool-icon {
-  font-size: 1.5rem;
+.eraser-icon {
+  font-size: 1.2rem;
 }
 
-.tool-label {
-  font-size: 0.9rem;
-  font-weight: 500;
-  color: #212529; /* 深色文字提高对比度 */
-  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.5); /* 白色阴影增强可读性 */
+.eraser-text-box {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.eraser-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #212529;
+}
+
+.eraser-desc {
+  font-size: 0.8rem;
+  color: #6c757d;
+  margin-top: 2px;
 }
 
 /* 画笔控制 */
@@ -378,19 +395,20 @@
   justify-content: space-between;
   align-items: center;
   padding: 0.75rem;
-  background: #f8f9fa;
+  background: #f1f3f5;
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s ease;
+  color: #212529;
 }
 
 .layer-item:hover {
-  background: #e9ecef;
+  background: #dee2e6;
 }
 
 .layer-item.active {
-  background: #667eea;
-  color: white;
+  background: #4c6fff;
+  color: #ffffff;
 }
 
 .layer-item.active .layer-visible {
@@ -428,7 +446,7 @@
 /* 响应式设计 */
 @media (max-width: 1200px) {
   .annotation-left-panel {
-    width: 240px;
+    right: 260px; /* 与缩窄后的右侧面板宽度保持一致，始终左右填充满 */
   }
   
   .annotation-right-panel {

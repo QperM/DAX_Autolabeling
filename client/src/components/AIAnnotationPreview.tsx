@@ -8,6 +8,9 @@ interface AIAnnotationPreviewProps {
     masks: Mask[];
     boundingBoxes: BoundingBox[];
   };
+  images?: Image[]; // 可切换预览的已标注图片列表
+  currentImageId?: number;
+  onSelectImage?: (image: Image) => void;
   onClose: () => void;
   onSave: () => void;
   onEdit: () => void;
@@ -16,12 +19,16 @@ interface AIAnnotationPreviewProps {
 const AIAnnotationPreview: React.FC<AIAnnotationPreviewProps> = ({
   image,
   annotations,
+  images = [],
+  currentImageId,
+  onSelectImage,
   onClose,
   onSave,
   onEdit,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const [imageLoaded, setImageLoaded] = useState(false);
 
   // 生成随机颜色
@@ -41,38 +48,43 @@ const AIAnnotationPreview: React.FC<AIAnnotationPreviewProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx || !imageRef.current) return;
 
+    const img = imageRef.current;
+    const scaleX = canvas.width / img.width;
+    const scaleY = canvas.height / img.height;
+
     // 清空画布
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     // 绘制图片
     ctx.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height);
 
-    // 绘制边界框
+    // 绘制边界框（只画框，不显示文字标签）
     annotations.boundingBoxes.forEach((bbox, index) => {
       const color = generateColor(index);
       ctx.strokeStyle = color;
       ctx.lineWidth = 3;
-      ctx.strokeRect(bbox.x, bbox.y, bbox.width, bbox.height);
+      ctx.strokeRect(
+        bbox.x * scaleX,
+        bbox.y * scaleY,
+        bbox.width * scaleX,
+        bbox.height * scaleY
+      );
 
-      // 绘制标签
-      ctx.fillStyle = color;
-      ctx.font = 'bold 14px Arial';
-      ctx.fillText(bbox.label, bbox.x, bbox.y - 5);
     });
 
-    // 绘制Mask（多边形）
+    // 绘制Mask（多边形，只画区域，不显示文字标签）
     annotations.masks.forEach((mask, index) => {
       if (mask.points.length < 6) return; // 至少需要3个点
 
-      const color = generateColor(index);
+      const color = generateColor(annotations.boundingBoxes.length + index);
       ctx.fillStyle = color + '80'; // 添加透明度
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;
 
       ctx.beginPath();
       for (let i = 0; i < mask.points.length; i += 2) {
-        const x = mask.points[i];
-        const y = mask.points[i + 1];
+        const x = mask.points[i] * scaleX;
+        const y = mask.points[i + 1] * scaleY;
         if (i === 0) {
           ctx.moveTo(x, y);
         } else {
@@ -83,25 +95,37 @@ const AIAnnotationPreview: React.FC<AIAnnotationPreviewProps> = ({
       ctx.fill();
       ctx.stroke();
 
-      // 绘制标签
-      if (mask.points.length >= 2) {
-        ctx.fillStyle = color;
-        ctx.font = 'bold 12px Arial';
-        ctx.fillText(mask.label, mask.points[0], mask.points[1] - 5);
-      }
     });
   }, [annotations, imageLoaded]);
 
   // 加载图片并设置画布尺寸
   useEffect(() => {
+    if (!image?.url) {
+      console.warn('[AI预览] image.url 为空，无法加载图片', image);
+      setImageLoaded(false);
+      return;
+    }
+
+    console.log('[AI预览] 开始加载图片:', image);
+    setImageLoaded(false);
+
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
+      console.log('[AI预览] 图片加载完成, 原始尺寸:', img.width, img.height);
       imageRef.current = img;
       if (canvasRef.current) {
         const canvas = canvasRef.current;
-        const maxWidth = 1200;
-        const maxHeight = 800;
+        // 优先根据容器尺寸来适配画布，让画布“贴合”左侧预览区域
+        let maxWidth = 1200;
+        let maxHeight = 800;
+        if (containerRef.current) {
+          const rect = containerRef.current.getBoundingClientRect();
+          // 略微减去内边距，避免顶到边缘
+          maxWidth = rect.width - 32;
+          maxHeight = rect.height - 32;
+          console.log('[AI预览] 容器尺寸:', rect.width, rect.height, 'maxWidth:', maxWidth, 'maxHeight:', maxHeight);
+        }
         let width = img.width;
         let height = img.height;
 
@@ -113,11 +137,12 @@ const AIAnnotationPreview: React.FC<AIAnnotationPreviewProps> = ({
 
         canvas.width = width;
         canvas.height = height;
+        console.log('[AI预览] 画布尺寸设置为:', width, height);
         setImageLoaded(true);
       }
     };
-    img.onerror = () => {
-      console.error('图片加载失败');
+    img.onerror = (e) => {
+      console.error('[AI预览] 图片加载失败:', e, 'src =', `http://localhost:3001${image.url}`);
       setImageLoaded(false);
     };
     img.src = `http://localhost:3001${image.url}?t=${Date.now()}`;
@@ -141,11 +166,17 @@ const AIAnnotationPreview: React.FC<AIAnnotationPreviewProps> = ({
         </div>
 
         <div className="ai-preview-content">
-          <div className="ai-preview-image-container">
+          <div className="ai-preview-image-container" ref={containerRef}>
             <canvas ref={canvasRef} className="ai-preview-canvas" />
             {!imageLoaded && (
               <div className="image-loading">加载图片中...</div>
             )}
+            <div className="ai-preview-image-info">
+              <span className="image-name" title={image.originalName}>
+                {image.originalName}
+              </span>
+              <span className="image-id">ID: {image.id}</span>
+            </div>
           </div>
 
           <div className="ai-preview-sidebar">
@@ -171,7 +202,7 @@ const AIAnnotationPreview: React.FC<AIAnnotationPreviewProps> = ({
                         className="color-indicator"
                         style={{ backgroundColor: generateColor(index) }}
                       />
-                      <span className="item-label">{bbox.label}</span>
+                      {/* 隐藏具体 label 名称，只保留类型信息 */}
                       <span className="item-type">边界框</span>
                     </div>
                   ))}
@@ -181,9 +212,33 @@ const AIAnnotationPreview: React.FC<AIAnnotationPreviewProps> = ({
                         className="color-indicator"
                         style={{ backgroundColor: generateColor(annotations.boundingBoxes.length + index) }}
                       />
-                      <span className="item-label">{mask.label}</span>
+                      {/* 隐藏具体 label 名称，只保留类型信息 */}
                       <span className="item-type">Mask</span>
                     </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {images.length > 0 && (
+              <div className="annotation-thumbnails">
+                <h3>已标注图片</h3>
+                <div className="annotation-thumbnails-grid">
+                  {images.map((img) => (
+                    <button
+                      key={img.id}
+                      type="button"
+                      className={`annotation-thumb ${currentImageId === img.id ? 'active' : ''}`}
+                      onClick={() => onSelectImage && onSelectImage(img)}
+                    >
+                      <div className="annotation-thumb-image-wrapper">
+                        <img
+                          src={`http://localhost:3001${img.url}`}
+                          alt={img.originalName}
+                          className="annotation-thumb-image"
+                        />
+                      </div>
+                    </button>
                   ))}
                 </div>
               </div>

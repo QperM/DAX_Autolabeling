@@ -12,8 +12,9 @@ from PIL import Image
 import io
 import numpy as np
 import os
-from typing import Optional
+from typing import Optional, List
 import sys
+from skimage import measure
 
 # 尝试导入 PyTorch / torchvision（用于真实模型推理）
 try:
@@ -189,6 +190,7 @@ async def auto_label(
                 boxes = outputs.get("boxes", [])
                 labels = outputs.get("labels", [])
                 scores = outputs.get("scores", [])
+                masks_prob = outputs.get("masks", None)
 
                 if hasattr(boxes, "cpu"):
                     boxes = boxes.cpu().numpy()
@@ -196,6 +198,12 @@ async def auto_label(
                     labels = labels.cpu().numpy()
                 if hasattr(scores, "cpu"):
                     scores = scores.cpu().numpy()
+                masks_np = None
+                if masks_prob is not None:
+                    if hasattr(masks_prob, "cpu"):
+                        masks_prob = masks_prob.cpu().numpy()
+                    # 形状通常是 [N, 1, H, W] 或 [N, H, W]
+                    masks_np = masks_prob
 
                 # 第一轮评分阈值（稍微保守一点）
                 base_score_thresh = 0.5
@@ -225,12 +233,31 @@ async def auto_label(
                             if not any(tok in name_lower for tok in prompt_tokens):
                                 continue
 
-                        rect_points = [
-                            x1, y1,
-                            x2, y1,
-                            x2, y2,
-                            x1, y2,
-                        ]
+                        # 优先根据 mask 生成更精细的多边形轮廓；如果没有 mask，则退回矩形
+                        polygon_points: List[float] = []
+                        if masks_np is not None and len(masks_np) > i:
+                            mask_i = masks_np[i]
+                            # [1, H, W] -> [H, W]
+                            if mask_i.ndim == 3:
+                                mask_i = mask_i[0]
+                            binary = (mask_i >= 0.5).astype(float)
+                            contours = measure.find_contours(binary, 0.5)
+                            if contours:
+                                # 取点数最多的一条轮廓，并适当抽样，避免点太密
+                                contour = max(contours, key=lambda c: c.shape[0])
+                                step = max(1, len(contour) // 80)  # 最多控制在 ~80 个点
+                                for (row, col) in contour[::step]:
+                                    # 注意 find_contours 返回 (row, col) = (y, x)
+                                    polygon_points.extend([float(col), float(row)])
+
+                        # 如果没拿到轮廓，多边形退回成矩形四个点
+                        if not polygon_points:
+                            polygon_points = [
+                                x1, y1,
+                                x2, y1,
+                                x2, y2,
+                                x1, y2,
+                            ]
 
                         mask_id = f"mask-{i}"
                         seg_id = f"segment-{i}"
@@ -238,7 +265,7 @@ async def auto_label(
                         result_masks.append(
                             {
                                 "id": mask_id,
-                                "points": rect_points,
+                                "points": polygon_points,
                                 "label": label_name,
                                 "score": score,
                             }
@@ -247,7 +274,7 @@ async def auto_label(
                             {
                                 "id": seg_id,
                                 "bbox": [x1, y1, x2, y2],
-                                "points": rect_points,
+                                "points": polygon_points,
                                 "label": label_name,
                                 "score": score,
                             }
@@ -282,17 +309,31 @@ async def auto_label(
                     else:
                         label_name = f"class_{label_idx}"
 
-                    rect_points = [
-                        x1, y1,
-                        x2, y1,
-                        x2, y2,
-                        x1, y2,
-                    ]
+                    polygon_points: List[float] = []
+                    if masks_np is not None and len(masks_np) > best_idx:
+                        mask_i = masks_np[best_idx]
+                        if mask_i.ndim == 3:
+                            mask_i = mask_i[0]
+                        binary = (mask_i >= 0.5).astype(float)
+                        contours = measure.find_contours(binary, 0.5)
+                        if contours:
+                            contour = max(contours, key=lambda c: c.shape[0])
+                            step = max(1, len(contour) // 80)
+                            for (row, col) in contour[::step]:
+                                polygon_points.extend([float(col), float(row)])
+
+                    if not polygon_points:
+                        polygon_points = [
+                            x1, y1,
+                            x2, y1,
+                            x2, y2,
+                            x1, y2,
+                        ]
 
                     result_masks.append(
                         {
                             "id": "mask-best",
-                            "points": rect_points,
+                            "points": polygon_points,
                             "label": label_name,
                             "score": best_score,
                         }
@@ -301,7 +342,7 @@ async def auto_label(
                         {
                             "id": "segment-best",
                             "bbox": [x1, y1, x2, y2],
-                            "points": rect_points,
+                            "points": polygon_points,
                             "label": label_name,
                             "score": best_score,
                         }

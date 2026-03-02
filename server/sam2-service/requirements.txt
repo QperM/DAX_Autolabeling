@@ -6,6 +6,7 @@ python-multipart==0.0.6
 # 图像处理
 pillow==10.1.0
 numpy==1.24.3
+scikit-image==0.21.0
 
 # PyTorch（CUDA 12.1 版本，支持 RTX 4080）
 # 注意：如果使用 conda，可以用以下命令安装：

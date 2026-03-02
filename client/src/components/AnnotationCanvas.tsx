@@ -27,6 +27,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   const [image] = useImage(imageUrl);
   const stageRef = useRef<any>(null);
   const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
+  const [imageScale, setImageScale] = useState(1);
   const [isDrawing, setIsDrawing] = useState(false);
   const [currentPoints, setCurrentPoints] = useState<number[]>([]);
 
@@ -43,6 +44,11 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
           maxHeight / image.height
         );
         
+        console.log('[AnnotationCanvas] 原始图片尺寸:', image.width, image.height);
+        console.log('[AnnotationCanvas] 容器最大尺寸:', maxWidth, maxHeight);
+        console.log('[AnnotationCanvas] 计算得到的缩放比例 scale =', scale);
+
+        setImageScale(scale);
         setStageSize({
           width: image.width * scale,
           height: image.height * scale
@@ -92,7 +98,10 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     return masks.map(mask => (
       <Line
         key={mask.id}
-        points={mask.points}
+        points={mask.points.map((value, index) => 
+          // 统一按 imageScale 进行缩放，保证与图片缩放比例一致
+          value * imageScale
+        )}
         fill={mask.color || 'rgba(255, 0, 0, 0.3)'}
         stroke={mask.color || '#ff0000'}
         strokeWidth={2}
@@ -107,10 +116,10 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     return boundingBoxes.map(bbox => (
       <Rect
         key={bbox.id}
-        x={bbox.x}
-        y={bbox.y}
-        width={bbox.width}
-        height={bbox.height}
+        x={bbox.x * imageScale}
+        y={bbox.y * imageScale}
+        width={bbox.width * imageScale}
+        height={bbox.height * imageScale}
         stroke={bbox.color || '#00ff00'}
         strokeWidth={2}
         fill="transparent"
@@ -123,7 +132,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     return polygons.map(polygon => (
       <Line
         key={polygon.id}
-        points={polygon.points}
+        points={polygon.points.map((value) => value * imageScale)}
         fill={polygon.color ? `${polygon.color}40` : 'rgba(0, 0, 255, 0.25)'}
         stroke={polygon.color || '#0000ff'}
         strokeWidth={2}

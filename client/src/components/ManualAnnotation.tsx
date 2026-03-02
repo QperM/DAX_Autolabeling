@@ -2,15 +2,21 @@ import React, { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { setCurrentImage } from '../store/annotationSlice';
-import type { Image } from '../types';
+import type { Image, Mask, BoundingBox, Polygon } from '../types';
+import { annotationApi } from '../services/api';
+import AnnotationCanvas from './AnnotationCanvas';
 import './ManualAnnotation.css';
 
 const ManualAnnotation: React.FC = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
-  const { currentImage, images } = useSelector((state: any) => state.annotation);
-  const [selectedTool, setSelectedTool] = useState('select');
+  const { currentImage, images, annotations } = useSelector((state: any) => state.annotation);
+  const [selectedTool, setSelectedTool] = useState('eraser');
   const [brushSize, setBrushSize] = useState(20);
+  const [activeLayer, setActiveLayer] = useState<'background' | 'annotation'>('background');
+  const [masks, setMasks] = useState<Mask[]>([]);
+  const [boundingBoxes, setBoundingBoxes] = useState<BoundingBox[]>([]);
+  const [polygons, setPolygons] = useState<Polygon[]>([]);
 
   // 检查是否有选中的图片
   useEffect(() => {
@@ -25,20 +31,57 @@ const ManualAnnotation: React.FC = () => {
     return () => clearTimeout(timer);
   }, [currentImage, navigate]);
 
+  // 加载当前图片的标注（mask / bbox 等）
+  useEffect(() => {
+    const loadAnnotation = async () => {
+      if (!currentImage) {
+        setMasks([]);
+        setBoundingBoxes([]);
+        setPolygons([]);
+        return;
+      }
+
+      try {
+        console.log('[ManualAnnotation] 开始加载当前图片的标注数据, imageId =', currentImage.id);
+
+        // 优先从 Redux 中读（如果之前已经加载过）
+        const cached = annotations?.[currentImage.id];
+        if (cached) {
+          console.log('[ManualAnnotation] 使用 Redux 中缓存的标注数据:', cached);
+          setMasks(cached.masks || []);
+          setBoundingBoxes(cached.boundingBoxes || []);
+          setPolygons(cached.polygons || []);
+          return;
+        }
+
+        // 否则从后端拉取
+        const resp = await annotationApi.getAnnotation(currentImage.id);
+        const anno = resp?.annotation;
+        console.log('[ManualAnnotation] 从后端获取到的标注响应:', resp);
+
+        if (anno) {
+          setMasks(anno.masks || []);
+          setBoundingBoxes(anno.boundingBoxes || []);
+          setPolygons(anno.polygons || []);
+        } else {
+          console.warn('[ManualAnnotation] 当前图片暂无标注数据, imageId =', currentImage.id);
+          setMasks([]);
+          setBoundingBoxes([]);
+          setPolygons([]);
+        }
+      } catch (e) {
+        console.error('[ManualAnnotation] 加载标注数据失败:', e);
+        setMasks([]);
+        setBoundingBoxes([]);
+        setPolygons([]);
+      }
+    };
+
+    loadAnnotation();
+  }, [currentImage, annotations]);
+
   const handleToolSelect = (tool: string) => {
     setSelectedTool(tool);
-  };
-
-  const handleBrushSizeChange = (size: number) => {
-    setBrushSize(size);
-  };
-
-  const handleSave = () => {
-    alert('标注已保存！');
-  };
-
-  const handleExport = () => {
-    alert('数据集导出功能待实现');
   };
 
   const handleBack = () => {
@@ -72,91 +115,20 @@ const ManualAnnotation: React.FC = () => {
 
       {/* 主工作区域 */}
       <div className="annotation-main">
-        {/* 左侧面板 - 工具栏 */}
+        {/* 左侧悬浮面板 - 仅保留橡皮擦工具 */}
         <div className="annotation-left-panel">
           <div className="tool-section">
-            <h3>标注工具</h3>
-            <div className="tools-grid">
-              <button 
-                className={`tool-button ${selectedTool === 'select' ? 'active' : ''}`}
-                onClick={() => handleToolSelect('select')}
-                title="选择工具"
-              >
-                <span className="tool-icon">↖</span>
-                <span className="tool-label">选择</span>
-              </button>
-              <button 
-                className={`tool-button ${selectedTool === 'brush' ? 'active' : ''}`}
-                onClick={() => handleToolSelect('brush')}
-                title="画笔工具"
-              >
-                <span className="tool-icon">🖌️</span>
-                <span className="tool-label">画笔</span>
-              </button>
-              <button 
-                className={`tool-button ${selectedTool === 'eraser' ? 'active' : ''}`}
-                onClick={() => handleToolSelect('eraser')}
-                title="橡皮擦"
-              >
-                <span className="tool-icon">🧹</span>
-                <span className="tool-label">橡皮擦</span>
-              </button>
-              <button 
-                className={`tool-button ${selectedTool === 'polygon' ? 'active' : ''}`}
-                onClick={() => handleToolSelect('polygon')}
-                title="多边形"
-              >
-                <span className="tool-icon">🔺</span>
-                <span className="tool-label">多边形</span>
-              </button>
-              <button 
-                className={`tool-button ${selectedTool === 'rectangle' ? 'active' : ''}`}
-                onClick={() => handleToolSelect('rectangle')}
-                title="矩形框"
-              >
-                <span className="tool-icon">⬜</span>
-                <span className="tool-label">矩形框</span>
-              </button>
-              <button 
-                className={`tool-button ${selectedTool === 'magic-wand' ? 'active' : ''}`}
-                onClick={() => handleToolSelect('magic-wand')}
-                title="魔棒工具"
-              >
-                <span className="tool-icon">✨</span>
-                <span className="tool-label">魔棒</span>
-              </button>
-            </div>
-          </div>
-
-          {/* 画笔大小调节 */}
-          {selectedTool === 'brush' && (
-            <div className="brush-controls">
-              <h3>画笔大小</h3>
-              <div className="size-slider">
-                <input 
-                  type="range" 
-                  min="5" 
-                  max="50" 
-                  value={brushSize}
-                  onChange={(e) => handleBrushSizeChange(parseInt(e.target.value))}
-                />
-                <span className="size-value">{brushSize}px</span>
+            <button
+              className={`eraser-card ${selectedTool === 'eraser' ? 'active' : ''}`}
+              onClick={() => handleToolSelect('eraser')}
+              title="橡皮擦"
+            >
+              <div className="eraser-icon-box">
+                <span className="eraser-icon">🧹</span>
               </div>
-              <div className="brush-preview">
-                <div 
-                  className="brush-circle" 
-                  style={{ width: brushSize, height: brushSize }}
-                ></div>
+              <div className="eraser-text-box">
+                <div className="eraser-title">橡皮擦</div>
               </div>
-            </div>
-          )}
-
-          <div className="action-section">
-            <button className="primary-button" onClick={handleSave}>
-              💾 保存标注
-            </button>
-            <button className="secondary-button" onClick={handleExport}>
-              📤 导出数据集
             </button>
           </div>
         </div>
@@ -164,17 +136,22 @@ const ManualAnnotation: React.FC = () => {
         {/* 中间面板 - 标注画布 */}
         <div className="annotation-center-panel">
           <div className="canvas-area">
-            <div className="image-container">
-              <img 
-                src={`http://localhost:3001${currentImage.url}`} 
-                alt={currentImage.originalName}
-                className="annotation-image"
-              />
-              {/* 标注层将在这里渲染 */}
-              <div className="annotation-overlay">
-                {/* 动态标注元素 */}
-              </div>
-            </div>
+            <AnnotationCanvas
+              imageUrl={`http://localhost:3001${currentImage.url}`}
+              masks={activeLayer === 'annotation' ? masks : []}
+              boundingBoxes={activeLayer === 'annotation' ? boundingBoxes : []}
+              polygons={activeLayer === 'annotation' ? polygons : []}
+              toolMode={selectedTool === 'eraser' ? 'eraser' : 'select'}
+              brushSize={brushSize}
+              onMaskUpdate={(updatedMasks) => {
+                console.log('[ManualAnnotation] onMaskUpdate, count =', updatedMasks.length);
+                setMasks(updatedMasks);
+              }}
+              onPolygonUpdate={(updatedPolygons) => {
+                console.log('[ManualAnnotation] onPolygonUpdate, count =', updatedPolygons.length);
+                setPolygons(updatedPolygons);
+              }}
+            />
           </div>
         </div>
 
@@ -185,12 +162,7 @@ const ManualAnnotation: React.FC = () => {
             <div className="property-section">
               <h4>当前工具</h4>
               <div className="current-tool">
-                {selectedTool === 'select' && '选择工具'}
-                {selectedTool === 'brush' && '画笔工具'}
                 {selectedTool === 'eraser' && '橡皮擦'}
-                {selectedTool === 'polygon' && '多边形工具'}
-                {selectedTool === 'rectangle' && '矩形框工具'}
-                {selectedTool === 'magic-wand' && '魔棒工具'}
               </div>
             </div>
             
@@ -215,11 +187,23 @@ const ManualAnnotation: React.FC = () => {
             <div className="property-section">
               <h4>图层管理</h4>
               <div className="layers">
-                <div className="layer-item active">
+                <div
+                  className={`layer-item ${activeLayer === 'background' ? 'active' : ''}`}
+                  onClick={() => {
+                    console.log('[ManualAnnotation] 切换图层: background');
+                    setActiveLayer('background');
+                  }}
+                >
                   <span>背景图层</span>
                   <span className="layer-visible">👁️</span>
                 </div>
-                <div className="layer-item">
+                <div
+                  className={`layer-item ${activeLayer === 'annotation' ? 'active' : ''}`}
+                  onClick={() => {
+                    console.log('[ManualAnnotation] 切换图层: annotation');
+                    setActiveLayer('annotation');
+                  }}
+                >
                   <span>标注图层</span>
                   <span className="layer-visible">👁️</span>
                 </div>

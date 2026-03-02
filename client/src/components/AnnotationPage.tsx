@@ -33,7 +33,10 @@ const AnnotationPage: React.FC = () => {
     current: '',
     results: []
   });  // 批量标注进度
-  const [aiPrompt, setAiPrompt] = useState<string>(''); // AI提示词（传给 Grounded SAM2）
+  const [aiPrompt, setAiPrompt] = useState<string>(''); // AI提示词（传给 Grounded SAM2 / Mask R-CNN，逗号分隔多个）
+  const [aiPrompts, setAiPrompts] = useState<string[]>([]); // 多条提示词输入
+  const [showPromptModal, setShowPromptModal] = useState(false); // 是否显示提示词配置弹窗
+  const [previewAnnotatedImages, setPreviewAnnotatedImages] = useState<Image[]>([]); // 预览中可切换的已标注图片列表
   const [annotationSummary, setAnnotationSummary] = useState<{
     totalImages: number;
     annotatedImages: number;
@@ -190,7 +193,7 @@ const AnnotationPage: React.FC = () => {
         setAiProgress(progress);
       }
 
-      // 批量标注完成
+      // 批量标注完成（仅更新进度 & 统计，不自动跳转预览）
       setBatchProgress(prev => ({
         ...prev,
         current: '批量标注完成！',
@@ -198,15 +201,6 @@ const AnnotationPage: React.FC = () => {
       }));
       setAiProgress(100);
       await refreshAnnotationSummary();
-
-      // 如果有成功的结果，默认打开第一张的预览界面
-      const firstSuccess = results.find(r => r.success && r.annotations);
-      if (firstSuccess && firstSuccess.annotations) {
-        setAiAnnotationResult({
-          image: firstSuccess.image,
-          annotations: firstSuccess.annotations
-        });
-      }
 
       // 显示汇总结果
       const successCount = results.filter(r => r.success).length;
@@ -262,6 +256,28 @@ const AnnotationPage: React.FC = () => {
     navigate('./manual-annotation');
   };
 
+  // 在AI预览弹窗中切换图片
+  const handleSelectPreviewImage = async (targetImage: Image) => {
+    try {
+      const resp = await annotationApi.getAnnotation(targetImage.id);
+      const anno = resp?.annotation;
+      if (!anno) {
+        alert('该图片暂无AI标注数据');
+        return;
+      }
+      setAiAnnotationResult({
+        image: targetImage,
+        annotations: {
+          masks: anno.masks || [],
+          boundingBoxes: anno.boundingBoxes || [],
+        },
+      });
+    } catch (e: any) {
+      console.error('切换预览图片失败:', e);
+      alert(e?.message || '切换预览图片失败');
+    }
+  };
+
   // 打开批量结果的预览（默认查看最新一张已标注的图片）
   const handleOpenBatchPreview = async () => {
     console.log('🔍 handleOpenBatchPreview 调用');
@@ -269,8 +285,9 @@ const AnnotationPage: React.FC = () => {
     console.log('annotationSummary:', annotationSummary);
     console.log('当前内存中的图片列表(images):', images);
 
-    const latestId = annotationSummary?.latestAnnotatedImageId;
-    console.log('最新已标注图片ID latestAnnotatedImageId:', latestId);
+    const latestIdRaw = annotationSummary?.latestAnnotatedImageId;
+    const latestId = latestIdRaw != null ? Number(latestIdRaw) : null;
+    console.log('最新已标注图片ID latestAnnotatedImageId(raw):', latestIdRaw, ' parsed:', latestId);
 
     if (!latestId) {
       console.warn('handleOpenBatchPreview: latestAnnotatedImageId 为空');
@@ -308,8 +325,9 @@ const AnnotationPage: React.FC = () => {
         const freshImages = await imageApi.getImages(currentProject.id);
         console.log('兜底 freshImages:', freshImages);
 
-        let fallbackImage: Image | null = null;
-        let fallbackAnno: any = null;
+        const annotatedList: Image[] = [];
+        let firstAnnotatedImage: Image | null = null;
+        let firstAnnotatedAnno: any = null;
 
         for (const img of freshImages as Image[]) {
           try {
@@ -317,33 +335,39 @@ const AnnotationPage: React.FC = () => {
             const resp = await annotationApi.getAnnotation(img.id);
             console.log('标注响应 resp:', resp);
             if (resp?.annotation) {
-              fallbackImage = img;
-              fallbackAnno = resp.annotation;
-              break;
+              annotatedList.push(img);
+              if (!firstAnnotatedImage) {
+                firstAnnotatedImage = img;
+                firstAnnotatedAnno = resp.annotation;
+              }
             }
           } catch (e) {
             console.warn('获取单张图片标注失败, imageId =', img.id, e);
           }
         }
 
-        if (!fallbackImage || !fallbackAnno) {
+        if (!firstAnnotatedImage || !firstAnnotatedAnno) {
           alert('该项目暂无可预览的AI标注结果');
           return;
         }
 
         console.log('兜底找到可预览图片及标注:', {
-          image: fallbackImage,
-          masks: fallbackAnno.masks,
-          boundingBoxes: fallbackAnno.boundingBoxes,
+          image: firstAnnotatedImage,
+          masks: firstAnnotatedAnno.masks,
+          boundingBoxes: firstAnnotatedAnno.boundingBoxes,
         });
 
         setAiAnnotationResult({
-          image: fallbackImage,
+          image: firstAnnotatedImage,
           annotations: {
-            masks: fallbackAnno.masks || [],
-            boundingBoxes: fallbackAnno.boundingBoxes || [],
+            masks: firstAnnotatedAnno.masks || [],
+            boundingBoxes: firstAnnotatedAnno.boundingBoxes || [],
           },
         });
+        // 兜底时也构建一个已标注图片列表，方便在预览中切换
+        if (annotatedList.length > 0) {
+          setPreviewAnnotatedImages(annotatedList);
+        }
         return;
       } catch (e) {
         console.error('兜底查找可预览图片失败:', e);
@@ -373,6 +397,29 @@ const AnnotationPage: React.FC = () => {
           boundingBoxes: anno.boundingBoxes || [],
         },
       });
+
+      // 打开预览时，根据当前项目构建一个“已有AI标注的图片”列表，用于右侧缩略图切换
+      if (currentProject) {
+        try {
+          const freshImages = await imageApi.getImages(currentProject.id);
+          const annotatedList: Image[] = [];
+          for (const img of freshImages as Image[]) {
+            try {
+              const r = await annotationApi.getAnnotation(img.id);
+              if (r?.annotation) {
+                annotatedList.push(img);
+              }
+            } catch {
+              // 单张失败忽略
+            }
+          }
+          if (annotatedList.length > 0) {
+            setPreviewAnnotatedImages(annotatedList);
+          }
+        } catch (e) {
+          console.warn('构建已标注图片列表失败:', e);
+        }
+      }
     } catch (err) {
       console.error('获取标注数据失败:', err);
       alert('获取标注数据失败，请检查后端服务');
@@ -423,17 +470,23 @@ const AnnotationPage: React.FC = () => {
                   </div>
                   <div className="ai-controls">
                     <div className="ai-prompt-group">
-                      <label className="ai-prompt-label" htmlFor="ai-prompt-input">
-                        提示词
-                      </label>
-                      <input
-                        id="ai-prompt-input"
-                        className="ai-prompt-input"
-                        type="text"
-                        placeholder="例如：person, car, text（留空=自动识别常见目标）"
-                        value={aiPrompt}
-                        onChange={(e) => setAiPrompt(e.target.value)}
-                      />
+                      <button
+                        type="button"
+                        className="ai-prompt-manage-btn"
+                        onClick={() => {
+                          if (aiPrompts.length === 0) {
+                            setAiPrompts(['']);
+                          }
+                          setShowPromptModal(true);
+                        }}
+                      >
+                        {aiPrompts.filter((p) => p.trim().length > 0).length > 0
+                          ? `已配置 ${aiPrompts.filter((p) => p.trim().length > 0).length} 条提示词`
+                          : '点击配置提示词'}
+                      </button>
+                      <div className="ai-prompt-helper">
+                        点击上方按钮，在弹窗中添加/编辑提示词。多条提示词会按顺序传给模型，例如：person, dog, car。
+                      </div>
                     </div>
                     <button 
                       className="ai-annotation-btn"
@@ -634,11 +687,69 @@ const AnnotationPage: React.FC = () => {
         </div>
       </div>
 
+      {/* 提示词配置弹窗 */}
+      {showPromptModal && (
+        <div
+          className="ai-prompt-modal-backdrop"
+          onClick={() => setShowPromptModal(false)}
+        >
+          <div
+            className="ai-prompt-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="ai-prompt-modal-title">配置提示词</h3>
+            <p className="ai-prompt-modal-desc">
+              每行一个提示词，例如：person、dog、car。留空则由模型自动识别常见目标。
+            </p>
+            <div className="ai-prompt-modal-list">
+              {aiPrompts.map((value, index) => (
+                <input
+                  key={index}
+                  className="ai-prompt-input"
+                  type="text"
+                  placeholder={`提示词 ${index + 1}`}
+                  value={value}
+                  onChange={(e) => {
+                    const newList = [...aiPrompts];
+                    newList[index] = e.target.value;
+                    setAiPrompts(newList);
+                    const joined = newList
+                      .map((p) => p.trim())
+                      .filter((p) => p.length > 0)
+                      .join(', ');
+                    setAiPrompt(joined);
+                  }}
+                />
+              ))}
+              <button
+                type="button"
+                className="ai-prompt-add"
+                onClick={() => setAiPrompts([...aiPrompts, ''])}
+              >
+                + 新增提示词
+              </button>
+            </div>
+            <div className="ai-prompt-modal-actions">
+              <button
+                type="button"
+                className="ai-prompt-modal-btn primary"
+                onClick={() => setShowPromptModal(false)}
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* AI标注结果预览 */}
       {aiAnnotationResult && (
         <AIAnnotationPreview
           image={aiAnnotationResult.image}
           annotations={aiAnnotationResult.annotations}
+          images={previewAnnotatedImages}
+          currentImageId={aiAnnotationResult.image.id}
+          onSelectImage={handleSelectPreviewImage}
           onClose={() => setAiAnnotationResult(null)}
           onSave={handleSaveAIAnnotation}
           onEdit={handleEditAIAnnotation}
