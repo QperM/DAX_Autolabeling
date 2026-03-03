@@ -30,9 +30,10 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
   const [imageScale, setImageScale] = useState(1);
   const [isDrawing, setIsDrawing] = useState(false); // 新建 Mask 绘制状态
-  const [isErasing, setIsErasing] = useState(false); // 橡皮擦状态
+  const [isErasing, setIsErasing] = useState(false); // 橡皮擦状态（整段笔划）
   const [currentPoints, setCurrentPoints] = useState<number[]>([]);
   const [eraserCenter, setEraserCenter] = useState<{ x: number; y: number } | null>(null);
+  const [eraserStroke, setEraserStroke] = useState<{ x: number; y: number }[]>([]); // 当前一次擦除笔划（图片坐标系）
   const [selectedPoint, setSelectedPoint] = useState<{ maskId: string; pointIndex: number } | null>(null);
   const [selectedMaskIds, setSelectedMaskIds] = useState<string[]>([]);
   const [isBoxSelecting, setIsBoxSelecting] = useState(false);
@@ -369,6 +370,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     setBoxSelectStart(null);
     setIsErasing(false);
     setEraserCenter(null);
+    setEraserStroke([]);
     setIsDrawing(false);
     setCurrentPoints([]);
   }, [imageUrl]);
@@ -433,40 +435,209 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     });
   }, [image, imageUrl]);
 
-  const applyEraser = (stagePos: { x: number; y: number }) => {
-    if (!imageScale || brushSize <= 0) return;
+  /**
+   * 使用方案 A：基于离屏 canvas 的真正橡皮擦
+   * 思路：
+   * 1. 将单个 Mask 的多边形 raster 到一张小尺寸的二值图上
+   * 2. 用 destination-out 绘制橡皮擦笔划（若干圆）挖空区域
+   * 3. 从剩余的 mask 图像重新提取轮廓，并抽样成有限点数
+   */
+  const applyEraserStroke = () => {
+    if (!image || !imageScale || brushSize <= 0 || eraserStroke.length === 0) return;
 
-    const cx = stagePos.x / imageScale;
-    const cy = stagePos.y / imageScale;
-    const radius = brushSize;
-    const radiusSq = radius * radius;
+    const srcWidth = image.width;
+    const srcHeight = image.height;
+    if (!srcWidth || !srcHeight) return;
 
-    const updatedMasks = masks.map((mask) => {
-      if (!mask.points || mask.points.length < 2) return mask;
+    const MAX_CANVAS_SIZE = 512; // 控制性能的上限
+    const scaleFactor = Math.min(
+      1,
+      MAX_CANVAS_SIZE / srcWidth,
+      MAX_CANVAS_SIZE / srcHeight
+    );
 
-      const newPoints = [...mask.points];
+    const canvasWidth = Math.max(16, Math.round(srcWidth * scaleFactor));
+    const canvasHeight = Math.max(16, Math.round(srcHeight * scaleFactor));
 
-      for (let i = 0; i < newPoints.length; i += 2) {
-        const px = newPoints[i];
-        const py = newPoints[i + 1];
-        const dx = px - cx;
-        const dy = py - cy;
-        const distSq = dx * dx + dy * dy;
+    const updatedMasks: Mask[] = [];
 
-        if (distSq > 0 && distSq < radiusSq) {
-          const dist = Math.sqrt(distSq);
-          const scale = radius / dist;
-          const nx = cx + dx * scale;
-          const ny = cy + dy * scale;
-          newPoints[i] = nx;
-          newPoints[i + 1] = ny;
+    const brushRadiusImage = brushSize;
+    const brushRadiusCanvas = brushRadiusImage * scaleFactor;
+
+    const strokeCanvas = eraserStroke.map(p => ({
+      x: p.x * scaleFactor,
+      y: p.y * scaleFactor,
+    }));
+
+    const maxPolygonPoints = 400; // 前端安全上限（具体精细度由后端/弹窗单独控制）
+
+    const buildMaskFromBinary = (binary: Uint8ClampedArray) => {
+      // 使用 Moore-Neighbor 边界跟踪从二值图中提取一条主轮廓
+      const w = canvasWidth;
+      const h = canvasHeight;
+      const alphaAt = (x: number, y: number) => {
+        if (x < 0 || x >= w || y < 0 || y >= h) return 0;
+        const idx = (y * w + x) * 4 + 3;
+        return binary[idx];
+      };
+
+      // 找到任意一个前景像素作为起点
+      let startX = -1;
+      let startY = -1;
+      outer: for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (alphaAt(x, y) > 0) {
+            startX = x;
+            startY = y;
+            break outer;
+          }
         }
       }
 
-      return {
+      if (startX === -1 || startY === -1) {
+        return [] as { x: number; y: number }[]; // 整个 Mask 被擦掉
+      }
+
+      // Moore-Neighbor 边界跟踪
+      const contour: { x: number; y: number }[] = [];
+      let cx = startX;
+      let cy = startY;
+      let prevDir = 7; // 上一次移动方向（0~7，对应 8 邻域）
+
+      const dirOffsets = [
+        { dx: 1, dy: 0 },
+        { dx: 1, dy: 1 },
+        { dx: 0, dy: 1 },
+        { dx: -1, dy: 1 },
+        { dx: -1, dy: 0 },
+        { dx: -1, dy: -1 },
+        { dx: 0, dy: -1 },
+        { dx: 1, dy: -1 },
+      ];
+
+      const maxSteps = w * h * 4; // 防御性上限，避免极端情况下死循环
+      let steps = 0;
+
+      do {
+        contour.push({ x: cx + 0.5, y: cy + 0.5 });
+        // 从前一方向的左邻开始查找（逆时针方向）
+        let foundNext = false;
+        for (let i = 0; i < 8; i++) {
+          const dir = (prevDir + 7 + i) % 8;
+          const nx = cx + dirOffsets[dir].dx;
+          const ny = cy + dirOffsets[dir].dy;
+          if (alphaAt(nx, ny) > 0) {
+            cx = nx;
+            cy = ny;
+            prevDir = dir;
+            foundNext = true;
+            break;
+          }
+        }
+        if (!foundNext) {
+          break;
+        }
+        steps++;
+      } while (!(cx === startX && cy === startY) && steps < maxSteps);
+
+      if (contour.length === 0) return contour;
+
+      // 抽样，控制点数上限
+      const step = Math.max(1, Math.floor(contour.length / maxPolygonPoints));
+      const sampled: { x: number; y: number }[] = [];
+      for (let i = 0; i < contour.length; i += step) {
+        sampled.push(contour[i]);
+      }
+      return sampled;
+    };
+
+    masks.forEach(mask => {
+      if (!mask.points || mask.points.length < 6) return;
+
+      // 快速 bbox 过滤，判断这次笔划是否有必要作用在该 mask 上
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (let i = 0; i < mask.points.length; i += 2) {
+        const x = mask.points[i];
+        const y = mask.points[i + 1];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+
+      const radiusMargin = brushRadiusImage * 1.2;
+      let intersectsStroke = false;
+      for (const p of eraserStroke) {
+        if (
+          p.x >= minX - radiusMargin &&
+          p.x <= maxX + radiusMargin &&
+          p.y >= minY - radiusMargin &&
+          p.y <= maxY + radiusMargin
+        ) {
+          intersectsStroke = true;
+          break;
+        }
+      }
+      if (!intersectsStroke) {
+        updatedMasks.push(mask);
+        return;
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        updatedMasks.push(mask);
+        return;
+      }
+
+      // 1. 绘制原始 mask 多边形为实心区域
+      ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+      ctx.save();
+      ctx.scale(scaleFactor, scaleFactor);
+      ctx.beginPath();
+      ctx.moveTo(mask.points[0], mask.points[1]);
+      for (let i = 2; i < mask.points.length; i += 2) {
+        ctx.lineTo(mask.points[i], mask.points[i + 1]);
+      }
+      ctx.closePath();
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.restore();
+
+      // 2. destination-out 方式绘制橡皮擦笔划（在 canvas 坐标系）
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = 'rgba(0,0,0,1)';
+      for (const p of strokeCanvas) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, brushRadiusCanvas, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+
+      // 3. 从剩余图像中提取新的轮廓
+      const imgData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
+      const contour = buildMaskFromBinary(imgData.data);
+      if (contour.length === 0) {
+        // 整个 mask 被擦掉，直接丢弃
+        return;
+      }
+
+      const newPoints: number[] = [];
+      for (const p of contour) {
+        const imgX = p.x / scaleFactor;
+        const imgY = p.y / scaleFactor;
+        newPoints.push(imgX, imgY);
+      }
+
+      updatedMasks.push({
         ...mask,
         points: newPoints,
-      };
+      });
     });
 
     onMaskUpdate(updatedMasks);
@@ -520,9 +691,12 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         setCurrentPoints(prev => [...prev, pos.x, pos.y]);
       }
     } else if (toolMode === 'eraser') {
+      // 橡皮擦：一次按下-拖动-松开视为一段“笔划”，结束时整体重建轮廓
       setIsErasing(true);
       setEraserCenter(pos);
-      applyEraser(pos);
+      const imgX = pos.x / imageScale;
+      const imgY = pos.y / imageScale;
+      setEraserStroke([{ x: imgX, y: imgY }]);
     } else if (toolMode === 'mask-select') {
       setIsBoxSelecting(true);
       setBoxSelectStart(pos);
@@ -537,7 +711,19 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     if (toolMode === 'eraser' && isErasing) {
       if (!pos) return;
       setEraserCenter(pos);
-      applyEraser(pos);
+      const imgX = pos.x / imageScale;
+      const imgY = pos.y / imageScale;
+      setEraserStroke(prev => {
+        const last = prev[prev.length - 1];
+        if (!last) return [{ x: imgX, y: imgY }];
+        const dx = imgX - last.x;
+        const dy = imgY - last.y;
+        // 简单抽样：移动足够距离再记录一个点，避免数组过大
+        if (dx * dx + dy * dy < (brushSize * 0.25) * (brushSize * 0.25)) {
+          return prev;
+        }
+        return [...prev, { x: imgX, y: imgY }];
+      });
     } else if (toolMode === 'mask-select' && isBoxSelecting && boxSelectStart) {
       if (!pos) return;
       const x1 = boxSelectStart.x;
@@ -556,6 +742,8 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     if (toolMode === 'eraser' && isErasing) {
       setIsErasing(false);
       setEraserCenter(null);
+      applyEraserStroke();
+      setEraserStroke([]);
     } else if (toolMode === 'mask-select' && isBoxSelecting && boxSelectRect && boxSelectStart) {
       setIsBoxSelecting(false);
 

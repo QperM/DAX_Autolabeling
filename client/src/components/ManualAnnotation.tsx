@@ -17,6 +17,9 @@ const ManualAnnotation: React.FC = () => {
   const [masks, setMasks] = useState<Mask[]>([]);
   const [boundingBoxes, setBoundingBoxes] = useState<BoundingBox[]>([]);
   const [polygons, setPolygons] = useState<Polygon[]>([]);
+  type HistoryEntry = { masks: Mask[]; boundingBoxes: BoundingBox[]; polygons: Polygon[] };
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [showEraserDropdown, setShowEraserDropdown] = useState(false);
   const eraserWrapperRef = useRef<HTMLDivElement | null>(null);
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
@@ -38,9 +41,14 @@ const ManualAnnotation: React.FC = () => {
   useEffect(() => {
     const loadAnnotation = async () => {
       if (!currentImage) {
-        setMasks([]);
-        setBoundingBoxes([]);
-        setPolygons([]);
+        const emptyMasks: Mask[] = [];
+        const emptyBBoxes: BoundingBox[] = [];
+        const emptyPolygons: Polygon[] = [];
+        setMasks(emptyMasks);
+        setBoundingBoxes(emptyBBoxes);
+        setPolygons(emptyPolygons);
+        setHistory([{ masks: emptyMasks, boundingBoxes: emptyBBoxes, polygons: emptyPolygons }]);
+        setHistoryIndex(0);
         return;
       }
 
@@ -51,9 +59,14 @@ const ManualAnnotation: React.FC = () => {
         const cached = annotations?.[currentImage.id];
         if (cached) {
           console.log('[ManualAnnotation] 使用 Redux 中缓存的标注数据:', cached);
-          setMasks(cached.masks || []);
-          setBoundingBoxes(cached.boundingBoxes || []);
-          setPolygons(cached.polygons || []);
+          const nextMasks = cached.masks || [];
+          const nextBBoxes = cached.boundingBoxes || [];
+          const nextPolygons = cached.polygons || [];
+          setMasks(nextMasks);
+          setBoundingBoxes(nextBBoxes);
+          setPolygons(nextPolygons);
+          setHistory([{ masks: nextMasks, boundingBoxes: nextBBoxes, polygons: nextPolygons }]);
+          setHistoryIndex(0);
           return;
         }
 
@@ -63,20 +76,35 @@ const ManualAnnotation: React.FC = () => {
         console.log('[ManualAnnotation] 从后端获取到的标注响应:', resp);
 
         if (anno) {
-          setMasks(anno.masks || []);
-          setBoundingBoxes(anno.boundingBoxes || []);
-          setPolygons(anno.polygons || []);
+          const nextMasks = anno.masks || [];
+          const nextBBoxes = anno.boundingBoxes || [];
+          const nextPolygons = anno.polygons || [];
+          setMasks(nextMasks);
+          setBoundingBoxes(nextBBoxes);
+          setPolygons(nextPolygons);
+          setHistory([{ masks: nextMasks, boundingBoxes: nextBBoxes, polygons: nextPolygons }]);
+          setHistoryIndex(0);
         } else {
           console.warn('[ManualAnnotation] 当前图片暂无标注数据, imageId =', currentImage.id);
-          setMasks([]);
-          setBoundingBoxes([]);
-          setPolygons([]);
+          const emptyMasks: Mask[] = [];
+          const emptyBBoxes: BoundingBox[] = [];
+          const emptyPolygons: Polygon[] = [];
+          setMasks(emptyMasks);
+          setBoundingBoxes(emptyBBoxes);
+          setPolygons(emptyPolygons);
+          setHistory([{ masks: emptyMasks, boundingBoxes: emptyBBoxes, polygons: emptyPolygons }]);
+          setHistoryIndex(0);
         }
       } catch (e) {
         console.error('[ManualAnnotation] 加载标注数据失败:', e);
-        setMasks([]);
-        setBoundingBoxes([]);
-        setPolygons([]);
+        const emptyMasks: Mask[] = [];
+        const emptyBBoxes: BoundingBox[] = [];
+        const emptyPolygons: Polygon[] = [];
+        setMasks(emptyMasks);
+        setBoundingBoxes(emptyBBoxes);
+        setPolygons(emptyPolygons);
+        setHistory([{ masks: emptyMasks, boundingBoxes: emptyBBoxes, polygons: emptyPolygons }]);
+        setHistoryIndex(0);
       }
     };
 
@@ -132,9 +160,12 @@ const ManualAnnotation: React.FC = () => {
     }
   };
 
-  // 键盘左右方向键切换上一张 / 下一张图片
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex >= 0 && historyIndex < history.length - 1;
+
+  // 键盘左右方向键切换上一张 / 下一张图片 + 撤销/重做
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
       // 如果当前焦点在输入框 / 文本域 / 下拉框中，则不处理左右键，避免与重命名弹窗等表单输入冲突
       const active = document.activeElement as HTMLElement | null;
       if (
@@ -144,6 +175,19 @@ const ManualAnnotation: React.FC = () => {
           active.tagName === 'SELECT' ||
           active.isContentEditable)
       ) {
+        return;
+      }
+
+      // 撤销 / 重做
+      const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+      if (isCtrlOrMeta && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+      if (isCtrlOrMeta && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) {
+        e.preventDefault();
+        handleRedo();
         return;
       }
 
@@ -160,7 +204,7 @@ const ManualAnnotation: React.FC = () => {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [currentImage, images, autoSaveEnabled]);
+  }, [currentImage, images, autoSaveEnabled, canUndo, canRedo, historyIndex, history.length]);
 
   const handleSaveAnnotation = async (options?: { silent?: boolean }): Promise<boolean> => {
     if (!currentImage) return false;
@@ -185,6 +229,44 @@ const ManualAnnotation: React.FC = () => {
       }
       return false;
     }
+  };
+
+  // ------- 本地操作栈：撤销 / 重做 -------
+  const pushHistory = (nextMasks: Mask[], nextBBoxes: BoundingBox[], nextPolygons: Polygon[]) => {
+    const snapshot: HistoryEntry = {
+      masks: nextMasks.map(m => ({ ...m, points: [...(m.points || [])] })),
+      boundingBoxes: nextBBoxes.map(b => ({ ...b })),
+      polygons: nextPolygons.map(p => ({ ...p, points: [...(p.points || [])] })),
+    };
+    setHistory(prev => {
+      const trimmed = prev.slice(0, historyIndex + 1);
+      return [...trimmed, snapshot];
+    });
+    setHistoryIndex(prev => prev + 1);
+  };
+
+  const applyHistoryEntry = (entry: HistoryEntry) => {
+    setMasks(entry.masks);
+    setBoundingBoxes(entry.boundingBoxes);
+    setPolygons(entry.polygons);
+  };
+
+  const handleUndo = () => {
+    if (!canUndo) return;
+    const nextIndex = historyIndex - 1;
+    const entry = history[nextIndex];
+    if (!entry) return;
+    setHistoryIndex(nextIndex);
+    applyHistoryEntry(entry);
+  };
+
+  const handleRedo = () => {
+    if (!canRedo) return;
+    const nextIndex = historyIndex + 1;
+    const entry = history[nextIndex];
+    if (!entry) return;
+    setHistoryIndex(nextIndex);
+    applyHistoryEntry(entry);
   };
 
   const getEffectiveMaskColor = (mask: Mask) => mask.color || 'rgba(255, 0, 0, 0.7)';
@@ -395,10 +477,12 @@ const ManualAnnotation: React.FC = () => {
               onMaskUpdate={(updatedMasks) => {
                 console.log('[ManualAnnotation] onMaskUpdate, count =', updatedMasks.length);
                 setMasks(updatedMasks);
+                pushHistory(updatedMasks, boundingBoxes, polygons);
               }}
               onPolygonUpdate={(updatedPolygons) => {
                 console.log('[ManualAnnotation] onPolygonUpdate, count =', updatedPolygons.length);
                 setPolygons(updatedPolygons);
+                pushHistory(masks, boundingBoxes, updatedPolygons);
               }}
             />
           </div>
@@ -414,6 +498,27 @@ const ManualAnnotation: React.FC = () => {
                 {selectedTool === 'eraser' && '橡皮擦'}
                 {selectedTool === 'mask' && '选择（整块 Mask：点击选中，高亮，Delete 删除，R 改颜色和标签）'}
                 {selectedTool === 'point' && '点编辑（拖动/删除"Delete"/插入"I"）'}
+                {selectedTool === 'draw' && '新建 Mask：鼠标点击依次创建点，连成一圈后自动闭合生成新的 Mask。'}
+              </div>
+              <div className="tool-history-row">
+                <button
+                  type="button"
+                  className="tool-history-btn"
+                  onClick={handleUndo}
+                  disabled={!canUndo}
+                  title="撤销上一步 (Ctrl+Z)"
+                >
+                  ↶ 撤销
+                </button>
+                <button
+                  type="button"
+                  className="tool-history-btn"
+                  onClick={handleRedo}
+                  disabled={!canRedo}
+                  title="重做 (Ctrl+Y / Ctrl+Shift+Z)"
+                >
+                  ↷ 重做
+                </button>
               </div>
             </div>
 

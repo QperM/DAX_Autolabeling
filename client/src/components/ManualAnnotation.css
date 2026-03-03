@@ -441,6 +441,34 @@
   text-align: center;
 }
 
+.tool-history-row {
+  margin-top: 0.5rem;
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.tool-history-btn {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: 999px;
+  border: 1px solid #d0d7e2;
+  background: #ffffff;
+  color: #495057;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tool-history-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #b0bcd0;
+}
+
+.tool-history-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .label-legend {
   display: flex;
   flex-direction: column;
