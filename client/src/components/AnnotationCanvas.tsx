@@ -677,7 +677,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
               label: '',
               // 默认使用灰色，后续通过“选择”+R 命名后会按项目级规则重新上色
               color: '#7F7F7F',
-              opacity: 0.5,
+              opacity: 0.7,
             };
 
             onMaskUpdate([...masks, newMask]);
@@ -842,7 +842,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       const isSelected =
         toolMode === 'mask-select' && selectedMaskIds.includes(mask.id);
       const baseColor = mask.color || '#ff0000';
-      const fillColor = mask.color || 'rgba(255, 0, 0, 0.3)';
+      const fillColor = mask.color || 'rgba(255, 0, 0, 0.5)';
 
       return (
         <Line
@@ -855,7 +855,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
           stroke={isSelected ? '#FFD54F' : baseColor}
           strokeWidth={isSelected ? 4 : 2}
           closed={true}
-          opacity={isSelected ? 0.8 : mask.opacity || 0.5}
+          opacity={isSelected ? 0.9 : mask.opacity || 0.7}
         />
       );
     });

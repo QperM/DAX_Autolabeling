@@ -982,7 +982,7 @@ const AnnotationPage: React.FC = () => {
                                 key={mask.id}
                                 points={pointsStr}
                                 fill={mask.color || '#ff0000'}
-                                fillOpacity={mask.opacity ?? 0.25}
+                                fillOpacity={mask.opacity ?? 0.45}
                                 stroke={mask.color || '#ff0000'}
                                 strokeWidth={2}
                                 strokeOpacity={0.9}
