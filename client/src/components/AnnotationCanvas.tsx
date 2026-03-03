@@ -43,6 +43,8 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   const [renameModalPosition, setRenameModalPosition] = useState<{ x: number; y: number } | null>(null);
   const [renameInputValue, setRenameInputValue] = useState('');
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const [pendingRenameMaskId, setPendingRenameMaskId] = useState<string | null>(null);
+  const [renameTargetMaskIds, setRenameTargetMaskIds] = useState<string[]>([]);
 
   // 键盘快捷键（点编辑模式）：Delete 删除点，I 插入新点
   useEffect(() => {
@@ -190,6 +192,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
             setRenameModalPosition({ x: pageX, y: pageY });
             setRenameInputValue(targets[0].label || '');
+            setRenameTargetMaskIds([...selectedMaskIds]);
             setShowRenameModal(true);
           }
         }
@@ -205,14 +208,16 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
   // 处理R键改名弹窗的确认
   const handleRenameConfirm = () => {
-    if (!selectedMaskIds || selectedMaskIds.length === 0) {
+    if (!renameTargetMaskIds || renameTargetMaskIds.length === 0) {
       setShowRenameModal(false);
+      setRenameTargetMaskIds([]);
       return;
     }
 
-    const targets = masks.filter(mask => selectedMaskIds.includes(mask.id));
+    const targets = masks.filter(mask => renameTargetMaskIds.includes(mask.id));
     if (targets.length === 0) {
       setShowRenameModal(false);
+      setRenameTargetMaskIds([]);
       return;
     }
 
@@ -302,7 +307,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
     // 3. 应用到所有选中的 Mask
     const updatedMasks = masks.map(mask => {
-      if (!selectedMaskIds.includes(mask.id)) return mask;
+      if (!renameTargetMaskIds.includes(mask.id)) return mask;
 
       const nextLabel = trimmed.length > 0 ? trimmed : (mask.label || '');
 
@@ -319,12 +324,14 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     onMaskUpdate(updatedMasks);
     setShowRenameModal(false);
     setRenameModalPosition(null);
+    setRenameTargetMaskIds([]);
   };
 
   // 处理R键改名弹窗的取消
   const handleRenameCancel = () => {
     setShowRenameModal(false);
     setRenameModalPosition(null);
+    setRenameTargetMaskIds([]);
   };
 
   // 弹窗打开时自动聚焦输入框
@@ -352,7 +359,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [showRenameModal, renameInputValue, selectedMaskIds, masks, onMaskUpdate]);
+  }, [showRenameModal, renameInputValue, renameTargetMaskIds, masks, onMaskUpdate]);
 
   // 切换到其他工具时，清空整块选中状态
   useEffect(() => {
@@ -373,7 +380,52 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     setEraserStroke([]);
     setIsDrawing(false);
     setCurrentPoints([]);
+    setPendingRenameMaskId(null);
+    setShowRenameModal(false);
+    setRenameModalPosition(null);
+    setRenameTargetMaskIds([]);
   }, [imageUrl]);
+
+  // “新建 Mask”闭合结束后：等待父组件把 masks 更新进来，再自动弹出重命名小弹窗
+  useEffect(() => {
+    if (!pendingRenameMaskId) return;
+    const target = masks.find(m => m.id === pendingRenameMaskId);
+    if (!target) return;
+
+    // 自动选中新建的 mask，复用“选择工具”的 R 键弹窗逻辑
+    setSelectedMaskIds([pendingRenameMaskId]);
+    setRenameInputValue(target.label || '');
+    setRenameTargetMaskIds([pendingRenameMaskId]);
+
+    // 如果位置没有算出来（兜底），用 mask 的包围盒中心推算一个页面坐标
+    if (!renameModalPosition && target.points && target.points.length >= 2) {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+
+      for (let i = 0; i < target.points.length; i += 2) {
+        const sx = target.points[i] * imageScale;
+        const sy = target.points[i + 1] * imageScale;
+        if (sx < minX) minX = sx;
+        if (sx > maxX) maxX = sx;
+        if (sy < minY) minY = sy;
+        if (sy > maxY) maxY = sy;
+      }
+
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+      const stage = stageRef.current?.getStage();
+      if (stage) {
+        const container = stage.container();
+        const rect = container.getBoundingClientRect();
+        setRenameModalPosition({ x: rect.left + centerX, y: rect.top + centerY });
+      }
+    }
+
+    setShowRenameModal(true);
+    setPendingRenameMaskId(null);
+  }, [pendingRenameMaskId, masks, imageScale, renameModalPosition]);
 
   // 离开“新建 Mask”工具时，清空当前绘制的多边形
   useEffect(() => {
@@ -681,6 +733,35 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
             };
 
             onMaskUpdate([...masks, newMask]);
+
+            // 计算新 mask 的中心位置（页面坐标），用于自动弹出重命名弹窗
+            try {
+              let minX = Infinity;
+              let maxX = -Infinity;
+              let minY = Infinity;
+              let maxY = -Infinity;
+              for (let i = 0; i < pts.length; i += 2) {
+                const sx = pts[i];
+                const sy = pts[i + 1];
+                if (sx < minX) minX = sx;
+                if (sx > maxX) maxX = sx;
+                if (sy < minY) minY = sy;
+                if (sy > maxY) maxY = sy;
+              }
+              const centerX = (minX + maxX) / 2;
+              const centerY = (minY + maxY) / 2;
+              const stage = stageRef.current?.getStage();
+              if (stage) {
+                const container = stage.container();
+                const rect = container.getBoundingClientRect();
+                setRenameModalPosition({ x: rect.left + centerX, y: rect.top + centerY });
+              }
+            } catch (err) {
+              console.warn('[AnnotationCanvas] 计算新建 Mask 重命名弹窗位置失败', err);
+            }
+
+            // 等父组件把新 mask 渲染出来后再弹窗（避免 masks 还是旧值导致找不到目标）
+            setPendingRenameMaskId(newMask.id);
             setIsDrawing(false);
             setCurrentPoints([]);
             return;

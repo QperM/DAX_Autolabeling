@@ -13,7 +13,8 @@ const ManualAnnotation: React.FC = () => {
   const { currentImage, images, annotations } = useSelector((state: any) => state.annotation);
   const [selectedTool, setSelectedTool] = useState<'eraser' | 'mask' | 'point' | 'draw'>('mask');
   const [brushSize, setBrushSize] = useState(20);
-  const [activeLayer, setActiveLayer] = useState<'background' | 'annotation'>('background');
+  // 需求：每次进入人工标注页，默认显示“标注图层”
+  const [activeLayer, setActiveLayer] = useState<'background' | 'annotation'>('annotation');
   const [masks, setMasks] = useState<Mask[]>([]);
   const [boundingBoxes, setBoundingBoxes] = useState<BoundingBox[]>([]);
   const [polygons, setPolygons] = useState<Polygon[]>([]);
