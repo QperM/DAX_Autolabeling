@@ -135,6 +135,18 @@ const ManualAnnotation: React.FC = () => {
   // 键盘左右方向键切换上一张 / 下一张图片
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // 如果当前焦点在输入框 / 文本域 / 下拉框中，则不处理左右键，避免与重命名弹窗等表单输入冲突
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        (active.tagName === 'INPUT' ||
+          active.tagName === 'TEXTAREA' ||
+          active.tagName === 'SELECT' ||
+          active.isContentEditable)
+      ) {
+        return;
+      }
+
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
         handleNavigateImage('prev');

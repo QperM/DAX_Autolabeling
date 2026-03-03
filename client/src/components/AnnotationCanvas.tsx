@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Stage, Layer, Image, Line, Rect, Circle } from 'react-konva';
 import useImage from 'use-image';
 import type { Mask, BoundingBox, Polygon } from '../types';
@@ -37,12 +38,29 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   const [isBoxSelecting, setIsBoxSelecting] = useState(false);
   const [boxSelectStart, setBoxSelectStart] = useState<{ x: number; y: number } | null>(null);
   const [boxSelectRect, setBoxSelectRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameModalPosition, setRenameModalPosition] = useState<{ x: number; y: number } | null>(null);
+  const [renameInputValue, setRenameInputValue] = useState('');
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   // 键盘快捷键（点编辑模式）：Delete 删除点，I 插入新点
   useEffect(() => {
     if (toolMode !== 'select') return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // 如果当前有重命名弹窗在显示，或者焦点在输入框/下拉框中，则不处理全局快捷键
+      if (showRenameModal) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        (active.tagName === 'INPUT' ||
+          active.tagName === 'TEXTAREA' ||
+          active.tagName === 'SELECT' ||
+          active.isContentEditable)
+      ) {
+        return;
+      }
+
       if (!selectedPoint) return;
       const { maskId, pointIndex } = selectedPoint;
 
@@ -110,6 +128,19 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     if (toolMode !== 'mask-select') return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // 有重命名弹窗时或正在输入时，不再处理 Delete / R 等全局快捷键，避免与输入冲突
+      if (showRenameModal) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        (active.tagName === 'INPUT' ||
+          active.tagName === 'TEXTAREA' ||
+          active.tagName === 'SELECT' ||
+          active.isContentEditable)
+      ) {
+        return;
+      }
+
       if (!selectedMaskIds || selectedMaskIds.length === 0) return;
 
       // 删除整块 Mask
@@ -122,120 +153,46 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
       // 更换颜色并修改标签名（对所有选中的 Mask 生效）
       if (e.key === 'r' || e.key === 'R') {
+        // 阻止默认输入行为，避免按 R 时字符落到输入框里
+        e.preventDefault();
+        e.stopPropagation();
         const targets = masks.filter(mask => selectedMaskIds.includes(mask.id));
         if (targets.length === 0) return;
 
-        const newLabel = window.prompt(
-          '请输入新的标签名（将应用到所有选中的 Mask，按项目级规则统一颜色）：',
-          targets[0].label || ''
-        );
+        // 计算第一个选中mask的中心位置（舞台坐标）
+        const firstMask = targets[0];
+        if (firstMask.points && firstMask.points.length >= 2) {
+          let minX = Infinity;
+          let maxX = -Infinity;
+          let minY = Infinity;
+          let maxY = -Infinity;
 
-        if (newLabel === null) {
-          // 用户取消
-          return;
-        }
-
-        const trimmed = newLabel.trim();
-
-        const COLOR_PALETTE = [
-          '#1F77B4', '#FF7F0E', '#2CA02C', '#D62728',
-          '#9467BD', '#8C564B', '#E377C2', '#7F7F7F',
-        ];
-
-        // 1. 读取当前项目（从 AnnotationPage 存在 localStorage 里的 currentProject）
-        let projectId: number | null = null;
-        try {
-          const savedProject = localStorage.getItem('currentProject');
-          if (savedProject) {
-            const p = JSON.parse(savedProject);
-            if (p && typeof p.id === 'number') {
-              projectId = p.id;
-            }
+          for (let i = 0; i < firstMask.points.length; i += 2) {
+            const sx = firstMask.points[i] * imageScale;
+            const sy = firstMask.points[i + 1] * imageScale;
+            if (sx < minX) minX = sx;
+            if (sx > maxX) maxX = sx;
+            if (sy < minY) minY = sy;
+            if (sy > maxY) maxY = sy;
           }
-        } catch (err) {
-          console.warn('[AnnotationCanvas] 解析 currentProject 失败，用默认颜色逻辑', err);
-        }
 
-        // label -> color 映射按项目级持久化在 localStorage
-        const loadProjectLabelColorMap = (pid: number | null): Map<string, string> => {
-          if (!pid) return new Map();
-          const key = `labelColorMap:${pid}`;
-          try {
-            const raw = localStorage.getItem(key);
-            if (!raw) return new Map();
-            const obj = JSON.parse(raw) as Record<string, string>;
-            return new Map(Object.entries(obj));
-          } catch (err) {
-            console.warn('[AnnotationCanvas] 读取 labelColorMap 失败', err);
-            return new Map();
-          }
-        };
+          const centerX = (minX + maxX) / 2;
+          const centerY = (minY + maxY) / 2;
 
-        const saveProjectLabelColorMap = (pid: number | null, map: Map<string, string>) => {
-          if (!pid) return;
-          const key = `labelColorMap:${pid}`;
-          const obj: Record<string, string> = {};
-          map.forEach((value, keyLabel) => {
-            obj[keyLabel] = value;
-          });
-          try {
-            localStorage.setItem(key, JSON.stringify(obj));
-          } catch (err) {
-            console.warn('[AnnotationCanvas] 保存 labelColorMap 失败', err);
-          }
-        };
+          // 获取Stage元素的位置，转换为页面坐标
+          const stage = stageRef.current?.getStage();
+          if (stage) {
+            const container = stage.container();
+            const rect = container.getBoundingClientRect();
+            const pageX = rect.left + centerX;
+            const pageY = rect.top + centerY;
 
-        const labelColorMap = loadProjectLabelColorMap(projectId);
-
-        // 2. 根据新的 label 决定颜色
-        let targetColor: string | undefined;
-
-        if (trimmed.length > 0) {
-          // 有新 label：如果项目里已有这个 label，则复用旧颜色；否则分配未使用颜色
-          if (labelColorMap.has(trimmed)) {
-            targetColor = labelColorMap.get(trimmed)!;
-          } else {
-            const usedColors = new Set(labelColorMap.values());
-            let assigned: string | undefined;
-            for (const c of COLOR_PALETTE) {
-              if (!usedColors.has(c)) {
-                assigned = c;
-                break;
-              }
-            }
-            // 调色板都用完了就循环使用
-            targetColor = assigned || COLOR_PALETTE[usedColors.size % COLOR_PALETTE.length];
-
-            // 记录新 label 的颜色
-            labelColorMap.set(trimmed, targetColor);
-          }
-        } else {
-          // 没填新 label，仅希望调整颜色：对每个选中 mask 按现有 label 查映射，否则保持原色
-          const firstLabel = (targets[0].label || '').trim();
-          if (firstLabel && labelColorMap.has(firstLabel)) {
-            targetColor = labelColorMap.get(firstLabel)!;
-          } else {
-            targetColor = targets[0].color || COLOR_PALETTE[0];
+            setRenameModalPosition({ x: pageX, y: pageY });
+            setRenameInputValue(targets[0].label || '');
+            setShowRenameModal(true);
           }
         }
-
-        // 3. 应用到所有选中的 Mask
-        const updatedMasks = masks.map(mask => {
-          if (!selectedMaskIds.includes(mask.id)) return mask;
-
-          const nextLabel = trimmed.length > 0 ? trimmed : (mask.label || '');
-
-          return {
-            ...mask,
-            color: targetColor,
-            label: nextLabel,
-          };
-        });
-
-        // 4. 写回映射
-        saveProjectLabelColorMap(projectId, labelColorMap);
-
-        onMaskUpdate(updatedMasks);
+        return;
       }
     };
 
@@ -243,7 +200,158 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [toolMode, selectedMaskIds, masks, onMaskUpdate]);
+  }, [toolMode, selectedMaskIds, masks, onMaskUpdate, imageScale]);
+
+  // 处理R键改名弹窗的确认
+  const handleRenameConfirm = () => {
+    if (!selectedMaskIds || selectedMaskIds.length === 0) {
+      setShowRenameModal(false);
+      return;
+    }
+
+    const targets = masks.filter(mask => selectedMaskIds.includes(mask.id));
+    if (targets.length === 0) {
+      setShowRenameModal(false);
+      return;
+    }
+
+    const trimmed = renameInputValue.trim();
+
+    const COLOR_PALETTE = [
+      '#1F77B4', '#FF7F0E', '#2CA02C', '#D62728',
+      '#9467BD', '#8C564B', '#E377C2', '#7F7F7F',
+    ];
+
+    // 1. 读取当前项目（从 AnnotationPage 存在 localStorage 里的 currentProject）
+    let projectId: number | null = null;
+    try {
+      const savedProject = localStorage.getItem('currentProject');
+      if (savedProject) {
+        const p = JSON.parse(savedProject);
+        if (p && typeof p.id === 'number') {
+          projectId = p.id;
+        }
+      }
+    } catch (err) {
+      console.warn('[AnnotationCanvas] 解析 currentProject 失败，用默认颜色逻辑', err);
+    }
+
+    // label -> color 映射按项目级持久化在 localStorage
+    const loadProjectLabelColorMap = (pid: number | null): Map<string, string> => {
+      if (!pid) return new Map();
+      const key = `labelColorMap:${pid}`;
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return new Map();
+        const obj = JSON.parse(raw) as Record<string, string>;
+        return new Map(Object.entries(obj));
+      } catch (err) {
+        console.warn('[AnnotationCanvas] 读取 labelColorMap 失败', err);
+        return new Map();
+      }
+    };
+
+    const saveProjectLabelColorMap = (pid: number | null, map: Map<string, string>) => {
+      if (!pid) return;
+      const key = `labelColorMap:${pid}`;
+      const obj: Record<string, string> = {};
+      map.forEach((value, keyLabel) => {
+        obj[keyLabel] = value;
+      });
+      try {
+        localStorage.setItem(key, JSON.stringify(obj));
+      } catch (err) {
+        console.warn('[AnnotationCanvas] 保存 labelColorMap 失败', err);
+      }
+    };
+
+    const labelColorMap = loadProjectLabelColorMap(projectId);
+
+    // 2. 根据新的 label 决定颜色
+    let targetColor: string | undefined;
+
+    if (trimmed.length > 0) {
+      // 有新 label：如果项目里已有这个 label，则复用旧颜色；否则分配未使用颜色
+      if (labelColorMap.has(trimmed)) {
+        targetColor = labelColorMap.get(trimmed)!;
+      } else {
+        const usedColors = new Set(labelColorMap.values());
+        let assigned: string | undefined;
+        for (const c of COLOR_PALETTE) {
+          if (!usedColors.has(c)) {
+            assigned = c;
+            break;
+          }
+        }
+        // 调色板都用完了就循环使用
+        targetColor = assigned || COLOR_PALETTE[usedColors.size % COLOR_PALETTE.length];
+
+        // 记录新 label 的颜色
+        labelColorMap.set(trimmed, targetColor);
+      }
+    } else {
+      // 没填新 label，仅希望调整颜色：对每个选中 mask 按现有 label 查映射，否则保持原色
+      const firstLabel = (targets[0].label || '').trim();
+      if (firstLabel && labelColorMap.has(firstLabel)) {
+        targetColor = labelColorMap.get(firstLabel)!;
+      } else {
+        targetColor = targets[0].color || COLOR_PALETTE[0];
+      }
+    }
+
+    // 3. 应用到所有选中的 Mask
+    const updatedMasks = masks.map(mask => {
+      if (!selectedMaskIds.includes(mask.id)) return mask;
+
+      const nextLabel = trimmed.length > 0 ? trimmed : (mask.label || '');
+
+      return {
+        ...mask,
+        color: targetColor,
+        label: nextLabel,
+      };
+    });
+
+    // 4. 写回映射
+    saveProjectLabelColorMap(projectId, labelColorMap);
+
+    onMaskUpdate(updatedMasks);
+    setShowRenameModal(false);
+    setRenameModalPosition(null);
+  };
+
+  // 处理R键改名弹窗的取消
+  const handleRenameCancel = () => {
+    setShowRenameModal(false);
+    setRenameModalPosition(null);
+  };
+
+  // 弹窗打开时自动聚焦输入框
+  useEffect(() => {
+    if (showRenameModal && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [showRenameModal]);
+
+  // 处理ESC键关闭弹窗
+  useEffect(() => {
+    if (!showRenameModal) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowRenameModal(false);
+        setRenameModalPosition(null);
+      } else if (e.key === 'Enter') {
+        handleRenameConfirm();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showRenameModal, renameInputValue, selectedMaskIds, masks, onMaskUpdate]);
 
   // 切换到其他工具时，清空整块选中状态
   useEffect(() => {
@@ -701,6 +809,122 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     ));
   };
 
+  // 渲染R键改名弹窗
+  const renderRenameModal = () => {
+    if (!showRenameModal || !renameModalPosition) return null;
+
+    // 从 localStorage 读取当前项目下已有的 label -> color 映射，用于下拉选择
+    let existingLabels: Array<{ label: string; color: string }> = [];
+    let currentColor: string | undefined;
+    try {
+      const savedProject = localStorage.getItem('currentProject');
+      if (savedProject) {
+        const p = JSON.parse(savedProject);
+        const projectId = p && typeof p.id === 'number' ? p.id : null;
+        if (projectId) {
+          const key = `labelColorMap:${projectId}`;
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const obj = JSON.parse(raw) as Record<string, string>;
+            existingLabels = Object.entries(obj).map(([label, color]) => ({
+              label,
+              color,
+            }));
+            const trimmed = renameInputValue.trim();
+            if (trimmed && obj[trimmed]) {
+              currentColor = obj[trimmed];
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[AnnotationCanvas] 渲染重命名弹窗时读取 labelColorMap 失败', err);
+    }
+
+    return createPortal(
+      <div className="rename-modal-backdrop" onClick={handleRenameCancel}>
+        <div
+          className="rename-modal"
+          style={{
+            left: `${renameModalPosition.x}px`,
+            top: `${renameModalPosition.y}px`,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="rename-modal-title">
+            重命名标签（将应用到所有选中的 Mask）
+          </div>
+          {existingLabels.length > 0 && (
+            <div className="rename-modal-select-row">
+              <select
+                className="rename-modal-select"
+                value={
+                  existingLabels.some(
+                    (item) => item.label === renameInputValue.trim()
+                  )
+                    ? renameInputValue.trim()
+                    : ''
+                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val) {
+                    setRenameInputValue(val);
+                  }
+                }}
+              >
+                <option value="">选择已有标签（可选）</option>
+                {existingLabels.map((item) => (
+                  <option key={item.label} value={item.label}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              {currentColor && (
+                <div
+                  className="rename-modal-color-preview"
+                  style={{ backgroundColor: currentColor }}
+                  title={`当前颜色：${currentColor}`}
+                />
+              )}
+            </div>
+          )}
+          <input
+            ref={renameInputRef}
+            type="text"
+            className="rename-modal-input"
+            value={renameInputValue}
+            onChange={(e) => setRenameInputValue(e.target.value)}
+            onKeyDown={(e) => {
+              // 阻止事件继续冒泡到 window，避免触发 Delete / R / 方向键等全局快捷键
+              e.stopPropagation();
+              if (e.key === 'Enter') {
+                handleRenameConfirm();
+              } else if (e.key === 'Escape') {
+                handleRenameCancel();
+              }
+            }}
+            placeholder="请输入标签名"
+          />
+          <div className="rename-modal-actions">
+            <button
+              className="rename-modal-btn rename-modal-btn-cancel"
+              onClick={handleRenameCancel}
+            >
+              取消
+            </button>
+            <button
+              className="rename-modal-btn rename-modal-btn-confirm"
+              onClick={handleRenameConfirm}
+            >
+              确认
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body
+    );
+  };
+
   return (
     <div className="annotation-canvas-container">
       <Stage
@@ -768,6 +992,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
           {renderDrawingControlPoints()}
         </Layer>
       </Stage>
+      {renderRenameModal()}
     </div>
   );
 };
