@@ -5,8 +5,8 @@ export interface Image {
   url: string;
   originalName: string;
   size?: number;
-   width?: number;
-   height?: number;
+  width?: number;
+  height?: number;
   uploadTime: string;
 }
 

@@ -407,6 +407,21 @@ const AnnotationPage: React.FC = () => {
         }
       }
 
+      // 同步更新项目级 label -> color 映射（供画布 R 键、整块改名使用）
+      try {
+        const labelColorMap: Record<string, string> = {};
+        for (const [color, label] of colorLabelMapping.entries()) {
+          const trimmed = label.trim();
+          if (!trimmed) continue;
+          if (labelColorMap[trimmed]) continue; // 已有同名 label，则保持先出现的那一个颜色
+          labelColorMap[trimmed] = color;
+        }
+        const storageKey = `labelColorMap:${currentProject.id}`;
+        localStorage.setItem(storageKey, JSON.stringify(labelColorMap));
+      } catch (e) {
+        console.warn('[saveColorLabelMapping] 同步 labelColorMap 到 localStorage 失败:', e);
+      }
+
       alert(`批量更新完成！\n\n成功: ${successCount} 张\n失败: ${failCount} 张`);
       setShowLabelMappingModal(false);
       
@@ -1120,8 +1135,22 @@ const AnnotationPage: React.FC = () => {
                       type="text"
                       value={label}
                       onChange={(e) => {
+                        const raw = e.target.value;
+                        const trimmed = raw.trim();
                         const newMap = new Map(colorLabelMapping);
-                        newMap.set(color, e.target.value);
+                        newMap.set(color, raw);
+
+                        // 保证一个 label 只对应一种颜色：
+                        // 如果其他颜色已经有同名 label，则移除那些条目，保留当前这一条
+                        if (trimmed.length > 0) {
+                          for (const [c, l] of Array.from(newMap.entries())) {
+                            if (c === color) continue;
+                            if (l.trim() === trimmed) {
+                              newMap.delete(c);
+                            }
+                          }
+                        }
+
                         setColorLabelMapping(newMap);
                       }}
                       placeholder="输入 label 名称"

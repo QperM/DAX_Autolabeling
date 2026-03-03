@@ -11,7 +11,7 @@ const ManualAnnotation: React.FC = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { currentImage, images, annotations } = useSelector((state: any) => state.annotation);
-  const [selectedTool, setSelectedTool] = useState<'eraser' | 'select'>('eraser');
+  const [selectedTool, setSelectedTool] = useState<'eraser' | 'mask' | 'point'>('mask');
   const [brushSize, setBrushSize] = useState(20);
   const [activeLayer, setActiveLayer] = useState<'background' | 'annotation'>('background');
   const [masks, setMasks] = useState<Mask[]>([]);
@@ -19,8 +19,7 @@ const ManualAnnotation: React.FC = () => {
   const [polygons, setPolygons] = useState<Polygon[]>([]);
   const [showEraserDropdown, setShowEraserDropdown] = useState(false);
   const eraserWrapperRef = useRef<HTMLDivElement | null>(null);
-  const [colorLabelDrafts, setColorLabelDrafts] = useState<Record<string, string>>({});
-  const editingColorRef = useRef<string | null>(null);
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
 
   // 检查是否有选中的图片
   useEffect(() => {
@@ -84,7 +83,7 @@ const ManualAnnotation: React.FC = () => {
     loadAnnotation();
   }, [currentImage, annotations]);
 
-  const handleToolSelect = (tool: 'eraser' | 'select') => {
+  const handleToolSelect = (tool: 'eraser' | 'mask' | 'point') => {
     setSelectedTool(tool);
   };
 
@@ -108,8 +107,52 @@ const ManualAnnotation: React.FC = () => {
     navigate('/annotate');
   };
 
-  const handleSaveAnnotation = async () => {
-    if (!currentImage) return;
+  const handleNavigateImage = async (direction: 'prev' | 'next') => {
+    if (!currentImage || !images || images.length === 0) return;
+    const currentIndex = images.findIndex((img: Image) => img.id === currentImage.id);
+    if (currentIndex === -1) return;
+
+    // 自动保存：在切换图片之前，优先保存当前标注
+    if (autoSaveEnabled) {
+      const ok = await handleSaveAnnotation({ silent: true });
+      if (!ok) {
+        // 自动保存失败则不继续切换，避免丢失标注
+        return;
+      }
+    }
+
+    if (direction === 'prev') {
+      if (currentIndex === 0) return;
+      const prevImage = images[currentIndex - 1];
+      dispatch(setCurrentImage(prevImage));
+    } else {
+      if (currentIndex === images.length - 1) return;
+      const nextImage = images[currentIndex + 1];
+      dispatch(setCurrentImage(nextImage));
+    }
+  };
+
+  // 键盘左右方向键切换上一张 / 下一张图片
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        handleNavigateImage('prev');
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleNavigateImage('next');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [currentImage, images, autoSaveEnabled]);
+
+  const handleSaveAnnotation = async (options?: { silent?: boolean }): Promise<boolean> => {
+    if (!currentImage) return false;
+    const silent = options?.silent ?? false;
     try {
       console.log('[ManualAnnotation] 保存标注，imageId =', currentImage.id);
       await annotationApi.saveAnnotation(currentImage.id, {
@@ -117,10 +160,18 @@ const ManualAnnotation: React.FC = () => {
         boundingBoxes,
         polygons,
       });
-      alert('标注已保存');
+      if (!silent) {
+        alert('标注已保存');
+      }
+      return true;
     } catch (e: any) {
       console.error('[ManualAnnotation] 保存标注失败:', e);
-      alert(e?.message || '保存标注失败');
+      if (!silent) {
+        alert(e?.message || '保存标注失败');
+      } else {
+        alert(e?.message || '自动保存失败，请稍后重试手动保存');
+      }
+      return false;
     }
   };
 
@@ -153,47 +204,6 @@ const ManualAnnotation: React.FC = () => {
     return Array.from(map.entries());
   })();
 
-  // 当图例条目变化时，同步填充 drafts（但不打断正在编辑的那一行）
-  useEffect(() => {
-    setColorLabelDrafts((prev) => {
-      const next: Record<string, string> = { ...prev };
-      for (const [color, label] of colorLabelEntries) {
-        if (editingColorRef.current === color) continue;
-        next[color] = label;
-      }
-      // 清理已不存在的颜色
-      for (const key of Object.keys(next)) {
-        if (!colorLabelEntries.some(([c]) => c === key)) {
-          delete next[key];
-        }
-      }
-      return next;
-    });
-  }, [masks, boundingBoxes]);
-
-  const handleLabelRenameByColor = (color: string, newLabel: string) => {
-    const trimmed = newLabel.trim();
-    if (!trimmed) return;
-
-    setMasks((prev) =>
-      prev.map((mask) => {
-        const c = getEffectiveMaskColor(mask);
-        if (c !== color) return mask;
-        if ((mask.label || '').trim() === trimmed) return mask;
-        return { ...mask, label: trimmed };
-      })
-    );
-
-    setBoundingBoxes((prev) =>
-      prev.map((bbox) => {
-        const c = getEffectiveBboxColor(bbox);
-        if (c !== color) return bbox;
-        if ((bbox.label || '').trim() === trimmed) return bbox;
-        return { ...bbox, label: trimmed };
-      })
-    );
-  };
-
   if (!currentImage) {
     return null;
   }
@@ -212,31 +222,70 @@ const ManualAnnotation: React.FC = () => {
           </span>
         </div>
         <div className="header-right">
+          <button
+            type="button"
+            className="nav-arrow-button"
+            onClick={() => handleNavigateImage('prev')}
+            disabled={!images || images.length === 0 || images.findIndex((img: Image) => img.id === currentImage.id) <= 0}
+            title="上一张（←）"
+          >
+            ←
+          </button>
           <span className="image-counter">
             {images.findIndex((img: Image) => img.id === currentImage.id) + 1} / {images.length}
           </span>
+          <button
+            type="button"
+            className="nav-arrow-button"
+            onClick={() => handleNavigateImage('next')}
+            disabled={
+              !images ||
+              images.length === 0 ||
+              images.findIndex((img: Image) => img.id === currentImage.id) === images.length - 1
+            }
+            title="下一张（→）"
+          >
+            →
+          </button>
         </div>
       </header>
 
       {/* 主工作区域 */}
       <div className="annotation-main">
-        {/* 左侧悬浮面板 - 橡皮擦 / 选择工具 */}
+        {/* 左侧悬浮面板 - 选择整块 / 橡皮擦 / 点编辑 */}
         <div className="annotation-left-panel">
           <div className="tool-section">
-            <div className={`eraser-wrapper ${showEraserDropdown ? 'open' : ''}`} ref={eraserWrapperRef}>
+            {/* 整块 Mask 选择工具 */}
             <button
-              className={`eraser-card ${selectedTool === 'eraser' ? 'active' : ''}`}
+              className={`select-card ${selectedTool === 'mask' ? 'active' : ''}`}
+              onClick={() => {
+                handleToolSelect('mask');
+                setShowEraserDropdown(false);
+              }}
+              title="选择（整块 Mask：点击选中，高亮，Delete 删除，R 改颜色和标签）"
+            >
+              <div className="select-icon-box">
+                <span className="select-icon">🧊</span>
+              </div>
+              <div className="select-text-box">
+                <div className="select-title">选择</div>
+              </div>
+            </button>
+
+            <div className={`eraser-wrapper ${showEraserDropdown ? 'open' : ''}`} ref={eraserWrapperRef}>
+              <button
+                className={`eraser-card ${selectedTool === 'eraser' ? 'active' : ''}`}
                 onClick={() => {
                   handleToolSelect('eraser');
                   setShowEraserDropdown(prev => !prev);
                 }}
-              title="橡皮擦"
-            >
-              <div className="eraser-icon-box">
-                <span className="eraser-icon">🧹</span>
-              </div>
-              <div className="eraser-text-box">
-                <div className="eraser-title">橡皮擦</div>
+                title="橡皮擦"
+              >
+                <div className="eraser-icon-box">
+                  <span className="eraser-icon">🧹</span>
+                </div>
+                <div className="eraser-text-box">
+                  <div className="eraser-title">橡皮擦</div>
                 </div>
               </button>
               <div className="eraser-dropdown">
@@ -266,15 +315,19 @@ const ManualAnnotation: React.FC = () => {
             </div>
 
             <button
-              className={`select-card ${selectedTool === 'select' ? 'active' : ''}`}
-              onClick={() => handleToolSelect('select')}
-              title="选择（拖动Mask顶点微调）"
+              className={`select-card ${selectedTool === 'point' ? 'active' : ''}`}
+              onClick={() => {
+                handleToolSelect('point');
+                setShowEraserDropdown(false);
+              }}
+              title="点编辑（拖动/删除/插入 Mask 顶点微调）
+              I 插入 Mask 顶点，delete 删除 Mask 顶点"
             >
               <div className="select-icon-box">
                 <span className="select-icon">🎯</span>
               </div>
               <div className="select-text-box">
-                <div className="select-title">选择</div>
+                <div className="select-title">点编辑</div>
               </div>
             </button>
           </div>
@@ -288,7 +341,13 @@ const ManualAnnotation: React.FC = () => {
               masks={activeLayer === 'annotation' ? masks : []}
               boundingBoxes={activeLayer === 'annotation' ? boundingBoxes : []}
               polygons={activeLayer === 'annotation' ? polygons : []}
-              toolMode={selectedTool === 'eraser' ? 'eraser' : 'select'}
+              toolMode={
+                selectedTool === 'eraser'
+                  ? 'eraser'
+                  : selectedTool === 'mask'
+                    ? 'mask-select'
+                    : 'select'
+              }
               brushSize={brushSize}
               onMaskUpdate={(updatedMasks) => {
                 console.log('[ManualAnnotation] onMaskUpdate, count =', updatedMasks.length);
@@ -310,7 +369,8 @@ const ManualAnnotation: React.FC = () => {
               <h4>当前工具</h4>
               <div className="current-tool">
                 {selectedTool === 'eraser' && '橡皮擦'}
-                {selectedTool === 'select' && '选择（拖动Mask顶点）'}
+                {selectedTool === 'mask' && '选择（整块 Mask：点击选中，高亮，Delete 删除，R 改颜色和标签）'}
+                {selectedTool === 'point' && '点编辑（拖动/删除"Delete"/插入"I"）'}
               </div>
             </div>
 
@@ -342,13 +402,23 @@ const ManualAnnotation: React.FC = () => {
 
             <div className="property-section">
               <h4>保存</h4>
-              <button
-                type="button"
-                className="primary-button"
-                onClick={handleSaveAnnotation}
-              >
-                保存标注（JSON）
-              </button>
+              <div className="save-row">
+                <label className="auto-save-toggle">
+                  <input
+                    type="checkbox"
+                    checked={autoSaveEnabled}
+                    onChange={(e) => setAutoSaveEnabled(e.target.checked)}
+                  />
+                  <span>自动保存</span>
+                </label>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => handleSaveAnnotation()}
+                >
+                  保存标注（JSON）
+                </button>
+              </div>
             </div>
           </div>
 
@@ -363,33 +433,17 @@ const ManualAnnotation: React.FC = () => {
                       className="label-color-dot"
                       style={{ backgroundColor: color }}
                     />
-                    <input
+                    <span
                       className="label-name"
                       title={`颜色: ${color}（当前: ${label}）`}
-                      value={colorLabelDrafts[color] ?? label}
-                      onFocus={() => {
-                        editingColorRef.current = color;
-                      }}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setColorLabelDrafts((prev) => ({ ...prev, [color]: v }));
-                      }}
-                      onBlur={(e) => {
-                        editingColorRef.current = null;
-                        const v = e.target.value;
-                        handleLabelRenameByColor(color, v);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          (e.target as HTMLInputElement).blur();
-                        }
-                      }}
-                    />
+                    >
+                      {label}
+                    </span>
                   </div>
                 ))}
               </div>
               <div className="label-legend-hint">
-                提示：在这里改的是“颜色对应的标签名”，同色的所有对象会一起改名。
+                当前显示的是“颜色-标签”对照关系，仅供查看；如需修改，请在左侧使用“选择”工具选中对象后按 R 键重命名。
               </div>
             </div>
           )}

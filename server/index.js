@@ -330,7 +330,7 @@ app.post('/api/upload', upload.array('images', 500), (req, res) => {
         size: file.size,
         uploadTime: new Date().toISOString()
       };
-
+      
       db.insertImage(fileInfo, (err, imageId) => {
         if (err) {
           console.error('保存图片信息失败:', err);
@@ -660,9 +660,9 @@ app.post('/api/annotate/auto', async (req, res) => {
           console.log(`[AI标注] 使用数据库中的图片尺寸: ${imgWidth}x${imgHeight}`);
         }
         
-        const mockAnnotations = {
-          masks: [
-            {
+    const mockAnnotations = {
+      masks: [
+        {
               id: `mask-${imageId}-1`,
               points: [
                 imgWidth * 0.2, imgHeight * 0.2,
@@ -671,26 +671,26 @@ app.post('/api/annotate/auto', async (req, res) => {
                 imgWidth * 0.2, imgHeight * 0.4
               ],
               label: prompt || 'object'
-            }
-          ],
-          boundingBoxes: [
-            {
+        }
+      ],
+      boundingBoxes: [
+        {
               id: `bbox-${imageId}-1`,
               x: imgWidth * 0.2,
               y: imgHeight * 0.2,
               width: imgWidth * 0.2,
               height: imgHeight * 0.2,
               label: prompt || 'object'
-            }
-          ]
-        };
-        
-        res.json({
-          success: true,
-          annotations: mockAnnotations,
+        }
+      ]
+    };
+    
+    res.json({
+      success: true,
+      annotations: mockAnnotations,
           message: '自动标注完成（使用模拟数据，Grounded SAM2服务未连接）',
           warning: `Grounded SAM2服务不可用: ${samError.message}。请检查服务是否运行在 ${GROUNDED_SAM2_API_URL}`
-        });
+    });
       } else {
         throw samError;
       }

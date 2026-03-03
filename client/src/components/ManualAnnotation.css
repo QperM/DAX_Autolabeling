@@ -64,6 +64,37 @@
   color: #495057;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nav-arrow-button {
+  background: #ffffff;
+  border: 1px solid #e1e5e9;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #495057;
+  transition: all 0.15s ease;
+}
+
+.nav-arrow-button:hover:not(:disabled) {
+  background: #f8f9fa;
+  border-color: #adb5bd;
+}
+
+.nav-arrow-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* 主工作区域 */
 .annotation-main {
   flex: 1;
@@ -112,6 +143,12 @@
   cursor: pointer;
   transition: all 0.2s ease;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+/* 第一个按钮之后的按钮统一添加左边距 */
+.tool-section > .select-card:not(:first-child),
+.tool-section > .eraser-wrapper {
+  margin-left: 0.75rem;
 }
 
 .eraser-card:hover,
@@ -169,7 +206,7 @@
 
 .eraser-wrapper {
   position: relative;
-  margin-right: 0.75rem;
+  margin-left: 0.75rem;
 }
 
 .eraser-dropdown {
@@ -430,18 +467,8 @@
 .label-name {
   flex: 1;
   min-width: 0;
-  padding: 0.25rem 0.4rem;
-  border-radius: 4px;
-  border: 1px solid #ced4da;
   font-size: 0.9rem;
   color: #333;
-  background: #fff;
-}
-
-.label-name:focus {
-  outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.15);
 }
 
 .label-legend-hint {
@@ -480,6 +507,29 @@
 
 .layer-item.active .layer-visible {
   filter: brightness(0) invert(1);
+}
+
+/* 保存区域：自动保存开关 + 按钮一行展示 */
+.save-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.auto-save-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: #495057;
+  cursor: pointer;
+}
+
+.auto-save-toggle input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
 }
 
 .layer-visible {
