@@ -18,7 +18,7 @@ const AnnotationPage: React.FC = () => {
   const [previewImageSize, setPreviewImageSize] = useState<{ width: number; height: number } | null>(null);
   const [thumbnailMasks, setThumbnailMasks] = useState<Record<number, Mask[]>>({});
   const [thumbnailSizes, setThumbnailSizes] = useState<Record<number, { width: number; height: number }>>({});
-  const [showThumbnailMasks, setShowThumbnailMasks] = useState(true);
+  const [showThumbnailMasks, setShowThumbnailMasks] = useState(false);
   // 缩略图虚拟滚动（Windows 文件管理器式：只渲染视口范围内）
   const thumbnailsScrollRef = useRef<HTMLDivElement | null>(null);
   const thumbnailsMeasureRef = useRef<HTMLDivElement | null>(null);
@@ -230,6 +230,16 @@ const AnnotationPage: React.FC = () => {
       console.warn('[AnnotationPage] 缩略图加载 masks 失败, imageId =', imageId, e);
     }
   };
+
+  // 当开启缩略图 Mask 预览或可视区域变化时，为当前视口内的缩略图预加载 Mask
+  useEffect(() => {
+    if (!showThumbnailMasks) return;
+    if (!visibleThumbImages || visibleThumbImages.length === 0) return;
+
+    visibleThumbImages.forEach((img: Image) => {
+      ensureThumbnailMasks(img.id);
+    });
+  }, [showThumbnailMasks, visibleThumbImages]);
 
   // 从 localStorage 恢复当前项目
   useEffect(() => {
