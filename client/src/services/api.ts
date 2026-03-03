@@ -99,6 +99,8 @@ export const annotationApi = {
       baseScoreThresh?: number;
       lowerScoreThresh?: number;
       maxDetections?: number;
+      maskThreshold?: number;
+      maxPolygonPoints?: number;
     }
   ): Promise<AutoAnnotationResponse> => {
     const response = await apiClient.post<AutoAnnotationResponse>('/annotate/auto', {

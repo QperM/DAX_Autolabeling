@@ -150,6 +150,8 @@ async def auto_label(
     base_score_thresh: float = Form(0.5, description="初始置信度阈值（默认 0.5）"),
     lower_score_thresh: float = Form(0.3, description="兜底置信度下限（默认 0.3）"),
     max_detections: int = Form(50, description="每张图片最多检测目标数（默认 50）"),
+    mask_threshold: float = Form(0.5, description="Mask 二值化阈值（影响轮廓紧/松，默认 0.5）"),
+    max_polygon_points: int = Form(80, description="轮廓最大点数（越大越精细，默认 80）"),
 ):
     """
     自动标注接口
@@ -182,7 +184,8 @@ async def auto_label(
         print(f"  - 提示词: {prompt_text or '（空，使用所有类别）'}")
         print(
             f"  - 模型参数: base_score_thresh={base_score_thresh}, "
-            f"lower_score_thresh={lower_score_thresh}, max_detections={max_detections}"
+            f"lower_score_thresh={lower_score_thresh}, max_detections={max_detections}, "
+            f"mask_threshold={mask_threshold}, max_polygon_points={max_polygon_points}"
         )
 
         # 如果模型已加载，使用真实推理
@@ -217,6 +220,8 @@ async def auto_label(
                 base_score_thresh_clamped = float(max(0.01, min(0.99, base_score_thresh)))
                 lower_score_thresh_clamped = float(max(0.01, min(0.99, lower_score_thresh)))
                 max_detections_clamped = int(max(1, min(500, max_detections)))
+                mask_threshold_clamped = float(max(0.01, min(0.99, mask_threshold)))
+                max_polygon_points_clamped = int(max(10, min(2000, max_polygon_points)))
                 prompt_tokens = [t.strip().lower() for t in prompt_text.split(",") if t.strip()] if prompt_text else []
 
                 result_masks = []
@@ -252,12 +257,12 @@ async def auto_label(
                             # [1, H, W] -> [H, W]
                             if mask_i.ndim == 3:
                                 mask_i = mask_i[0]
-                            binary = (mask_i >= 0.5).astype(float)
+                            binary = (mask_i >= mask_threshold_clamped).astype(float)
                             contours = measure.find_contours(binary, 0.5)
                             if contours:
                                 # 取点数最多的一条轮廓，并适当抽样，避免点太密
                                 contour = max(contours, key=lambda c: c.shape[0])
-                                step = max(1, len(contour) // 80)  # 最多控制在 ~80 个点
+                                step = max(1, len(contour) // max_polygon_points_clamped)  # 控制点数上限
                                 for (row, col) in contour[::step]:
                                     # 注意 find_contours 返回 (row, col) = (y, x)
                                     polygon_points.extend([float(col), float(row)])
@@ -328,11 +333,11 @@ async def auto_label(
                         mask_i = masks_np[best_idx]
                         if mask_i.ndim == 3:
                             mask_i = mask_i[0]
-                        binary = (mask_i >= 0.5).astype(float)
+                        binary = (mask_i >= mask_threshold_clamped).astype(float)
                         contours = measure.find_contours(binary, 0.5)
                         if contours:
                             contour = max(contours, key=lambda c: c.shape[0])
-                            step = max(1, len(contour) // 80)
+                            step = max(1, len(contour) // max_polygon_points_clamped)
                             for (row, col) in contour[::step]:
                                 polygon_points.extend([float(col), float(row)])
 

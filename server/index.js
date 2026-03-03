@@ -528,6 +528,12 @@ app.post('/api/annotate/auto', async (req, res) => {
         if (typeof modelParams.maxDetections === 'number') {
           formData.append('max_detections', String(modelParams.maxDetections));
         }
+        if (typeof modelParams.maskThreshold === 'number') {
+          formData.append('mask_threshold', String(modelParams.maskThreshold));
+        }
+        if (typeof modelParams.maxPolygonPoints === 'number') {
+          formData.append('max_polygon_points', String(modelParams.maxPolygonPoints));
+        }
       }
       
       // 添加图片URL作为备用参数（某些 API 可能支持）

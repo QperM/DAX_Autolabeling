@@ -1,6 +1,6 @@
 # 智能图像标注系统
 
-**版本：V1.5**  
+**版本：V1.6**  
 **最后更新：2026年3月3日**
 
 ## 项目概述
@@ -57,6 +57,10 @@
 - ✅ 笔刷大小调节（橡皮擦半径支持快捷下拉调节）
 - ✅ 支持 Grounded SAM2 生成的 Mask 在前端画布中叠加预览
 - ✅ Mask 顶点级编辑：选择工具下支持拖动顶点、删除顶点（Delete）、插入新顶点（I），顶点高亮可视化
+- ✅ 整块 Mask 选择：点击/框选高亮，Delete 批量删除，R 批量重命名并按项目保持「标签-颜色」一致
+- ✅ 新建 Mask：类似 labelme 的逐点点击闭合生成（默认灰色“未分配”，后续可用选择+R 命名并自动分配颜色）
+- ✅ 自动保存：切换图片前可选自动保存当前标注
+- ✅ 图片导航：头部按钮与键盘左右方向键切换图片
 
 ### 后端功能模块
 
@@ -80,6 +84,7 @@
 - ✅ 图片查询API（支持按项目筛选）
 - ✅ 图片删除API（同步删除数据库和文件）
 - ✅ 标注数据API（保存、查询、更新）
+- ✅ AI 自动标注参数透传：前端滑杆（按项目保存）→ Node → Python 服务（真实生效）
 
 ## 技术架构
 
@@ -302,7 +307,28 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 - `POST /api/annotations/:imageId` - 保存标注数据
 - `GET /api/annotations/:imageId` - 获取标注数据
 - `PUT /api/annotations/:imageId` - 更新标注数据
-- `POST /api/annotate/auto` - 自动标注（预留接口）
+- `POST /api/annotate/auto` - 自动标注（已接入 Python AI 服务，可选传参）
+
+#### `POST /api/annotate/auto` 请求示例
+
+```json
+{
+  "imageId": 123,
+  "prompt": "person, dog",
+  "modelParams": {
+    "baseScoreThresh": 0.5,
+    "lowerScoreThresh": 0.3,
+    "maxDetections": 50,
+    "maskThreshold": 0.5,
+    "maxPolygonPoints": 80
+  }
+}
+```
+
+说明：
+- `prompt` 为空则尝试识别常见目标
+- `modelParams` 会在前端按项目保存（`localStorage` 的 `modelParams:<projectId>`）
+- `maskThreshold` 会影响轮廓“更紧/更松”，`maxPolygonPoints` 影响轮廓精细度（点数越多越贴边但更重）
 
 ## 功能特性
 
@@ -347,6 +373,10 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 - [x] ZIP 压缩包批量上传：上传后自动解压导入多张图片并写入数据库
 - [x] ZIP 解压进度条：前端展示“上传进度 + 解压进度”，解压完成自动进入“已上传图片”
 - [x] 新增解压 job 查询接口：`GET /api/upload-jobs/:jobId`
+- [x] 已上传图片缩略图虚拟滚动：类似 Windows 文件管理器，仅渲染视口范围缩略图
+- [x] 缩略图 Mask 预览开关（默认关闭），开启后会预加载视口内缩略图的 Mask
+- [x] 项目级「标签-颜色」一致性：同一标签在同一项目中保持同色（前端 `localStorage` 持久化）
+- [x] AI 模型参数弹窗：支持调节检测阈值/目标数，并新增 `maskThreshold`（描边紧/松）、`maxPolygonPoints`（轮廓精细度）
 
 ### V1.3 最新功能（2026年3月2日）
 - [x] 在 Python AI 服务中接入真实检测/分割模型（torchvision Mask R-CNN COCO 预训练），替代纯模拟多边形

@@ -59,10 +59,14 @@ const AnnotationPage: React.FC = () => {
     baseScoreThresh: number;
     lowerScoreThresh: number;
     maxDetections: number;
+    maskThreshold: number;
+    maxPolygonPoints: number;
   }>({
     baseScoreThresh: 0.5,
     lowerScoreThresh: 0.3,
     maxDetections: 50,
+    maskThreshold: 0.5,
+    maxPolygonPoints: 80,
   });
 
   // 图片 URL 缓存破坏因子：只在列表内容发生变化时更新，避免每次 render 都触发图片重新请求
@@ -91,6 +95,8 @@ const AnnotationPage: React.FC = () => {
         baseScoreThresh: 0.5,
         lowerScoreThresh: 0.3,
         maxDetections: 50,
+        maskThreshold: 0.5,
+        maxPolygonPoints: 80,
       });
       return;
     }
@@ -102,11 +108,15 @@ const AnnotationPage: React.FC = () => {
         baseScoreThresh: number;
         lowerScoreThresh: number;
         maxDetections: number;
+        maskThreshold: number;
+        maxPolygonPoints: number;
       }>;
       setModelParams({
         baseScoreThresh: typeof parsed.baseScoreThresh === 'number' ? parsed.baseScoreThresh : 0.5,
         lowerScoreThresh: typeof parsed.lowerScoreThresh === 'number' ? parsed.lowerScoreThresh : 0.3,
         maxDetections: typeof parsed.maxDetections === 'number' ? parsed.maxDetections : 50,
+        maskThreshold: typeof parsed.maskThreshold === 'number' ? parsed.maskThreshold : 0.5,
+        maxPolygonPoints: typeof parsed.maxPolygonPoints === 'number' ? parsed.maxPolygonPoints : 80,
       });
     } catch (e) {
       console.warn('加载模型参数失败，将使用默认值', e);
@@ -497,6 +507,102 @@ const AnnotationPage: React.FC = () => {
     }
   };
 
+  // 删除某个颜色对应的所有标注（跨项目所有图片）
+  const deleteAnnotationsByColor = async (targetColor: string) => {
+    if (!currentProject || images.length === 0) {
+      alert('当前没有可更新的图片');
+      return;
+    }
+
+    const label = (colorLabelMapping.get(targetColor) || '').trim();
+    const confirmMsg =
+      `确定要删除该颜色对应的所有标注吗？\n\n` +
+      `颜色: ${targetColor}${label ? `\nLabel: ${label}` : ''}\n\n` +
+      `这会遍历所有 ${images.length} 张图片，并删除所有 color = ${targetColor} 的 Mask / 框。\n` +
+      `该操作不可撤销。`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setLabelMappingLoading(true);
+    let affectedImages = 0;
+    let deletedMasks = 0;
+    let deletedBBoxes = 0;
+    let failCount = 0;
+
+    try {
+      for (const image of images) {
+        try {
+          const resp = await annotationApi.getAnnotation(image.id);
+          const anno = resp?.annotation;
+          if (!anno) continue;
+
+          const beforeMasks = (anno.masks || []) as Mask[];
+          const beforeBBoxes = (anno.boundingBoxes || []) as BoundingBox[];
+
+          const afterMasks = beforeMasks.filter((m) => m.color !== targetColor);
+          const afterBBoxes = beforeBBoxes.filter((b) => b.color !== targetColor);
+
+          const masksRemoved = beforeMasks.length - afterMasks.length;
+          const bboxesRemoved = beforeBBoxes.length - afterBBoxes.length;
+          if (masksRemoved === 0 && bboxesRemoved === 0) continue;
+
+          deletedMasks += masksRemoved;
+          deletedBBoxes += bboxesRemoved;
+          affectedImages += 1;
+
+          await annotationApi.saveAnnotation(image.id, {
+            masks: afterMasks,
+            boundingBoxes: afterBBoxes,
+            polygons: anno.polygons || [],
+          });
+        } catch (e) {
+          console.error(`[deleteAnnotationsByColor] 更新图片 ${image.id} 失败:`, e);
+          failCount++;
+        }
+      }
+
+      // 更新当前弹窗内的映射表：移除该颜色条目
+      const nextMap = new Map(colorLabelMapping);
+      nextMap.delete(targetColor);
+      setColorLabelMapping(nextMap);
+
+      // 同步更新项目级 label -> color 映射（供画布 R 键、整块改名使用）
+      try {
+        const labelColorMap: Record<string, string> = {};
+        for (const [color, l] of nextMap.entries()) {
+          const trimmed = l.trim();
+          if (!trimmed) continue;
+          if (labelColorMap[trimmed]) continue;
+          labelColorMap[trimmed] = color;
+        }
+        const storageKey = `labelColorMap:${currentProject.id}`;
+        localStorage.setItem(storageKey, JSON.stringify(labelColorMap));
+      } catch (e) {
+        console.warn('[deleteAnnotationsByColor] 同步 labelColorMap 到 localStorage 失败:', e);
+      }
+
+      // 清理缩略图缓存，避免 UI 仍显示旧 masks
+      setThumbnailMasks({});
+
+      await refreshAnnotationSummary();
+      if (selectedPreviewImage && previewDisplayMode === 'mask') {
+        loadPreviewMasks(selectedPreviewImage.id);
+      }
+
+      alert(
+        `删除完成！\n\n` +
+          `影响图片: ${affectedImages} 张\n` +
+          `删除 Masks: ${deletedMasks}\n` +
+          `删除 框: ${deletedBBoxes}\n` +
+          `失败: ${failCount} 张`
+      );
+    } catch (e) {
+      console.error('[deleteAnnotationsByColor] 批量删除失败:', e);
+      alert('批量删除失败: ' + (e as Error).message);
+    } finally {
+      setLabelMappingLoading(false);
+    }
+  };
+
   const handleUploadComplete = (newImages: Image[]) => {
     if (!currentProject) {
       alert('请先创建或选择项目！');
@@ -732,10 +838,6 @@ const AnnotationPage: React.FC = () => {
                         >
                           调整模型参数
                         </button>
-                        <div className="ai-prompt-helper">
-                          无提示词默认识别全部目标。
-                          点击上方按钮，在弹窗中添加/编辑提示词。多条提示词会按顺序传给模型。
-                        </div>
                       </div>
                       {/* 标注结果汇总模块（移动到提示词右侧） */}
                       <div className="ai-summary">
@@ -1265,6 +1367,56 @@ const AnnotationPage: React.FC = () => {
                   限制每张图最多输出多少个目标，避免结果过多影响标注效率（默认 50）。
                 </div>
               </div>
+
+              <div className="model-param-row">
+                <div className="model-param-label">
+                  Mask 二值化阈值（描边紧/松）
+                  <span className="model-param-value">
+                    {modelParams.maskThreshold.toFixed(2)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.1}
+                  max={0.9}
+                  step={0.05}
+                  value={modelParams.maskThreshold}
+                  onChange={(e) =>
+                    setModelParams((prev) => ({
+                      ...prev,
+                      maskThreshold: Number(e.target.value),
+                    }))
+                  }
+                />
+                <div className="model-param-hint">
+                  这是把模型输出的 mask 概率图变成轮廓的阈值。调高更“收紧”但可能缺一块；调低更“外扩”但更容易粘连（默认 0.50）。
+                </div>
+              </div>
+
+              <div className="model-param-row">
+                <div className="model-param-label">
+                  轮廓精细度（最大点数）
+                  <span className="model-param-value">
+                    {modelParams.maxPolygonPoints}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={40}
+                  max={400}
+                  step={10}
+                  value={modelParams.maxPolygonPoints}
+                  onChange={(e) =>
+                    setModelParams((prev) => ({
+                      ...prev,
+                      maxPolygonPoints: Number(e.target.value),
+                    }))
+                  }
+                />
+                <div className="model-param-hint">
+                  控制从 mask 轮廓抽样的最大点数。越大边缘越贴合，但生成/渲染更重（默认 80）。
+                </div>
+              </div>
             </div>
             <div className="ai-prompt-modal-actions">
               <button
@@ -1276,6 +1428,8 @@ const AnnotationPage: React.FC = () => {
                     baseScoreThresh: 0.5,
                     lowerScoreThresh: 0.3,
                     maxDetections: 50,
+                    maskThreshold: 0.5,
+                    maxPolygonPoints: 80,
                   });
                 }}
               >
@@ -1347,6 +1501,15 @@ const AnnotationPage: React.FC = () => {
                       }}
                       placeholder="输入 label 名称"
                     />
+                    <button
+                      type="button"
+                      className="label-mapping-delete-btn"
+                      title="删除该颜色对应的所有标注（跨项目所有图片）"
+                      disabled={labelMappingLoading}
+                      onClick={() => !labelMappingLoading && deleteAnnotationsByColor(color)}
+                    >
+                      删除
+                    </button>
                   </div>
                 ))}
               </div>

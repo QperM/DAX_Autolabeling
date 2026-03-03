@@ -105,6 +105,11 @@ python app.py
   - `image`: 图片文件（必需）
   - `text_prompt` (可选): 文本提示词，例如 "person", "car", "dog"
   - `prompt` (可选): 提示词别名，与 text_prompt 功能相同
+  - `base_score_thresh` (可选): 初始置信度阈值（默认 0.5）
+  - `lower_score_thresh` (可选): 兜底置信度下限（默认 0.3）
+  - `max_detections` (可选): 最多检测目标数（默认 50）
+  - `mask_threshold` (可选): Mask 二值化阈值（影响轮廓紧/松，默认 0.5）
+  - `max_polygon_points` (可选): 轮廓最大点数（影响轮廓精细度，默认 80）
 
 **响应格式：**
 ```json
@@ -144,7 +149,11 @@ Node.js 后端（`server/index.js`）已配置为连接此服务：
 
 ## 当前状态
 
-⚠️ **当前返回模拟数据**，用于测试 API 连接和 Node.js 后端集成。
+✅ **当前已接入 torchvision 的 Mask R-CNN（COCO 预训练）**，用于检测与实例分割，并将 mask 轮廓转为多边形点返回给前端。
+
+提示：
+- 该服务目前不是“原版 Grounded SAM2 权重”，而是以 Mask R-CNN 作为可用的检测/分割后端，保持接口一致，便于后续替换为真正的 Grounded SAM2。
+- `mask_threshold` 与 `max_polygon_points` 会直接影响返回轮廓的贴边程度与点数密度，可用于“更保守/更激进”的描边调参。
 
 ## 下一步：集成 Grounded SAM2 模型
 
