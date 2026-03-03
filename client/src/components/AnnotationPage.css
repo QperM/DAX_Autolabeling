@@ -899,12 +899,25 @@
 }
 
 .thumbnails-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: 1rem;
-  padding: 1.5rem;
+  padding: 0;
   max-height: 300px;
   overflow-y: auto;
+}
+
+/* 缩略图虚拟滚动容器（数据全量，但只渲染可见区域） */
+.thumbnails-virtual-scroll {
+  position: relative;
+}
+
+.thumbnails-virtual-measure {
+  /* padding 放在 measure 层，便于测量内容宽度并与定位一致 */
+  padding: 1.5rem;
+}
+
+.thumbnails-virtual-inner {
+  position: relative;
+  width: 100%;
+  /* 高度由内联 style 控制（总高度） */
 }
 
 .thumbnail-item-small {

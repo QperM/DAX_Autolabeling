@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { setImages, setLoading, setError, setCurrentImage } from '../store/annotationSlice';
@@ -19,6 +19,15 @@ const AnnotationPage: React.FC = () => {
   const [thumbnailMasks, setThumbnailMasks] = useState<Record<number, Mask[]>>({});
   const [thumbnailSizes, setThumbnailSizes] = useState<Record<number, { width: number; height: number }>>({});
   const [showThumbnailMasks, setShowThumbnailMasks] = useState(true);
+  // 缩略图虚拟滚动（Windows 文件管理器式：只渲染视口范围内）
+  const thumbnailsScrollRef = useRef<HTMLDivElement | null>(null);
+  const thumbnailsMeasureRef = useRef<HTMLDivElement | null>(null);
+  // callback ref 的兜底：确保节点挂载时能触发重新测量（避免条件渲染导致测量为 0）
+  const [thumbScrollEl, setThumbScrollEl] = useState<HTMLDivElement | null>(null);
+  const [thumbMeasureEl, setThumbMeasureEl] = useState<HTMLDivElement | null>(null);
+  const thumbScrollRafRef = useRef<number | null>(null);
+  const [thumbScrollTop, setThumbScrollTop] = useState(0);
+  const [thumbViewport, setThumbViewport] = useState({ width: 0, height: 0 });
   const [currentProject, setCurrentProject] = useState<any>(null);  // 当前项目
   const [aiProgress, setAiProgress] = useState(0);  // AI标注进度 0-100
   const [batchAnnotating, setBatchAnnotating] = useState(false);  // 批量标注进行中
@@ -46,6 +55,9 @@ const AnnotationPage: React.FC = () => {
   const [colorLabelMapping, setColorLabelMapping] = useState<Map<string, string>>(new Map()); // 颜色 -> label 映射
   const [labelMappingLoading, setLabelMappingLoading] = useState(false); // 加载/保存中
 
+  // 图片 URL 缓存破坏因子：只在列表内容发生变化时更新，避免每次 render 都触发图片重新请求
+  const [imageCacheBust, setImageCacheBust] = useState(0);
+
   // 统一的颜色调色板（项目级、按 label 固定）
   // 使用一组高对比度颜色，便于在同一项目中区分不同目标
   const COLOR_PALETTE = [
@@ -66,6 +78,84 @@ const AnnotationPage: React.FC = () => {
   useEffect(() => {
     labelColorMapRef.current = new Map();
   }, [currentProject?.id]);
+
+  useEffect(() => {
+    // project 或图片列表变动时更新一次即可
+    setImageCacheBust((v) => (v + 1) % 1_000_000);
+  }, [currentProject?.id, images.length]);
+
+  useEffect(() => {
+    // 注意：缩略图容器是条件渲染的（项目/图片加载后才出现），所以这里必须在依赖变化时重试挂载
+    const scrollEl = thumbScrollEl || thumbnailsScrollRef.current;
+    const measureEl = thumbMeasureEl || thumbnailsMeasureRef.current;
+    if (!scrollEl || !measureEl) return;
+
+    const updateViewport = () => {
+      const cs = window.getComputedStyle(measureEl);
+      const padLeft = parseFloat(cs.paddingLeft || '0') || 0;
+      const padRight = parseFloat(cs.paddingRight || '0') || 0;
+      // 用 scroll 容器的 clientWidth 更稳定（避免内部绝对定位导致测量异常）
+      const contentW = Math.max(0, Math.round(scrollEl.clientWidth - padLeft - padRight));
+      const contentH = Math.max(0, Math.round(scrollEl.clientHeight));
+
+      setThumbViewport((prev) => {
+        if (prev.width === contentW && prev.height === contentH) return prev;
+        return { width: contentW, height: contentH };
+      });
+      setThumbScrollTop(scrollEl.scrollTop || 0);
+    };
+
+    updateViewport();
+
+    const ro = new ResizeObserver(() => updateViewport());
+    ro.observe(scrollEl);
+    ro.observe(measureEl);
+
+    return () => {
+      ro.disconnect();
+      if (thumbScrollRafRef.current) {
+        cancelAnimationFrame(thumbScrollRafRef.current);
+        thumbScrollRafRef.current = null;
+      }
+    };
+  }, [currentProject?.id, images.length, thumbScrollEl, thumbMeasureEl]);
+
+  const THUMB_SIZE = 125;
+  const THUMB_GAP = 16; // 对应 CSS gap: 1rem
+  const thumbStride = THUMB_SIZE + THUMB_GAP;
+
+  const thumbCols = useMemo(() => {
+    const w = thumbViewport.width;
+    if (!w) return 1;
+    return Math.max(1, Math.floor((w + THUMB_GAP) / thumbStride));
+  }, [thumbViewport.width, thumbStride, THUMB_GAP]);
+
+  const thumbTotalRows = useMemo(() => {
+    return Math.ceil(images.length / thumbCols);
+  }, [images.length, thumbCols]);
+
+  const thumbTotalHeight = useMemo(() => {
+    if (images.length === 0) return 0;
+    return Math.max(0, thumbTotalRows * THUMB_SIZE + Math.max(0, thumbTotalRows - 1) * THUMB_GAP);
+  }, [thumbTotalRows, images.length]);
+
+  const virtualThumbRange = useMemo(() => {
+    const viewH = thumbViewport.height || 0;
+    const overscanRows = 2;
+    const rowHeight = thumbStride;
+    const startRow = Math.max(0, Math.floor((thumbScrollTop - overscanRows * rowHeight) / rowHeight));
+    const endRow = Math.min(
+      Math.max(0, thumbTotalRows - 1),
+      Math.ceil((thumbScrollTop + viewH + overscanRows * rowHeight) / rowHeight)
+    );
+    const startIndex = startRow * thumbCols;
+    const endIndex = Math.min(images.length, (endRow + 1) * thumbCols);
+    return { startIndex, endIndex };
+  }, [thumbCols, thumbScrollTop, thumbTotalRows, thumbViewport.height, images.length, thumbStride]);
+
+  const visibleThumbImages = useMemo(() => {
+    return images.slice(virtualThumbRange.startIndex, virtualThumbRange.endIndex);
+  }, [images, virtualThumbRange.startIndex, virtualThumbRange.endIndex]);
 
   const assignColorsForAnnotations = (input: { masks: Mask[]; boundingBoxes: BoundingBox[] }) => {
     const labelColorMap = labelColorMapRef.current;
@@ -668,7 +758,7 @@ const AnnotationPage: React.FC = () => {
 
                     <div className="preview-image-layer">
                     <img 
-                      src={`http://localhost:3001${selectedPreviewImage.url}?t=${Date.now()}`} 
+                      src={`http://localhost:3001${selectedPreviewImage.url}?v=${imageCacheBust}`} 
                       alt={selectedPreviewImage.originalName}
                       className="preview-image"
                         onLoad={(e) => {
@@ -830,17 +920,54 @@ const AnnotationPage: React.FC = () => {
                       <span className="project-id">ID: {currentProject.id}</span>
                     </div>
                   </div>
-                  <div className="thumbnails-grid">
-                    {images.slice(0, 12).map((image: Image) => (
-                      <div 
-                        key={image.id}
-                        className={`thumbnail-item-small ${selectedPreviewImage?.id === image.id ? 'selected' : ''}`}
-                        onClick={() => setSelectedPreviewImage(image)}
-                        onMouseEnter={() => ensureThumbnailMasks(image.id)}
-                      >
+                  <div
+                    className="thumbnails-grid thumbnails-virtual-scroll"
+                    ref={(el) => {
+                      thumbnailsScrollRef.current = el;
+                      if (thumbScrollEl !== el) setThumbScrollEl(el);
+                    }}
+                    onScroll={(e) => {
+                      const top = (e.currentTarget as HTMLDivElement).scrollTop;
+                      if (thumbScrollRafRef.current) {
+                        cancelAnimationFrame(thumbScrollRafRef.current);
+                      }
+                      thumbScrollRafRef.current = requestAnimationFrame(() => {
+                        setThumbScrollTop(top);
+                      });
+                    }}
+                  >
+                    <div
+                      className="thumbnails-virtual-measure"
+                      ref={(el) => {
+                        thumbnailsMeasureRef.current = el;
+                        if (thumbMeasureEl !== el) setThumbMeasureEl(el);
+                      }}
+                    >
+                      <div className="thumbnails-virtual-inner" style={{ height: thumbTotalHeight }}>
+                        {visibleThumbImages.map((image: Image, i: number) => {
+                          const absoluteIndex = virtualThumbRange.startIndex + i;
+                          const row = Math.floor(absoluteIndex / thumbCols);
+                          const col = absoluteIndex % thumbCols;
+                          const top = row * (THUMB_SIZE + THUMB_GAP);
+                          const left = col * (THUMB_SIZE + THUMB_GAP);
+
+                          return (
+                            <div
+                              key={image.id}
+                              className={`thumbnail-item-small ${selectedPreviewImage?.id === image.id ? 'selected' : ''}`}
+                              style={{
+                                position: 'absolute',
+                                width: THUMB_SIZE,
+                                height: THUMB_SIZE,
+                                top,
+                                left,
+                              }}
+                              onClick={() => setSelectedPreviewImage(image)}
+                              onMouseEnter={() => ensureThumbnailMasks(image.id)}
+                            >
                         <div className="thumbnail-image-layer">
                         <img 
-                          src={`http://localhost:3001${image.url}?t=${Date.now()}`} 
+                          src={`http://localhost:3001${image.url}?v=${imageCacheBust}`} 
                           alt={image.originalName}
                           onError={() => {
                             console.error('❌ 图片加载失败:', image.url);
@@ -854,7 +981,6 @@ const AnnotationPage: React.FC = () => {
                                   height: imgEl.naturalHeight,
                                 },
                               }));
-                            console.log('✅ 图片加载成功:', image.url);
                           }}
                         />
 
@@ -895,14 +1021,11 @@ const AnnotationPage: React.FC = () => {
                         <div className="thumbnail-overlay">
                           <span className="thumbnail-name">{image.originalName}</span>
                         </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    ))}
-                    {images.length > 12 && (
-                      <div className="thumbnail-item-small more-indicator">
-                        <div className="more-count">+{images.length - 12}</div>
-                        <div className="more-text">更多图片</div>
-                      </div>
-                    )}
+                    </div>
                   </div>
                 </div>
               </div>
