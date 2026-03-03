@@ -1,7 +1,7 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { useDispatch } from 'react-redux';
-import { imageApi } from '../services/api';
+import { imageApi, uploadJobApi } from '../services/api';
 import { addImage, setLoading, setError } from '../store/annotationSlice';
 import type { Image } from '../types';
 
@@ -12,6 +12,77 @@ interface ImageUploaderProps {
 
 const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, projectId }) => {
   const dispatch = useDispatch();
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [extractJobId, setExtractJobId] = useState<string | null>(null);
+  const [extractProgress, setExtractProgress] = useState<number | null>(null);
+  const [extractMessage, setExtractMessage] = useState<string>('');
+  const [extracting, setExtracting] = useState(false);
+  const pollTimerRef = useRef<any>(null);
+
+  const hasActiveProgress = useMemo(() => {
+    return uploadProgress !== null || extracting;
+  }, [uploadProgress, extracting]);
+
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const startPollJob = (jobId: string) => {
+    setExtractJobId(jobId);
+    setExtracting(true);
+    setExtractProgress(0);
+    setExtractMessage('等待解压...');
+
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+    }
+
+    pollTimerRef.current = setInterval(async () => {
+      try {
+        const resp = await uploadJobApi.getJob(jobId);
+        const job = resp?.job;
+        if (!job) return;
+
+        setExtractMessage(job.message || '');
+        setExtractProgress(typeof job.progress === 'number' ? job.progress : 0);
+
+        if (job.status === 'completed') {
+          // 将解压出的图片加入 Redux
+          const newImages: Image[] = job.files || [];
+          newImages.forEach((img) => dispatch(addImage(img)));
+
+          if (onUploadComplete) {
+            onUploadComplete(newImages);
+          }
+
+          setExtracting(false);
+          setExtractProgress(100);
+          setTimeout(() => {
+            setExtractProgress(null);
+            setExtractMessage('');
+            setExtractJobId(null);
+          }, 1200);
+
+          clearInterval(pollTimerRef.current);
+          pollTimerRef.current = null;
+        }
+
+        if (job.status === 'error') {
+          setExtracting(false);
+          clearInterval(pollTimerRef.current);
+          pollTimerRef.current = null;
+          alert(`解压失败：${job.error || '未知错误'}`);
+        }
+      } catch (e: any) {
+        console.warn('[ImageUploader] 轮询解压进度失败:', e);
+      }
+    }, 600);
+  };
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     try {
@@ -23,10 +94,13 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
       console.log('📁 接收到文件:', acceptedFiles.map(f => f.name));
       dispatch(setLoading(true));
       dispatch(setError(null));
+      setUploadProgress(0);
       
       // 上传文件到服务器
       console.log('📤 开始上传文件...，projectId =', projectId);
-      const response = await imageApi.uploadImages(acceptedFiles, projectId);
+      const response = await imageApi.uploadImages(acceptedFiles, projectId, (pct) => {
+        setUploadProgress(pct);
+      });
       console.log('📥 上传响应:', response);
       
       // 将上传的图像添加到状态中
@@ -38,15 +112,22 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
       if (onUploadComplete) {
         onUploadComplete(response.files);
       }
+
+      // ZIP 解压进度（如果有）
+      if (response.zipJobs && response.zipJobs.length > 0) {
+        // 目前先支持单个 job（如需支持多个，可扩展为列表）
+        startPollJob(response.zipJobs[0].jobId);
+      }
       
       console.log(`${response.files.length}个文件上传成功`);
     } catch (error: any) {
       console.error('❌ 上传失败:', error);
       dispatch(setError(error.message || '文件上传失败'));
     } finally {
+      setTimeout(() => setUploadProgress(null), 800);
       dispatch(setLoading(false));
     }
-  }, [dispatch, onUploadComplete]);
+  }, [dispatch, onUploadComplete, projectId]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -76,6 +157,36 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
           </div>
         )}
       </div>
+
+      {hasActiveProgress && (
+        <div className="upload-progress-panel">
+          {uploadProgress !== null && (
+            <div className="upload-progress-row">
+              <div className="upload-progress-title">上传进度</div>
+              <div className="upload-progress-bar">
+                <div className="upload-progress-fill" style={{ width: `${uploadProgress}%` }} />
+              </div>
+              <div className="upload-progress-pct">{uploadProgress}%</div>
+            </div>
+          )}
+
+          {extracting && (
+            <div className="upload-progress-row">
+              <div className="upload-progress-title">解压进度</div>
+              <div className="upload-progress-bar">
+                <div className="upload-progress-fill extract" style={{ width: `${extractProgress ?? 0}%` }} />
+              </div>
+              <div className="upload-progress-pct">{extractProgress ?? 0}%</div>
+            </div>
+          )}
+
+          {extractMessage && (
+            <div className="upload-progress-msg">
+              {extractMessage}{extractJobId ? `（${extractJobId}）` : ''}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

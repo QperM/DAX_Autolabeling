@@ -42,15 +42,33 @@ const AnnotationPage: React.FC = () => {
     latestAnnotatedImageId: number | null;
     latestUpdatedAt: string | null;
   } | null>(null);
+  const [showLabelMappingModal, setShowLabelMappingModal] = useState(false); // 是否显示 label 对照表弹窗
+  const [colorLabelMapping, setColorLabelMapping] = useState<Map<string, string>>(new Map()); // 颜色 -> label 映射
+  const [labelMappingLoading, setLabelMappingLoading] = useState(false); // 加载/保存中
 
-  // 统一的颜色调色板（用于确保不同标签分配不同颜色）
+  // 统一的颜色调色板（项目级、按 label 固定）
+  // 使用一组高对比度颜色，便于在同一项目中区分不同目标
   const COLOR_PALETTE = [
-    '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
-    '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B739', '#52BE80',
+    '#1F77B4', // 亮蓝 - 人 / 高优先级目标
+    '#FF7F0E', // 橙红 - 狗 / 第二优先级
+    '#2CA02C', // 翠绿 - 车辆 / 物体
+    '#D62728', // 砖红 - 危险/重要区域
+    '#9467BD', // 紫罗兰 - 猫 / 其他主体
+    '#8C564B', // 棕褐 - 家具/树木
+    '#E377C2', // 粉红 - 小物件
+    '#7F7F7F', // 灰绿/灰 - 其他/次要目标
   ];
 
+  // 项目级 label -> color 映射表（同一项目内保持稳定）
+  const labelColorMapRef = React.useRef<Map<string, string>>(new Map());
+
+  // 切换项目时，重置当前项目的颜色映射
+  useEffect(() => {
+    labelColorMapRef.current = new Map();
+  }, [currentProject?.id]);
+
   const assignColorsForAnnotations = (input: { masks: Mask[]; boundingBoxes: BoundingBox[] }) => {
-    const labelColorMap = new Map<string, string>();
+    const labelColorMap = labelColorMapRef.current;
 
     const getColorForLabel = (label: string | undefined, fallbackIndex: number): string => {
       const key = label && label.trim().length > 0 ? label.trim() : `__unnamed_${fallbackIndex}`;
@@ -174,13 +192,166 @@ const AnnotationPage: React.FC = () => {
     }
   };
 
+  // 加载项目中所有标注的颜色-label 映射
+  const loadColorLabelMapping = async () => {
+    if (!currentProject || images.length === 0) {
+      setColorLabelMapping(new Map());
+      return;
+    }
+
+    setLabelMappingLoading(true);
+    try {
+      const colorMap = new Map<string, string>();
+
+      // 遍历所有图片，收集颜色和对应的 label
+      for (const image of images) {
+        try {
+          const resp = await annotationApi.getAnnotation(image.id);
+          const anno = resp?.annotation;
+          if (!anno) continue;
+
+          // 收集 masks 的颜色-label 映射
+          if (anno.masks) {
+            anno.masks.forEach((mask: Mask) => {
+              if (mask.color && mask.label) {
+                // 如果该颜色还没有映射，或者当前 label 更常见，则更新
+                if (!colorMap.has(mask.color)) {
+                  colorMap.set(mask.color, mask.label);
+                }
+              }
+            });
+          }
+
+          // 收集 bboxes 的颜色-label 映射
+          if (anno.boundingBoxes) {
+            anno.boundingBoxes.forEach((bbox: BoundingBox) => {
+              if (bbox.color && bbox.label) {
+                if (!colorMap.has(bbox.color)) {
+                  colorMap.set(bbox.color, bbox.label);
+                }
+              }
+            });
+          }
+        } catch (e) {
+          console.warn(`[loadColorLabelMapping] 加载图片 ${image.id} 标注失败:`, e);
+        }
+      }
+
+      setColorLabelMapping(colorMap);
+      console.log('[loadColorLabelMapping] 已收集颜色-label 映射:', Array.from(colorMap.entries()));
+    } catch (e) {
+      console.error('[loadColorLabelMapping] 加载颜色-label 映射失败:', e);
+      alert('加载颜色-label 映射失败: ' + (e as Error).message);
+    } finally {
+      setLabelMappingLoading(false);
+    }
+  };
+
+  // 批量保存颜色-label 映射到所有图片
+  const saveColorLabelMapping = async () => {
+    if (!currentProject || images.length === 0) {
+      alert('当前没有可更新的图片');
+      return;
+    }
+
+    const confirmMsg = `确定要将颜色-label 映射应用到所有 ${images.length} 张图片的标注吗？\n\n` +
+      `这将按颜色批量修改所有标注的 label。`;
+    if (!window.confirm(confirmMsg)) {
+      return;
+    }
+
+    setLabelMappingLoading(true);
+    let successCount = 0;
+    let failCount = 0;
+
+    try {
+      for (const image of images) {
+        try {
+          // 获取当前图片的标注
+          const resp = await annotationApi.getAnnotation(image.id);
+          const anno = resp?.annotation;
+          if (!anno) {
+            continue; // 没有标注的图片跳过
+          }
+
+          let hasChanges = false;
+
+          // 更新 masks 的 label（按颜色）
+          const updatedMasks = (anno.masks || []).map((mask: Mask) => {
+            if (mask.color && colorLabelMapping.has(mask.color)) {
+              const newLabel = colorLabelMapping.get(mask.color)!;
+              if (mask.label !== newLabel) {
+                hasChanges = true;
+                return { ...mask, label: newLabel };
+              }
+            }
+            return mask;
+          });
+
+          // 更新 bboxes 的 label（按颜色）
+          const updatedBBoxes = (anno.boundingBoxes || []).map((bbox: BoundingBox) => {
+            if (bbox.color && colorLabelMapping.has(bbox.color)) {
+              const newLabel = colorLabelMapping.get(bbox.color)!;
+              if (bbox.label !== newLabel) {
+                hasChanges = true;
+                return { ...bbox, label: newLabel };
+              }
+            }
+            return bbox;
+          });
+
+          // 如果有变化，保存
+          if (hasChanges) {
+            await annotationApi.saveAnnotation(image.id, {
+              masks: updatedMasks,
+              boundingBoxes: updatedBBoxes,
+              polygons: anno.polygons || [],
+            });
+            successCount++;
+          } else {
+            successCount++; // 没有变化也算成功
+          }
+        } catch (e) {
+          console.error(`[saveColorLabelMapping] 更新图片 ${image.id} 失败:`, e);
+          failCount++;
+        }
+      }
+
+      alert(`批量更新完成！\n\n成功: ${successCount} 张\n失败: ${failCount} 张`);
+      setShowLabelMappingModal(false);
+      
+      // 刷新标注汇总和预览
+      await refreshAnnotationSummary();
+      if (selectedPreviewImage && previewDisplayMode === 'mask') {
+        loadPreviewMasks(selectedPreviewImage.id);
+      }
+    } catch (e) {
+      console.error('[saveColorLabelMapping] 批量保存失败:', e);
+      alert('批量保存失败: ' + (e as Error).message);
+    } finally {
+      setLabelMappingLoading(false);
+    }
+  };
+
   const handleUploadComplete = (newImages: Image[]) => {
     if (!currentProject) {
       alert('请先创建或选择项目！');
       return;
     }
     console.log('上传完成:', newImages);
-    // TODO: 将图片与当前项目关联
+    // 上传接口已在后端完成“图片入库 + 关联项目”
+    // 这里做一次刷新，确保 ZIP 解压批量导入等场景下列表与数据库完全一致
+    (async () => {
+      try {
+        dispatch(setLoading(true));
+        const loadedImages = await imageApi.getImages(currentProject.id);
+        dispatch(setImages(loadedImages));
+      } catch (e: any) {
+        console.warn('[AnnotationPage] 上传后刷新图片列表失败:', e);
+      } finally {
+        dispatch(setLoading(false));
+      }
+    })();
   };
 
   const handleStartManualAnnotation = (image: Image) => {
@@ -370,10 +541,10 @@ const AnnotationPage: React.FC = () => {
                   <div className="ai-controls">
                     <div className="ai-controls-top">
                       <div className="ai-prompt-group">
-                        <button 
+                  <button 
                           type="button"
                           className="ai-prompt-manage-btn"
-                          onClick={() => {
+                    onClick={() => {
                             if (aiPrompts.length === 0) {
                               setAiPrompts(['']);
                             }
@@ -385,7 +556,8 @@ const AnnotationPage: React.FC = () => {
                             : '点击配置提示词'}
                         </button>
                         <div className="ai-prompt-helper">
-                          点击上方按钮，在弹窗中添加/编辑提示词。多条提示词会按顺序传给模型，例如：person, dog, car。
+                          无提示词默认识别全部目标。
+                          点击上方按钮，在弹窗中添加/编辑提示词。多条提示词会按顺序传给模型。
                         </div>
                       </div>
                       {/* 标注结果汇总模块（移动到提示词右侧） */}
@@ -398,13 +570,28 @@ const AnnotationPage: React.FC = () => {
                         </div>
                       </div>
                     </div>
+                    {/* Mask Label 对照表按钮 */}
+                    <button
+                      type="button"
+                      className="label-mapping-btn"
+                      onClick={async () => {
+                        if (!currentProject) {
+                          alert('请先选择项目');
+                          return;
+                        }
+                        setShowLabelMappingModal(true);
+                        await loadColorLabelMapping();
+                      }}
+                    >
+                      🏷️ Mask Label 对照表
+                    </button>
                     <button 
                       className="ai-annotation-btn"
                       onClick={handleBatchAIAutoAnnotation}
                       disabled={images.length === 0 || batchAnnotating}
-                    >
+                  >
                       {batchAnnotating ? '批量标注中...' : `🤖 批量AI标注 (${images.length}张)`}
-                    </button>
+                  </button>
                   </div>
                   <p className="ai-description">
                     使用Grounded SAM2模型自动识别所有图像中的对象并生成标注
@@ -480,10 +667,10 @@ const AnnotationPage: React.FC = () => {
                     </div>
 
                     <div className="preview-image-layer">
-                      <img 
-                        src={`http://localhost:3001${selectedPreviewImage.url}?t=${Date.now()}`} 
-                        alt={selectedPreviewImage.originalName}
-                        className="preview-image"
+                    <img 
+                      src={`http://localhost:3001${selectedPreviewImage.url}?t=${Date.now()}`} 
+                      alt={selectedPreviewImage.originalName}
+                      className="preview-image"
                         onLoad={(e) => {
                           const img = e.currentTarget;
                           setPreviewImageSize({
@@ -652,12 +839,12 @@ const AnnotationPage: React.FC = () => {
                         onMouseEnter={() => ensureThumbnailMasks(image.id)}
                       >
                         <div className="thumbnail-image-layer">
-                          <img 
-                            src={`http://localhost:3001${image.url}?t=${Date.now()}`} 
-                            alt={image.originalName}
-                            onError={() => {
-                              console.error('❌ 图片加载失败:', image.url);
-                            }}
+                        <img 
+                          src={`http://localhost:3001${image.url}?t=${Date.now()}`} 
+                          alt={image.originalName}
+                          onError={() => {
+                            console.error('❌ 图片加载失败:', image.url);
+                          }}
                             onLoad={(e) => {
                               const imgEl = e.currentTarget;
                               setThumbnailSizes(prev => ({
@@ -667,9 +854,9 @@ const AnnotationPage: React.FC = () => {
                                   height: imgEl.naturalHeight,
                                 },
                               }));
-                              console.log('✅ 图片加载成功:', image.url);
-                            }}
-                          />
+                            console.log('✅ 图片加载成功:', image.url);
+                          }}
+                        />
 
                           {showThumbnailMasks && thumbnailMasks[image.id] && thumbnailSizes[image.id] && (
                             <svg
@@ -736,7 +923,7 @@ const AnnotationPage: React.FC = () => {
           >
             <h3 className="ai-prompt-modal-title">配置提示词</h3>
             <p className="ai-prompt-modal-desc">
-              每行一个提示词，例如：person、dog、car。留空则由模型自动识别常见目标。
+              每行一个提示词，例如：person、dog、car。留空则由模型自动识别所有常见目标。
             </p>
             <div className="ai-prompt-modal-list">
               {aiPrompts.map((value, index) => (
@@ -773,6 +960,69 @@ const AnnotationPage: React.FC = () => {
                 onClick={() => setShowPromptModal(false)}
               >
                 完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mask Label 对照表弹窗 */}
+      {showLabelMappingModal && (
+        <div
+          className="ai-prompt-modal-backdrop"
+          onClick={() => !labelMappingLoading && setShowLabelMappingModal(false)}
+        >
+          <div
+            className="label-mapping-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="ai-prompt-modal-title">Mask Label 对照表</h3>
+            <p className="ai-prompt-modal-desc">
+              左侧显示颜色，右侧可编辑对应的 label。保存后将应用到整个项目的所有图片标注。
+            </p>
+            {labelMappingLoading && colorLabelMapping.size === 0 ? (
+              <div className="label-mapping-loading">加载中...</div>
+            ) : colorLabelMapping.size === 0 ? (
+              <div className="label-mapping-empty">当前项目暂无标注数据</div>
+            ) : (
+              <div className="label-mapping-list">
+                {Array.from(colorLabelMapping.entries()).map(([color, label]) => (
+                  <div key={color} className="label-mapping-item">
+                    <span
+                      className="label-mapping-color-dot"
+                      style={{ backgroundColor: color }}
+                    />
+                    <input
+                      className="label-mapping-input"
+                      type="text"
+                      value={label}
+                      onChange={(e) => {
+                        const newMap = new Map(colorLabelMapping);
+                        newMap.set(color, e.target.value);
+                        setColorLabelMapping(newMap);
+                      }}
+                      placeholder="输入 label 名称"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="ai-prompt-modal-actions">
+              <button
+                type="button"
+                className="ai-prompt-modal-btn secondary"
+                onClick={() => setShowLabelMappingModal(false)}
+                disabled={labelMappingLoading}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="ai-prompt-modal-btn primary"
+                onClick={saveColorLabelMapping}
+                disabled={labelMappingLoading || colorLabelMapping.size === 0}
+              >
+                {labelMappingLoading ? '保存中...' : '保存并全局应用'}
               </button>
             </div>
           </div>

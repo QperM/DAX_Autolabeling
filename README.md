@@ -1,7 +1,7 @@
 # 智能图像标注系统
 
-**版本：V1.4**  
-**最后更新：2026年3月2日**
+**版本：V1.5**  
+**最后更新：2026年3月3日**
 
 ## 项目概述
 
@@ -28,6 +28,8 @@
 
 #### 1. 图像加载与管理
 - ✅ 单张/批量图片上传（支持拖拽上传）
+- ✅ ZIP 压缩包批量上传：自动解压导入多张图片
+- ✅ ZIP 解压进度条：上传后显示“上传进度 + 解压进度”，解压完成自动进入“已上传图片”
 - ✅ 图片按项目分类管理
 - ✅ 已加载图片缩略图网格展示
 - ✅ 图片预览和选择功能
@@ -94,7 +96,7 @@
 ### 后端技术栈
 - **框架**: Node.js + Express 4
 - **数据库**: SQLite3（带外键约束）
-- **文件处理**: Multer
+- **文件处理**: Multer + adm-zip（ZIP 解压）
 - **跨域支持**: CORS
 - **图片处理**: image-size
 - **AI 标注服务**: Python FastAPI + Grounded SAM2 服务框架（当前接入 torchvision Mask R-CNN COCO 预训练模型作为检测/分割后端，集成在 `server/sam2-service/`）
@@ -290,7 +292,8 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 
 ### 图片管理接口
 
-- `POST /api/upload` - 上传图片（支持多文件，可关联项目）
+- `POST /api/upload` - 上传图片/ZIP（支持多文件，可关联项目；ZIP 将异步解压导入图片并返回 jobId）
+- `GET /api/upload-jobs/:jobId` - 查询 ZIP 解压进度与结果（completed 时返回解压出的图片列表）
 - `GET /api/images` - 获取图片列表（支持按项目筛选：?projectId=xxx）
 - `DELETE /api/images/:id` - 删除图片（同步删除数据库记录和物理文件）
 
@@ -332,13 +335,18 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 - 完整的错误处理和日志记录
 
 ## 开发进展
- 
+
 ### V1.4 最新功能（2026年3月2日）
 - [x] 在人工标注页面接入统一的标注画布组件 `AnnotationCanvas`，支持在原图上叠加显示分割 Mask / 边界框 / 多边形
 - [x] 新增“背景图层 / 标注图层”切换逻辑，可一键隐藏/显示 SAM2 生成的 Mask 图层
 - [x] 保持与 AI 标注预览弹窗的坐标与缩放一致，确保 Mask 轮廓与实际目标位置精准对齐
 - [x] 橡皮擦重构：支持可视化圆形笔刷、拖拽擦除，并通过悬浮下拉调节半径
 - [x] Mask 顶点编辑：在选择工具下支持顶点高亮、拖动微调、键盘 Delete 删除顶点、键盘 I 在相邻顶点之间插入新顶点
+
+### V1.5 最新功能（2026年3月3日）
+- [x] ZIP 压缩包批量上传：上传后自动解压导入多张图片并写入数据库
+- [x] ZIP 解压进度条：前端展示“上传进度 + 解压进度”，解压完成自动进入“已上传图片”
+- [x] 新增解压 job 查询接口：`GET /api/upload-jobs/:jobId`
 
 ### V1.3 最新功能（2026年3月2日）
 - [x] 在 Python AI 服务中接入真实检测/分割模型（torchvision Mask R-CNN COCO 预训练），替代纯模拟多边形

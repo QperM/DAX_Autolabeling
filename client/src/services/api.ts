@@ -32,7 +32,11 @@ const apiClient = axios.create({
 // 图像相关API
 export const imageApi = {
   // 上传图像
-  uploadImages: async (files: File[], projectId?: number | string): Promise<UploadResponse> => {
+  uploadImages: async (
+    files: File[],
+    projectId?: number | string,
+    onUploadProgress?: (progressPercent: number) => void
+  ): Promise<UploadResponse> => {
     const formData = new FormData();
     files.forEach(file => {
       formData.append('images', file);
@@ -45,6 +49,13 @@ export const imageApi = {
     const response = await apiClient.post<UploadResponse>('/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
+      },
+      onUploadProgress: (evt) => {
+        if (!onUploadProgress) return;
+        const total = evt.total || 0;
+        if (!total) return;
+        const pct = Math.round((evt.loaded / total) * 100);
+        onUploadProgress(Math.max(0, Math.min(100, pct)));
       },
     });
     return response.data;
@@ -68,6 +79,14 @@ export const imageApi = {
   //   const response = await apiClient.get<Image>(`/images/${imageId}`);
   //   return response.data;
   // },
+};
+
+// 上传 job 进度（ZIP 解压等）
+export const uploadJobApi = {
+  getJob: async (jobId: string): Promise<any> => {
+    const response = await apiClient.get(`/upload-jobs/${jobId}`);
+    return response.data;
+  },
 };
 
 // 标注相关API

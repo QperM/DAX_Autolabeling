@@ -78,6 +78,10 @@ export interface ApiResponse<T> {
 export interface UploadResponse {
   files: Image[];
   message: string;
+  zipJobs?: Array<{
+    jobId: string;
+    originalName: string;
+  }>;
 }
 
 // 自动标注响应

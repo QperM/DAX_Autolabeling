@@ -19,6 +19,8 @@ const ManualAnnotation: React.FC = () => {
   const [polygons, setPolygons] = useState<Polygon[]>([]);
   const [showEraserDropdown, setShowEraserDropdown] = useState(false);
   const eraserWrapperRef = useRef<HTMLDivElement | null>(null);
+  const [colorLabelDrafts, setColorLabelDrafts] = useState<Record<string, string>>({});
+  const editingColorRef = useRef<string | null>(null);
 
   // 检查是否有选中的图片
   useEffect(() => {
@@ -122,41 +124,73 @@ const ManualAnnotation: React.FC = () => {
     }
   };
 
-  // 统计当前标注中的标签及其颜色，用于右侧标签图例展示
-  const labelColorEntries: Array<[string, string]> = (() => {
-    const map = new Map<string, string>();
+  const getEffectiveMaskColor = (mask: Mask) => mask.color || 'rgba(255, 0, 0, 0.7)';
+  const getEffectiveBboxColor = (bbox: BoundingBox) => bbox.color || 'rgba(0, 255, 0, 0.7)';
+
+  // 统计当前标注中的“颜色 -> label”，用于右侧标签图例展示
+  // 目标：你改某个颜色对应的 label 时，该颜色下所有对象的 label 一起被修改
+  const colorLabelEntries: Array<[string, string]> = (() => {
+    const map = new Map<string, string>(); // color -> label
 
     masks.forEach((mask) => {
-      if (!mask.label) return;
-      if (!map.has(mask.label)) {
-        map.set(mask.label, mask.color || 'rgba(255, 0, 0, 0.7)');
+      const color = getEffectiveMaskColor(mask);
+      const label = (mask.label || '').trim();
+      if (!label) return;
+      if (!map.has(color)) {
+        map.set(color, label);
       }
     });
 
     boundingBoxes.forEach((bbox) => {
-      if (!bbox.label) return;
-      if (!map.has(bbox.label)) {
-        map.set(bbox.label, bbox.color || 'rgba(0, 255, 0, 0.7)');
+      const color = getEffectiveBboxColor(bbox);
+      const label = (bbox.label || '').trim();
+      if (!label) return;
+      if (!map.has(color)) {
+        map.set(color, label);
       }
     });
 
     return Array.from(map.entries());
   })();
 
-  const handleLabelRename = (oldLabel: string, newLabel: string) => {
-    const trimmed = newLabel.trim();
-    if (!trimmed || trimmed === oldLabel) return;
+  // 当图例条目变化时，同步填充 drafts（但不打断正在编辑的那一行）
+  useEffect(() => {
+    setColorLabelDrafts((prev) => {
+      const next: Record<string, string> = { ...prev };
+      for (const [color, label] of colorLabelEntries) {
+        if (editingColorRef.current === color) continue;
+        next[color] = label;
+      }
+      // 清理已不存在的颜色
+      for (const key of Object.keys(next)) {
+        if (!colorLabelEntries.some(([c]) => c === key)) {
+          delete next[key];
+        }
+      }
+      return next;
+    });
+  }, [masks, boundingBoxes]);
 
-    setMasks(prev =>
-      prev.map(mask =>
-        mask.label === oldLabel ? { ...mask, label: trimmed } : mask
-      )
+  const handleLabelRenameByColor = (color: string, newLabel: string) => {
+    const trimmed = newLabel.trim();
+    if (!trimmed) return;
+
+    setMasks((prev) =>
+      prev.map((mask) => {
+        const c = getEffectiveMaskColor(mask);
+        if (c !== color) return mask;
+        if ((mask.label || '').trim() === trimmed) return mask;
+        return { ...mask, label: trimmed };
+      })
     );
 
-    setBoundingBoxes(prev =>
-      prev.map(bbox =>
-        bbox.label === oldLabel ? { ...bbox, label: trimmed } : bbox
-      )
+    setBoundingBoxes((prev) =>
+      prev.map((bbox) => {
+        const c = getEffectiveBboxColor(bbox);
+        if (c !== color) return bbox;
+        if ((bbox.label || '').trim() === trimmed) return bbox;
+        return { ...bbox, label: trimmed };
+      })
     );
   };
 
@@ -190,19 +224,19 @@ const ManualAnnotation: React.FC = () => {
         <div className="annotation-left-panel">
           <div className="tool-section">
             <div className={`eraser-wrapper ${showEraserDropdown ? 'open' : ''}`} ref={eraserWrapperRef}>
-              <button
-                className={`eraser-card ${selectedTool === 'eraser' ? 'active' : ''}`}
+            <button
+              className={`eraser-card ${selectedTool === 'eraser' ? 'active' : ''}`}
                 onClick={() => {
                   handleToolSelect('eraser');
                   setShowEraserDropdown(prev => !prev);
                 }}
-                title="橡皮擦"
-              >
-                <div className="eraser-icon-box">
-                  <span className="eraser-icon">🧹</span>
-                </div>
-                <div className="eraser-text-box">
-                  <div className="eraser-title">橡皮擦</div>
+              title="橡皮擦"
+            >
+              <div className="eraser-icon-box">
+                <span className="eraser-icon">🧹</span>
+              </div>
+              <div className="eraser-text-box">
+                <div className="eraser-title">橡皮擦</div>
                 </div>
               </button>
               <div className="eraser-dropdown">
@@ -306,33 +340,6 @@ const ManualAnnotation: React.FC = () => {
               </div>
             </div>
 
-            {labelColorEntries.length > 0 && (
-              <div className="property-section">
-                <h4>标签图例</h4>
-                <div className="label-legend">
-                  {labelColorEntries.map(([label, color]) => (
-                    <div className="label-legend-item" key={label}>
-                      <span
-                        className="label-color-dot"
-                        style={{ backgroundColor: color }}
-                      />
-                      <input
-                        className="label-name"
-                        title={label}
-                        defaultValue={label}
-                        onBlur={(e) => handleLabelRename(label, e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            (e.target as HTMLInputElement).blur();
-                          }
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
             <div className="property-section">
               <h4>保存</h4>
               <button
@@ -344,6 +351,48 @@ const ManualAnnotation: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {/* 标签图例：从 properties-panel 内挪出，作为 annotation-right-panel 的直系子节点 */}
+          {colorLabelEntries.length > 0 && (
+            <div className="property-section label-legend-section">
+              <h4>标签图例</h4>
+              <div className="label-legend">
+                {colorLabelEntries.map(([color, label]) => (
+                  <div className="label-legend-item" key={color}>
+                    <span
+                      className="label-color-dot"
+                      style={{ backgroundColor: color }}
+                    />
+                    <input
+                      className="label-name"
+                      title={`颜色: ${color}（当前: ${label}）`}
+                      value={colorLabelDrafts[color] ?? label}
+                      onFocus={() => {
+                        editingColorRef.current = color;
+                      }}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setColorLabelDrafts((prev) => ({ ...prev, [color]: v }));
+                      }}
+                      onBlur={(e) => {
+                        editingColorRef.current = null;
+                        const v = e.target.value;
+                        handleLabelRenameByColor(color, v);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          (e.target as HTMLInputElement).blur();
+                        }
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="label-legend-hint">
+                提示：在这里改的是“颜色对应的标签名”，同色的所有对象会一起改名。
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

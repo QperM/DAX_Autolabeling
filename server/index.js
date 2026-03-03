@@ -6,6 +6,7 @@ const fs = require('fs');
 const axios = require('axios');
 const FormData = require('form-data');
 const db = require('./database');
+const AdmZip = require('adm-zip');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -39,6 +40,126 @@ const upload = multer({
     fileSize: 200 * 1024 * 1024 // 200MB限制
   }
 });
+
+// ZIP 解压进度 job（内存态：重启会丢失，够用来显示进度）
+// job = { id, status, message, zipOriginalName, total, processed, files: Image[], error? }
+const uploadJobs = new Map();
+
+function makeJobId() {
+  return `job_${Date.now()}_${Math.round(Math.random() * 1e9)}`;
+}
+
+function getIsImageFile(name) {
+  const ext = (path.extname(name || '').toLowerCase() || '').replace('.', '');
+  return ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'tif', 'webp'].includes(ext);
+}
+
+function safeBaseName(name) {
+  const base = path.basename(name || 'image');
+  // 简单清洗：只保留常见字符
+  return base.replace(/[^\w.\-()\s]/g, '_');
+}
+
+function insertImageAsync(fileInfo) {
+  return new Promise((resolve, reject) => {
+    db.insertImage(fileInfo, (err, imageId) => {
+      if (err) return reject(err);
+      resolve(imageId);
+    });
+  });
+}
+
+function linkImageToProjectAsync(projectId, imageId) {
+  return new Promise((resolve) => {
+    if (!projectId) return resolve();
+    db.linkImageToProject(projectId, imageId, (err) => {
+      if (err) {
+        console.error('关联图片到项目失败:', err);
+      }
+      resolve();
+    });
+  });
+}
+
+async function runZipExtractJob({ jobId, zipPath, zipOriginalName, projectId }) {
+  const job = uploadJobs.get(jobId);
+  if (!job) return;
+
+  job.status = 'extracting';
+  job.message = '正在解压...';
+
+  const uploadDir = path.join(__dirname, 'uploads');
+  try {
+    const zip = new AdmZip(zipPath);
+    const entries = zip.getEntries().filter((e) => !e.isDirectory);
+
+    // 安全限制：最多处理 500 个文件，最多 600MB 解压后体积（防 zip bomb）
+    const MAX_FILES = 500;
+    const MAX_TOTAL_UNCOMPRESSED = 600 * 1024 * 1024;
+
+    const imageEntries = entries.filter((e) => getIsImageFile(e.entryName)).slice(0, MAX_FILES);
+    let totalBytes = 0;
+    for (const e of imageEntries) {
+      const size = Number(e.header?.size || 0);
+      totalBytes += size;
+      if (totalBytes > MAX_TOTAL_UNCOMPRESSED) {
+        throw new Error('压缩包内容过大（解压后体积超过限制），请拆分后再上传');
+      }
+    }
+
+    job.total = imageEntries.length;
+    job.processed = 0;
+    job.files = [];
+
+    if (job.total === 0) {
+      job.status = 'completed';
+      job.message = '压缩包中未找到可用图片';
+      return;
+    }
+
+    for (const entry of imageEntries) {
+      // 写入文件
+      const orig = safeBaseName(entry.entryName);
+      const ext = path.extname(orig);
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      const filename = `images-${uniqueSuffix}${ext}`;
+      const outPath = path.join(uploadDir, filename);
+
+      const data = entry.getData();
+      fs.writeFileSync(outPath, data);
+
+      const fileInfo = {
+        filename,
+        originalName: orig,
+        path: outPath,
+        url: `/uploads/${encodeURIComponent(filename)}`,
+        size: data.length,
+        uploadTime: new Date().toISOString(),
+      };
+
+      // 入库 + 关联项目
+      const imageId = await insertImageAsync(fileInfo);
+      fileInfo.id = imageId;
+      await linkImageToProjectAsync(projectId, imageId);
+
+      job.files.push(fileInfo);
+      job.processed += 1;
+      job.message = `正在解压... (${job.processed}/${job.total})`;
+    }
+
+    job.status = 'completed';
+    job.message = '解压完成';
+  } catch (e) {
+    console.error('[ZIP] 解压失败:', e);
+    job.status = 'error';
+    job.error = e?.message || String(e);
+    job.message = '解压失败';
+  } finally {
+    try {
+      fs.unlinkSync(zipPath);
+    } catch (_) {}
+  }
+}
 
 // 路由
 app.get('/api/health', (req, res) => {
@@ -138,19 +259,69 @@ app.get('/api/projects/:id/annotation-summary', (req, res) => {
 });
 
 // 文件上传接口
-app.post('/api/upload', upload.array('images', 10), (req, res) => {
+app.post('/api/upload', upload.array('images', 500), (req, res) => {
   try {
     const files = req.files;
     const uploadedFiles = [];
     const { projectId } = req.body;
+    const zipJobs = [];
 
     if (!projectId) {
       console.warn('⚠️ /api/upload 调用时未提供 projectId，本次上传的图片不会关联到任何项目');
     }
     
-    // 逐个保存到数据库
+    // 逐个处理：
+    // - 图片：直接入库并返回
+    // - ZIP：创建 job，后台解压入库，前端通过 jobId 查询进度与结果
     let completed = 0;
-    files.forEach((file, index) => {
+    const totalIncoming = files?.length || 0;
+
+    if (totalIncoming === 0) {
+      return res.json({ success: true, files: [], zipJobs: [], message: '未选择任何文件' });
+    }
+
+    files.forEach((file) => {
+      const isZip = (path.extname(file.originalname || '').toLowerCase() === '.zip');
+
+      if (isZip) {
+        const jobId = makeJobId();
+        uploadJobs.set(jobId, {
+          id: jobId,
+          status: 'queued',
+          message: '等待解压...',
+          zipOriginalName: file.originalname,
+          total: 0,
+          processed: 0,
+          files: [],
+        });
+
+        zipJobs.push({
+          jobId,
+          originalName: file.originalname,
+        });
+
+        // 异步解压，不阻塞当前响应
+        setTimeout(() => {
+          runZipExtractJob({
+            jobId,
+            zipPath: file.path,
+            zipOriginalName: file.originalname,
+            projectId,
+          });
+        }, 50);
+
+        completed++;
+        if (completed === totalIncoming) {
+          res.json({
+            success: true,
+            files: uploadedFiles,
+            zipJobs,
+            message: `上传完成：图片 ${uploadedFiles.length} 个，压缩包 ${zipJobs.length} 个（解压中）`,
+          });
+        }
+        return;
+      }
+
       const fileInfo = {
         filename: file.filename,
         originalName: file.originalname,
@@ -159,24 +330,20 @@ app.post('/api/upload', upload.array('images', 10), (req, res) => {
         size: file.size,
         uploadTime: new Date().toISOString()
       };
-      
+
       db.insertImage(fileInfo, (err, imageId) => {
         if (err) {
           console.error('保存图片信息失败:', err);
           completed++;
-          if (completed === files.length) {
+          if (completed === totalIncoming) {
             res.json({
               success: true,
               files: uploadedFiles,
-              message: `${uploadedFiles.length}个文件上传成功（部分可能保存失败）`
+              zipJobs,
+              message: `上传完成：图片 ${uploadedFiles.length} 个，压缩包 ${zipJobs.length} 个（部分图片可能保存失败）`
             });
           }
           return;
-        }
-
-        // 检查 imageId 是否有效
-        if (!imageId || imageId === 0) {
-          console.error('⚠️ 警告: 插入图片后未获取到有效的 ID');
         }
 
         // 将数据库返回的自增ID添加到fileInfo中
@@ -185,16 +352,16 @@ app.post('/api/upload', upload.array('images', 10), (req, res) => {
         const finishOne = () => {
           uploadedFiles.push(fileInfo);
           completed++;
-          if (completed === files.length) {
+          if (completed === totalIncoming) {
             res.json({
               success: true,
               files: uploadedFiles,
-              message: `${uploadedFiles.length}个文件上传成功`
+              zipJobs,
+              message: `上传完成：图片 ${uploadedFiles.length} 个，压缩包 ${zipJobs.length} 个`
             });
           }
         };
 
-        // 如果提供了项目ID，则将图片关联到项目
         if (projectId) {
           db.linkImageToProject(projectId, imageId, (linkErr) => {
             if (linkErr) {
@@ -214,6 +381,38 @@ app.post('/api/upload', upload.array('images', 10), (req, res) => {
       error: error.message
     });
   }
+});
+
+// 查询 ZIP 解压进度/结果
+app.get('/api/upload-jobs/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = uploadJobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({
+      success: false,
+      message: 'job 不存在或已过期',
+    });
+  }
+
+  const total = job.total || 0;
+  const processed = job.processed || 0;
+  const progress = total > 0 ? Math.round((processed / total) * 100) : (job.status === 'completed' ? 100 : 0);
+
+  res.json({
+    success: true,
+    job: {
+      id: job.id,
+      status: job.status,
+      message: job.message,
+      zipOriginalName: job.zipOriginalName,
+      total,
+      processed,
+      progress,
+      // completed 时返回 files，前端用来加入“已上传图片”
+      files: job.status === 'completed' ? job.files : [],
+      error: job.status === 'error' ? job.error : null,
+    }
+  });
 });
 
 // Grounded SAM2 服务健康检查
