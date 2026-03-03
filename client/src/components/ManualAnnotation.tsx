@@ -11,7 +11,7 @@ const ManualAnnotation: React.FC = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { currentImage, images, annotations } = useSelector((state: any) => state.annotation);
-  const [selectedTool, setSelectedTool] = useState<'eraser' | 'mask' | 'point'>('mask');
+  const [selectedTool, setSelectedTool] = useState<'eraser' | 'mask' | 'point' | 'draw'>('mask');
   const [brushSize, setBrushSize] = useState(20);
   const [activeLayer, setActiveLayer] = useState<'background' | 'annotation'>('background');
   const [masks, setMasks] = useState<Mask[]>([]);
@@ -83,7 +83,7 @@ const ManualAnnotation: React.FC = () => {
     loadAnnotation();
   }, [currentImage, annotations]);
 
-  const handleToolSelect = (tool: 'eraser' | 'mask' | 'point') => {
+  const handleToolSelect = (tool: 'eraser' | 'mask' | 'point' | 'draw') => {
     setSelectedTool(tool);
   };
 
@@ -185,8 +185,15 @@ const ManualAnnotation: React.FC = () => {
 
     masks.forEach((mask) => {
       const color = getEffectiveMaskColor(mask);
-      const label = (mask.label || '').trim();
-      if (!label) return;
+      let label = (mask.label || '').trim();
+      // 对于默认灰色且尚未命名的 Mask，用“未分配”占位，方便在右侧图例中看到
+      if (!label) {
+        if (color === '#7F7F7F') {
+          label = '未分配';
+        } else {
+          return;
+        }
+      }
       if (!map.has(color)) {
         map.set(color, label);
       }
@@ -194,8 +201,14 @@ const ManualAnnotation: React.FC = () => {
 
     boundingBoxes.forEach((bbox) => {
       const color = getEffectiveBboxColor(bbox);
-      const label = (bbox.label || '').trim();
-      if (!label) return;
+      let label = (bbox.label || '').trim();
+      if (!label) {
+        if (color === '#7F7F7F') {
+          label = '未分配';
+        } else {
+          return;
+        }
+      }
       if (!map.has(color)) {
         map.set(color, label);
       }
@@ -330,6 +343,22 @@ const ManualAnnotation: React.FC = () => {
                 <div className="select-title">点编辑</div>
               </div>
             </button>
+
+            <button
+              className={`select-card ${selectedTool === 'draw' ? 'active' : ''}`}
+              onClick={() => {
+                handleToolSelect('draw');
+                setShowEraserDropdown(false);
+              }}
+              title="新建 Mask（左键逐点点击，最后再点回第一个点以结束；默认灰色，之后可用“选择”+R 命名并上色）"
+            >
+              <div className="select-icon-box">
+                <span className="select-icon">✏️</span>
+              </div>
+              <div className="select-text-box">
+                <div className="select-title">新建 Mask</div>
+              </div>
+            </button>
           </div>
         </div>
 
@@ -346,7 +375,9 @@ const ManualAnnotation: React.FC = () => {
                   ? 'eraser'
                   : selectedTool === 'mask'
                     ? 'mask-select'
-                    : 'select'
+                    : selectedTool === 'draw'
+                      ? 'polygon'
+                      : 'select'
               }
               brushSize={brushSize}
               onMaskUpdate={(updatedMasks) => {

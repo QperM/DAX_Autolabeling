@@ -28,7 +28,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   const stageRef = useRef<any>(null);
   const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
   const [imageScale, setImageScale] = useState(1);
-  const [isDrawing, setIsDrawing] = useState(false); // 多边形绘制状态
+  const [isDrawing, setIsDrawing] = useState(false); // 新建 Mask 绘制状态
   const [isErasing, setIsErasing] = useState(false); // 橡皮擦状态
   const [currentPoints, setCurrentPoints] = useState<number[]>([]);
   const [eraserCenter, setEraserCenter] = useState<{ x: number; y: number } | null>(null);
@@ -265,6 +265,14 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     setCurrentPoints([]);
   }, [imageUrl]);
 
+  // 离开“新建 Mask”工具时，清空当前绘制的多边形
+  useEffect(() => {
+    if (toolMode !== 'polygon') {
+      setIsDrawing(false);
+      setCurrentPoints([]);
+    }
+  }, [toolMode]);
+
   // 计算图像尺寸和位置
   useEffect(() => {
     // 当图片 URL 变化时，先重置尺寸，避免使用旧图片的尺寸
@@ -358,19 +366,56 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
   // 处理鼠标事件
   const handleMouseDown = (e: any) => {
+    const stage = e.target.getStage?.() ?? stageRef.current?.getStage?.();
+    const pos = stage?.getPointerPosition?.();
+
+    if (!pos) return;
+
     if (toolMode === 'polygon') {
-      const pos = e.target.getStage().getPointerPosition();
-      setCurrentPoints(prev => [...prev, pos.x, pos.y]);
-      setIsDrawing(true);
+      // 仅响应鼠标左键，用于“新建 Mask”逐点点击
+      if (e.evt && e.evt.button !== 0) return;
+
+      if (!isDrawing) {
+        // 开始新建 Mask，记录第一个点（舞台坐标）
+        setIsDrawing(true);
+        setCurrentPoints([pos.x, pos.y]);
+      } else {
+        const pts = currentPoints;
+        if (pts.length >= 2) {
+          const firstX = pts[0];
+          const firstY = pts[1];
+          const dx = pos.x - firstX;
+          const dy = pos.y - firstY;
+          const distSq = dx * dx + dy * dy;
+          const thresholdPx = 10; // 与第一个点距离小于 10px 视为“闭合”
+
+          if (distSq <= thresholdPx * thresholdPx && pts.length >= 6 && imageScale > 0) {
+            // 闭合多边形 => 生成新的 Mask（points 使用图片坐标系）
+            const imagePoints = pts.map((v) => v / imageScale);
+            const newMask: Mask = {
+              id: `mask-${Date.now()}`,
+              points: imagePoints,
+              label: '',
+              // 默认使用灰色，后续通过“选择”+R 命名后会按项目级规则重新上色
+              color: '#7F7F7F',
+              opacity: 0.5,
+            };
+
+            onMaskUpdate([...masks, newMask]);
+            setIsDrawing(false);
+            setCurrentPoints([]);
+            return;
+          }
+        }
+
+        // 继续追加新的顶点（舞台坐标）
+        setCurrentPoints(prev => [...prev, pos.x, pos.y]);
+      }
     } else if (toolMode === 'eraser') {
-      const pos = e.target.getStage().getPointerPosition();
-      if (!pos) return;
       setIsErasing(true);
       setEraserCenter(pos);
       applyEraser(pos);
     } else if (toolMode === 'mask-select') {
-      const pos = e.target.getStage().getPointerPosition();
-      if (!pos) return;
       setIsBoxSelecting(true);
       setBoxSelectStart(pos);
       setBoxSelectRect({ x: pos.x, y: pos.y, width: 0, height: 0 });
@@ -378,13 +423,14 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   };
 
   const handleMouseMove = (e: any) => {
+    const stage = e.target.getStage?.() ?? stageRef.current?.getStage?.();
+    const pos = stage?.getPointerPosition?.();
+
     if (toolMode === 'eraser' && isErasing) {
-      const pos = e.target.getStage().getPointerPosition();
       if (!pos) return;
       setEraserCenter(pos);
       applyEraser(pos);
     } else if (toolMode === 'mask-select' && isBoxSelecting && boxSelectStart) {
-      const pos = e.target.getStage().getPointerPosition();
       if (!pos) return;
       const x1 = boxSelectStart.x;
       const y1 = boxSelectStart.y;
@@ -399,20 +445,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   };
 
   const handleMouseUp = (e: any) => {
-    if (toolMode === 'polygon' && isDrawing) {
-      setIsDrawing(false);
-      // 完成多边形绘制
-      if (currentPoints.length >= 6) { // 至少3个点
-        const newPolygon: Polygon = {
-          id: `polygon-${Date.now()}`,
-          points: [...currentPoints],
-          label: 'new_object',
-          color: '#ff0000'
-        };
-        onPolygonUpdate([...polygons, newPolygon]);
-        setCurrentPoints([]);
-      }
-    } else if (toolMode === 'eraser' && isErasing) {
+    if (toolMode === 'eraser' && isErasing) {
       setIsErasing(false);
       setEraserCenter(null);
     } else if (toolMode === 'mask-select' && isBoxSelecting && boxSelectRect && boxSelectStart) {
@@ -593,6 +626,39 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     });
   };
 
+  // 渲染“新建 Mask”模式下当前正在点击的点（放大显示，类似点编辑）
+  const renderDrawingControlPoints = () => {
+    if (toolMode !== 'polygon' || currentPoints.length === 0) return null;
+
+    const baseRadius = 5;
+    const circles: React.ReactElement[] = [];
+
+    for (let i = 0; i < currentPoints.length; i += 2) {
+      const x = currentPoints[i];
+      const y = currentPoints[i + 1];
+      const idx = i / 2;
+      const key = `drawing-pt-${idx}`;
+
+      const isFirst = idx === 0;
+      const isLast = idx === currentPoints.length / 2 - 1;
+
+      circles.push(
+        <Circle
+          key={key}
+          x={x}
+          y={y}
+          radius={isFirst || isLast ? baseRadius + 2 : baseRadius}
+          fill={isFirst ? '#667eea' : '#ffffff'}
+          stroke={isFirst ? '#667eea' : '#4c6fff'}
+          strokeWidth={isFirst || isLast ? 3 : 2}
+          listening={false}
+        />
+      );
+    }
+
+    return circles;
+  };
+
   // 渲染边界框
   const renderBoundingBoxes = () => {
     return boundingBoxes.map(bbox => (
@@ -697,6 +763,9 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
               lineJoin="round"
             />
           )}
+
+          {/* 当前绘制多边形的顶点放大显示 */}
+          {renderDrawingControlPoints()}
         </Layer>
       </Stage>
     </div>
