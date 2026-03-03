@@ -519,6 +519,11 @@ app.post('/api/annotate/auto', async (req, res) => {
 
       // 模型参数（可选，透传给 Python SAM2 服务）
       if (modelParams && typeof modelParams === 'object') {
+        // 选择后端（maskrcnn / yolo_seg / sam2_amg）
+        if (typeof modelParams.modelBackend === 'string' && modelParams.modelBackend.trim().length > 0) {
+          formData.append('model_backend', String(modelParams.modelBackend));
+        }
+
         if (typeof modelParams.baseScoreThresh === 'number') {
           formData.append('base_score_thresh', String(modelParams.baseScoreThresh));
         }
@@ -533,6 +538,37 @@ app.post('/api/annotate/auto', async (req, res) => {
         }
         if (typeof modelParams.maxPolygonPoints === 'number') {
           formData.append('max_polygon_points', String(modelParams.maxPolygonPoints));
+        }
+
+        // YOLO-Seg 参数
+        if (typeof modelParams.yoloConf === 'number') {
+          formData.append('yolo_conf', String(modelParams.yoloConf));
+        }
+        if (typeof modelParams.yoloIou === 'number') {
+          formData.append('yolo_iou', String(modelParams.yoloIou));
+        }
+        if (typeof modelParams.yoloImgSize === 'number') {
+          formData.append('yolo_imgsz', String(modelParams.yoloImgSize));
+        }
+        if (typeof modelParams.yoloMaxDet === 'number') {
+          formData.append('yolo_max_det', String(modelParams.yoloMaxDet));
+        }
+
+        // SAM2 AMG 参数
+        if (typeof modelParams.sam2PointsPerSide === 'number') {
+          formData.append('sam2_points_per_side', String(modelParams.sam2PointsPerSide));
+        }
+        if (typeof modelParams.sam2PredIouThresh === 'number') {
+          formData.append('sam2_pred_iou_thresh', String(modelParams.sam2PredIouThresh));
+        }
+        if (typeof modelParams.sam2StabilityScoreThresh === 'number') {
+          formData.append('sam2_stability_score_thresh', String(modelParams.sam2StabilityScoreThresh));
+        }
+        if (typeof modelParams.sam2BoxNmsThresh === 'number') {
+          formData.append('sam2_box_nms_thresh', String(modelParams.sam2BoxNmsThresh));
+        }
+        if (typeof modelParams.sam2MinMaskRegionArea === 'number') {
+          formData.append('sam2_min_mask_region_area', String(modelParams.sam2MinMaskRegionArea));
         }
       }
       
@@ -570,39 +606,45 @@ app.post('/api/annotate/auto', async (req, res) => {
         boundingBoxes: []
       };
       
-      // 如果Grounded SAM2返回的是标准格式
+      // 如果Grounded SAM2返回的是标准格式（masks + segments）
       if (samData.masks || samData.segments) {
-        const segments = samData.masks || samData.segments || [];
-        console.log(`[AI标注] 检测到 ${segments.length} 个标注段`);
-        
-        segments.forEach((segment, index) => {
-          // 处理Mask数据
-          if (segment.points || segment.contour) {
-            const points = segment.points || segment.contour || [];
-            annotations.masks.push({
-              id: `mask-${imageId}-${index}`,
-              points: points.flat(), // 展平点数组 [x1, y1, x2, y2, ...]
-              label: segment.label || segment.class || 'object',
-            });
-          }
-          
-          // 处理边界框数据
-          if (segment.bbox || (segment.x && segment.y && segment.width && segment.height)) {
-            const bbox = segment.bbox || {
-              x: segment.x,
-              y: segment.y,
-              width: segment.width,
-              height: segment.height
-            };
-            annotations.boundingBoxes.push({
-              id: `bbox-${imageId}-${index}`,
-              x: bbox.x || bbox[0] || 0,
-              y: bbox.y || bbox[1] || 0,
-              width: bbox.width || (bbox[2] - bbox[0]) || 0,
-              height: bbox.height || (bbox[3] - bbox[1]) || 0,
-              label: segment.label || segment.class || 'object',
-            });
-          }
+        const masksArr = samData.masks || [];
+        const segmentsArr = samData.segments || [];
+        console.log(`[AI标注] 检测到 masks=${masksArr.length}, segments=${segmentsArr.length}`);
+
+        // 处理 masks（多边形点）
+        masksArr.forEach((m, index) => {
+          const points = m.points || m.contour || [];
+          if (!points || points.length === 0) return;
+          annotations.masks.push({
+            id: m.id ? `mask-${imageId}-${m.id}` : `mask-${imageId}-${index}`,
+            points: Array.isArray(points) ? points.flat() : [],
+            label: m.label || m.class || 'object',
+          });
+        });
+
+        // 处理 segments（bbox + points）
+        segmentsArr.forEach((seg, index) => {
+          const bbox = seg.bbox || {
+            x: seg.x,
+            y: seg.y,
+            width: seg.width,
+            height: seg.height,
+          };
+          if (!bbox) return;
+          const x1 = bbox.x ?? bbox[0] ?? 0;
+          const y1 = bbox.y ?? bbox[1] ?? 0;
+          const x2 = bbox.width != null ? x1 + bbox.width : (bbox[2] ?? x1);
+          const y2 = bbox.height != null ? y1 + bbox.height : (bbox[3] ?? y1);
+
+          annotations.boundingBoxes.push({
+            id: seg.id ? `bbox-${imageId}-${seg.id}` : `bbox-${imageId}-${index}`,
+            x: x1,
+            y: y1,
+            width: x2 - x1,
+            height: y2 - y1,
+            label: seg.label || seg.class || 'object',
+          });
         });
       } else if (samData.annotations) {
         // 如果返回的是 annotations 字段
@@ -664,67 +706,24 @@ app.post('/api/annotate/auto', async (req, res) => {
       }
       console.error('[AI标注] ============================================');
       
-      // 如果Grounded SAM2服务不可用，返回模拟数据（用于测试）
+      // Grounded SAM2 服务不可用：直接视为失败（不再返回模拟数据，避免前端“乱画”）
       if (samError.code === 'ECONNREFUSED' || samError.code === 'ETIMEDOUT' || samError.code === 'ENOTFOUND') {
-        console.warn('[AI标注] Grounded SAM2服务不可用，返回模拟数据用于测试');
+        console.warn('[AI标注] Grounded SAM2服务不可用，已按失败处理（不返回模拟数据）');
         console.warn(`[AI标注] 解决方案:`);
         console.warn(`[AI标注] 1. 确保Grounded SAM2服务正在运行`);
         console.warn(`[AI标注] 2. 检查服务地址是否正确: ${GROUNDED_SAM2_API_URL}`);
         console.warn(`[AI标注] 3. 可以通过环境变量设置: GROUNDED_SAM2_API_URL=http://your-service:port/api/auto-label`);
-        
-        // 获取图片尺寸（用于生成合理的模拟标注）
-        let imgWidth = image.width || 800;
-        let imgHeight = image.height || 600;
-        if (!imgWidth || !imgHeight) {
-          const imageSizeModule = require('image-size');
-          const sizeFn = imageSizeModule.imageSize || imageSizeModule;
-          try {
-            const buffer = fs.readFileSync(imagePath);
-            const dimensions = sizeFn(buffer);
-            imgWidth = dimensions.width;
-            imgHeight = dimensions.height;
-            console.log(`[AI标注] 从文件读取图片尺寸: ${imgWidth}x${imgHeight}`);
-          } catch (e) {
-            console.warn('[AI标注] 无法获取图片尺寸，使用默认值:', e.message);
-          }
-        } else {
-          console.log(`[AI标注] 使用数据库中的图片尺寸: ${imgWidth}x${imgHeight}`);
-        }
-        
-    const mockAnnotations = {
-      masks: [
-        {
-              id: `mask-${imageId}-1`,
-              points: [
-                imgWidth * 0.2, imgHeight * 0.2,
-                imgWidth * 0.4, imgHeight * 0.2,
-                imgWidth * 0.4, imgHeight * 0.4,
-                imgWidth * 0.2, imgHeight * 0.4
-              ],
-              label: prompt || 'object'
-        }
-      ],
-      boundingBoxes: [
-        {
-              id: `bbox-${imageId}-1`,
-              x: imgWidth * 0.2,
-              y: imgHeight * 0.2,
-              width: imgWidth * 0.2,
-              height: imgHeight * 0.2,
-              label: prompt || 'object'
-        }
-      ]
-    };
-    
-    res.json({
-      success: true,
-      annotations: mockAnnotations,
-          message: '自动标注完成（使用模拟数据，Grounded SAM2服务未连接）',
-          warning: `Grounded SAM2服务不可用: ${samError.message}。请检查服务是否运行在 ${GROUNDED_SAM2_API_URL}`
-    });
-      } else {
-        throw samError;
+
+        return res.status(502).json({
+          success: false,
+          message: '自动标注失败：Grounded SAM2 服务不可用',
+          error: samError.message,
+          serviceUrl: GROUNDED_SAM2_API_URL,
+          code: samError.code
+        });
       }
+
+      throw samError;
     }
     
   } catch (error) {

@@ -96,11 +96,23 @@ export const annotationApi = {
     imageId: number,
     prompt?: string,
     modelParams?: {
+      modelBackend?: 'maskrcnn' | 'yolo_seg' | 'sam2_amg';
       baseScoreThresh?: number;
       lowerScoreThresh?: number;
       maxDetections?: number;
       maskThreshold?: number;
       maxPolygonPoints?: number;
+      // YOLO-Seg 参数（仅在 modelBackend=yolo_seg 时使用）
+      yoloConf?: number;
+      yoloIou?: number;
+      yoloImgSize?: number;
+      yoloMaxDet?: number;
+      // SAM2 AMG 参数（仅在 modelBackend=sam2_amg 时使用）
+      sam2PointsPerSide?: number;
+      sam2PredIouThresh?: number;
+      sam2StabilityScoreThresh?: number;
+      sam2BoxNmsThresh?: number;
+      sam2MinMaskRegionArea?: number;
     }
   ): Promise<AutoAnnotationResponse> => {
     const response = await apiClient.post<AutoAnnotationResponse>('/annotate/auto', {

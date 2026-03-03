@@ -56,17 +56,39 @@ const AnnotationPage: React.FC = () => {
   const [labelMappingLoading, setLabelMappingLoading] = useState(false); // 加载/保存中
   const [showModelParamModal, setShowModelParamModal] = useState(false); // 是否显示模型参数弹窗
   const [modelParams, setModelParams] = useState<{
+    modelBackend: 'maskrcnn' | 'yolo_seg' | 'sam2_amg';
     baseScoreThresh: number;
     lowerScoreThresh: number;
     maxDetections: number;
     maskThreshold: number;
     maxPolygonPoints: number;
+    // YOLO-Seg
+    yoloConf: number;
+    yoloIou: number;
+    yoloImgSize: number;
+    yoloMaxDet: number;
+    // SAM2 AMG
+    sam2PointsPerSide: number;
+    sam2PredIouThresh: number;
+    sam2StabilityScoreThresh: number;
+    sam2BoxNmsThresh: number;
+    sam2MinMaskRegionArea: number;
   }>({
+    modelBackend: 'maskrcnn',
     baseScoreThresh: 0.5,
     lowerScoreThresh: 0.3,
     maxDetections: 50,
     maskThreshold: 0.5,
     maxPolygonPoints: 80,
+    yoloConf: 0.25,
+    yoloIou: 0.7,
+    yoloImgSize: 640,
+    yoloMaxDet: 300,
+    sam2PointsPerSide: 32,
+    sam2PredIouThresh: 0.88,
+    sam2StabilityScoreThresh: 0.95,
+    sam2BoxNmsThresh: 0.7,
+    sam2MinMaskRegionArea: 0,
   });
 
   // 图片 URL 缓存破坏因子：只在列表内容发生变化时更新，避免每次 render 都触发图片重新请求
@@ -92,11 +114,21 @@ const AnnotationPage: React.FC = () => {
   useEffect(() => {
     if (!currentProject || !currentProject.id) {
       setModelParams({
+        modelBackend: 'maskrcnn',
         baseScoreThresh: 0.5,
         lowerScoreThresh: 0.3,
         maxDetections: 50,
         maskThreshold: 0.5,
         maxPolygonPoints: 80,
+        yoloConf: 0.25,
+        yoloIou: 0.7,
+        yoloImgSize: 640,
+        yoloMaxDet: 300,
+        sam2PointsPerSide: 32,
+        sam2PredIouThresh: 0.88,
+        sam2StabilityScoreThresh: 0.95,
+        sam2BoxNmsThresh: 0.7,
+        sam2MinMaskRegionArea: 0,
       });
       return;
     }
@@ -105,23 +137,88 @@ const AnnotationPage: React.FC = () => {
       const raw = localStorage.getItem(key);
       if (!raw) return;
       const parsed = JSON.parse(raw) as Partial<{
+        modelBackend: 'maskrcnn' | 'yolo_seg' | 'sam2_amg';
         baseScoreThresh: number;
         lowerScoreThresh: number;
         maxDetections: number;
         maskThreshold: number;
         maxPolygonPoints: number;
+        yoloConf: number;
+        yoloIou: number;
+        yoloImgSize: number;
+        yoloMaxDet: number;
+        sam2PointsPerSide: number;
+        sam2PredIouThresh: number;
+        sam2StabilityScoreThresh: number;
+        sam2BoxNmsThresh: number;
+        sam2MinMaskRegionArea: number;
       }>;
       setModelParams({
+        modelBackend:
+          parsed.modelBackend === 'yolo_seg' || parsed.modelBackend === 'sam2_amg'
+            ? parsed.modelBackend
+            : 'maskrcnn',
         baseScoreThresh: typeof parsed.baseScoreThresh === 'number' ? parsed.baseScoreThresh : 0.5,
         lowerScoreThresh: typeof parsed.lowerScoreThresh === 'number' ? parsed.lowerScoreThresh : 0.3,
         maxDetections: typeof parsed.maxDetections === 'number' ? parsed.maxDetections : 50,
         maskThreshold: typeof parsed.maskThreshold === 'number' ? parsed.maskThreshold : 0.5,
         maxPolygonPoints: typeof parsed.maxPolygonPoints === 'number' ? parsed.maxPolygonPoints : 80,
+        yoloConf: typeof parsed.yoloConf === 'number' ? parsed.yoloConf : 0.25,
+        yoloIou: typeof parsed.yoloIou === 'number' ? parsed.yoloIou : 0.7,
+        yoloImgSize: typeof parsed.yoloImgSize === 'number' ? parsed.yoloImgSize : 640,
+        yoloMaxDet: typeof parsed.yoloMaxDet === 'number' ? parsed.yoloMaxDet : 300,
+        sam2PointsPerSide: typeof parsed.sam2PointsPerSide === 'number' ? parsed.sam2PointsPerSide : 32,
+        sam2PredIouThresh: typeof parsed.sam2PredIouThresh === 'number' ? parsed.sam2PredIouThresh : 0.88,
+        sam2StabilityScoreThresh:
+          typeof parsed.sam2StabilityScoreThresh === 'number' ? parsed.sam2StabilityScoreThresh : 0.95,
+        sam2BoxNmsThresh: typeof parsed.sam2BoxNmsThresh === 'number' ? parsed.sam2BoxNmsThresh : 0.7,
+        sam2MinMaskRegionArea:
+          typeof parsed.sam2MinMaskRegionArea === 'number' ? parsed.sam2MinMaskRegionArea : 0,
       });
     } catch (e) {
       console.warn('加载模型参数失败，将使用默认值', e);
     }
   }, [currentProject?.id]);
+
+  // 加载当前项目的提示词（从 localStorage）
+  useEffect(() => {
+    if (!currentProject || !currentProject.id) {
+      setAiPrompts([]);
+      setAiPrompt('');
+      return;
+    }
+    const key = `aiPrompts:${currentProject.id}`;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) {
+        setAiPrompts([]);
+        setAiPrompt('');
+        return;
+      }
+      const parsed = JSON.parse(raw) as unknown;
+      const list = Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+      setAiPrompts(list);
+      const joined = list
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0)
+        .join(', ');
+      setAiPrompt(joined);
+    } catch (e) {
+      console.warn('加载提示词失败，将使用空提示词', e);
+      setAiPrompts([]);
+      setAiPrompt('');
+    }
+  }, [currentProject?.id]);
+
+  const saveAiPromptsToStorage = () => {
+    if (!currentProject || !currentProject.id) return;
+    const key = `aiPrompts:${currentProject.id}`;
+    try {
+      localStorage.setItem(key, JSON.stringify(aiPrompts));
+    } catch (e) {
+      console.warn('保存提示词失败', e);
+    }
+  };
 
   const saveModelParamsToStorage = () => {
     if (!currentProject || !currentProject.id) return;
@@ -182,6 +279,16 @@ const AnnotationPage: React.FC = () => {
   const THUMB_SIZE = 125;
   const THUMB_GAP = 16; // 对应 CSS gap: 1rem
   const thumbStride = THUMB_SIZE + THUMB_GAP;
+
+  const batchSuccessCount = useMemo(
+    () => batchProgress.results.filter((r) => r.success).length,
+    [batchProgress.results]
+  );
+  const batchFailCount = useMemo(
+    () => batchProgress.results.filter((r) => !r.success).length,
+    [batchProgress.results]
+  );
+  const showBatchResultBreakdown = batchProgress.results.length > 0;
 
   const thumbCols = useMemo(() => {
     const w = thumbViewport.width;
@@ -811,20 +918,6 @@ const AnnotationPage: React.FC = () => {
                   <div className="ai-controls">
                     <div className="ai-controls-top">
                       <div className="ai-prompt-group">
-                        <button 
-                          type="button"
-                          className="ai-prompt-manage-btn"
-                          onClick={() => {
-                            if (aiPrompts.length === 0) {
-                              setAiPrompts(['']);
-                            }
-                            setShowPromptModal(true);
-                          }}
-                        >
-                          {aiPrompts.filter((p) => p.trim().length > 0).length > 0
-                            ? `已配置 ${aiPrompts.filter((p) => p.trim().length > 0).length} 条提示词`
-                            : '点击配置提示词'}
-                        </button>
                         <button
                           type="button"
                           className="ai-model-config-btn"
@@ -843,8 +936,11 @@ const AnnotationPage: React.FC = () => {
                       <div className="ai-summary">
                         <div className="ai-summary-left">
                           <div className="ai-summary-label">已完成AI标注</div>
-                          <div className="ai-summary-count">
-                            {annotationSummary?.annotatedImages ?? 0} 张
+                          <div className="ai-summary-stat success">
+                            成功 {showBatchResultBreakdown ? batchSuccessCount : 0}
+                          </div>
+                          <div className="ai-summary-stat fail">
+                            失败 {showBatchResultBreakdown ? batchFailCount : 0}
                           </div>
                         </div>
                       </div>
@@ -873,7 +969,7 @@ const AnnotationPage: React.FC = () => {
                   </button>
                   </div>
                   <p className="ai-description">
-                    使用Grounded SAM2模型自动识别所有图像中的对象并生成标注
+                    AI自动分割与识别
                   </p>
                   
                   {/* 批量标注进度 */}
@@ -1227,7 +1323,10 @@ const AnnotationPage: React.FC = () => {
       {showPromptModal && (
         <div
           className="ai-prompt-modal-backdrop"
-          onClick={() => setShowPromptModal(false)}
+          onClick={() => {
+            saveAiPromptsToStorage();
+            setShowPromptModal(false);
+          }}
         >
           <div
             className="ai-prompt-modal"
@@ -1235,7 +1334,9 @@ const AnnotationPage: React.FC = () => {
           >
             <h3 className="ai-prompt-modal-title">配置提示词</h3>
             <p className="ai-prompt-modal-desc">
-              每行一个提示词，例如：person、dog、car。留空则由模型自动识别所有常见目标。
+              每行一个提示词，例如：person、dog、car。留空则不过滤。
+              <br />
+              说明：当前仅 <b>Mask R-CNN</b> 会使用提示词（按 COCO 类别名做包含匹配过滤）；YOLO-Seg / SAM2（AMG）会忽略提示词。
             </p>
             <div className="ai-prompt-modal-list">
               {aiPrompts.map((value, index) => (
@@ -1269,7 +1370,10 @@ const AnnotationPage: React.FC = () => {
               <button
                 type="button"
                 className="ai-prompt-modal-btn primary"
-                onClick={() => setShowPromptModal(false)}
+                onClick={() => {
+                  saveAiPromptsToStorage();
+                  setShowPromptModal(false);
+                }}
               >
                 完成
               </button>
@@ -1290,9 +1394,62 @@ const AnnotationPage: React.FC = () => {
           >
             <h3 className="ai-prompt-modal-title">调整模型参数</h3>
             <p className="ai-prompt-modal-desc">
-              这些参数会影响 Grounded SAM2 / Mask R-CNN 的检测结果，并按项目单独保存。
+              可在 Mask R-CNN / YOLO-Seg / SAM2（AMG）之间切换，参数按项目单独保存。
             </p>
             <div className="model-param-group">
+              <div className="model-param-row">
+                <div className="model-param-label">模型后端</div>
+                <select
+                  className="ai-prompt-input"
+                  value={modelParams.modelBackend}
+                  onChange={(e) =>
+                    setModelParams((prev) => ({
+                      ...prev,
+                      modelBackend: e.target.value as any,
+                    }))
+                  }
+                >
+                  <option value="maskrcnn">Mask R-CNN（当前默认）</option>
+                  <option value="yolo_seg">YOLO-Seg（全自动实例分割）</option>
+                  <option value="sam2_amg">SAM2（AMG 全自动分割）</option>
+                </select>
+                <div className="model-param-hint">
+                  切换后端后，下面仅显示该后端相关参数；未显示的参数会被忽略。
+                </div>
+              </div>
+
+              {modelParams.modelBackend === 'maskrcnn' && (
+                <div className="model-param-row">
+                  <div className="model-param-label">
+                    提示词（可选）
+                    <span className="model-param-value">
+                      {aiPrompts.filter((p) => p.trim().length > 0).length > 0
+                        ? `已配置 ${aiPrompts.filter((p) => p.trim().length > 0).length} 条`
+                        : '未配置'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="ai-prompt-manage-btn"
+                    onClick={() => {
+                      if (aiPrompts.length === 0) {
+                        setAiPrompts(['']);
+                      }
+                      // 避免双层弹窗叠在一起
+                      setShowModelParamModal(false);
+                      setShowPromptModal(true);
+                    }}
+                  >
+                    配置提示词
+                  </button>
+                  <div className="model-param-hint">
+                    仅 Mask R-CNN 使用提示词（按 COCO 类别名包含匹配过滤）。
+                  </div>
+                </div>
+              )}
+
+              {modelParams.modelBackend === 'maskrcnn' && (
+                <>
               <div className="model-param-row">
                 <div className="model-param-label">
                   初始置信度阈值
@@ -1392,6 +1549,163 @@ const AnnotationPage: React.FC = () => {
                   这是把模型输出的 mask 概率图变成轮廓的阈值。调高更“收紧”但可能缺一块；调低更“外扩”但更容易粘连（默认 0.50）。
                 </div>
               </div>
+                </>
+              )}
+
+              {modelParams.modelBackend === 'yolo_seg' && (
+                <>
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      YOLO 置信度阈值
+                      <span className="model-param-value">{modelParams.yoloConf.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.05}
+                      max={0.9}
+                      step={0.05}
+                      value={modelParams.yoloConf}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          yoloConf: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">越高越严格，目标会更少（默认 0.25）。</div>
+                  </div>
+
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      YOLO NMS IoU 阈值
+                      <span className="model-param-value">{modelParams.yoloIou.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={0.9}
+                      step={0.05}
+                      value={modelParams.yoloIou}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          yoloIou: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">越低越不容易合并相近目标（默认 0.70）。</div>
+                  </div>
+
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      YOLO 输入尺寸（imgsz）
+                      <span className="model-param-value">{modelParams.yoloImgSize}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={320}
+                      max={1280}
+                      step={32}
+                      value={modelParams.yoloImgSize}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          yoloImgSize: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">更大更精细，但更慢（默认 640）。</div>
+                  </div>
+
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      YOLO 最多输出目标数
+                      <span className="model-param-value">{modelParams.yoloMaxDet}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={50}
+                      max={800}
+                      step={50}
+                      value={modelParams.yoloMaxDet}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          yoloMaxDet: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">限制每张图最多输出多少个实例（默认 300）。</div>
+                  </div>
+                </>
+              )}
+
+              {modelParams.modelBackend === 'sam2_amg' && (
+                <>
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      SAM2 points_per_side
+                      <span className="model-param-value">{modelParams.sam2PointsPerSide}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={8}
+                      max={64}
+                      step={4}
+                      value={modelParams.sam2PointsPerSide}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          sam2PointsPerSide: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">越大分割越细，但更慢（默认 32）。</div>
+                  </div>
+
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      SAM2 pred_iou_thresh
+                      <span className="model-param-value">{modelParams.sam2PredIouThresh.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={0.98}
+                      step={0.02}
+                      value={modelParams.sam2PredIouThresh}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          sam2PredIouThresh: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">越高越严格，保留的 mask 更少（默认 0.88）。</div>
+                  </div>
+
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      SAM2 stability_score_thresh
+                      <span className="model-param-value">{modelParams.sam2StabilityScoreThresh.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={0.98}
+                      step={0.02}
+                      value={modelParams.sam2StabilityScoreThresh}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          sam2StabilityScoreThresh: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">越高越偏向稳定的大块区域（默认 0.95）。</div>
+                  </div>
+                </>
+              )}
 
               <div className="model-param-row">
                 <div className="model-param-label">
@@ -1425,11 +1739,21 @@ const AnnotationPage: React.FC = () => {
                 onClick={() => {
                   // 恢复默认参数但不立即保存
                   setModelParams({
+                    modelBackend: 'maskrcnn',
                     baseScoreThresh: 0.5,
                     lowerScoreThresh: 0.3,
                     maxDetections: 50,
                     maskThreshold: 0.5,
                     maxPolygonPoints: 80,
+                    yoloConf: 0.25,
+                    yoloIou: 0.7,
+                    yoloImgSize: 640,
+                    yoloMaxDet: 300,
+                    sam2PointsPerSide: 32,
+                    sam2PredIouThresh: 0.88,
+                    sam2StabilityScoreThresh: 0.95,
+                    sam2BoxNmsThresh: 0.7,
+                    sam2MinMaskRegionArea: 0,
                   });
                 }}
               >

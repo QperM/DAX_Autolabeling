@@ -1,6 +1,6 @@
 # 智能图像标注系统
 
-**版本：V1.6**  
+**版本：V1.7**  
 **最后更新：2026年3月3日**
 
 ## 项目概述
@@ -104,7 +104,7 @@
 - **文件处理**: Multer + adm-zip（ZIP 解压）
 - **跨域支持**: CORS
 - **图片处理**: image-size
-- **AI 标注服务**: Python FastAPI + Grounded SAM2 服务框架（当前接入 torchvision Mask R-CNN COCO 预训练模型作为检测/分割后端，集成在 `server/sam2-service/`）
+- **AI 标注服务**: Python FastAPI + Grounded SAM2 服务框架，支持多后端分割模型（Mask R-CNN / YOLO-Seg / SAM2 AMG），集成在 `server/sam2-service/`，并通过 Node 转发统一为 `/api/annotate/auto`
 
 ## 项目结构
 
@@ -362,6 +362,16 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 
 ## 开发进展
 
+### V1.7 最新功能（2026年3月3日）
+- [x] Python AI 服务接入可切换的多种实例分割后端：`modelBackend=maskrcnn / yolo_seg / sam2_amg`
+- [x] SAM2 AMG 集成：通过 `SAM2_CHECKPOINT` + `SAM2_MODEL_CFG` 加载官方 SAM2 模型，并在前端下拉选择
+- [x] YOLO-Seg 集成：支持 YOLO 端到端实例分割，前端可配置置信度、IoU、输入尺寸、最大检测数
+- [x] 模型参数弹窗重构：根据当前后端只展示相关参数（Mask R-CNN / YOLO-Seg / SAM2 AMG 各自一组滑杆）
+- [x] 外观聚类：在 Mask R-CNN 输出上按颜色 + 形状 + 位置 + 姿态做层次聚类，并支持“外观聚类距离阈值”滑杆调节
+- [x] 前端 `Mask Label 对照表`：项目级维护「颜色 → label」映射，支持统一修改同色 Mask 的标签
+- [x] 批量 AI 标注结果展示优化：改为只展示“成功 / 失败”数量，移除总数，界面更简洁
+- [x] 手动标注体验优化：默认进入“标注图层”；多边形闭合后自动弹出重命名框；新建 Mask 默认更高不透明度
+
 ### V1.4 最新功能（2026年3月2日）
 - [x] 在人工标注页面接入统一的标注画布组件 `AnnotationCanvas`，支持在原图上叠加显示分割 Mask / 边界框 / 多边形
 - [x] 新增“背景图层 / 标注图层”切换逻辑，可一键隐藏/显示 SAM2 生成的 Mask 图层
@@ -408,7 +418,7 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 - [x] 状态管理和数据持久化
 
 ### 待完善功能
-- [ ] 集成真正的 Grounded SAM2 模型与权重（当前使用 Mask R-CNN 作为基础检测/分割后端）
+- [ ] 进一步优化 Grounded SAM2 / YOLO-Seg 推理性能（大图显存控制、多图批处理能力）
 - [ ] 9D Pose标注模块开发
 - [ ] 9D Pose标注模块开发
 - [ ] 标注数据导出功能（JSON、COCO格式等）
