@@ -325,6 +325,28 @@
   transform: translateY(-1px);
 }
 
+.ai-model-config-btn {
+  margin-top: 0.4rem;
+  padding: 0.45rem 0.9rem;
+  width: 100%;
+  border-radius: 8px;
+  border: 1px dashed #d0d7e2;
+  background: #f9fafb;
+  color: #4b5563;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: center;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.1s ease;
+}
+
+.ai-model-config-btn:hover {
+  background-color: #eef2ff;
+  border-color: #667eea;
+  color: #4b5bd5;
+  transform: translateY(-1px);
+}
+
 .ai-prompt-add {
   margin-top: 0.1rem;
   padding: 0.25rem 0.5rem;
@@ -379,6 +401,45 @@
   margin: 0;
   font-size: 0.85rem;
   color: #64748b;
+}
+
+.model-param-group {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.model-param-row {
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.model-param-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: #1e293b;
+  margin-bottom: 0.35rem;
+  font-weight: 500;
+}
+
+.model-param-value {
+  font-variant-numeric: tabular-nums;
+  color: #4b5bd5;
+}
+
+.model-param-row input[type="range"] {
+  width: 100%;
+}
+
+.model-param-hint {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: #6b7280;
 }
 
 .ai-prompt-modal-list {

@@ -92,10 +92,19 @@ export const uploadJobApi = {
 // 标注相关API
 export const annotationApi = {
   // 自动标注
-  autoAnnotate: async (imageId: number, prompt?: string): Promise<AutoAnnotationResponse> => {
+  autoAnnotate: async (
+    imageId: number,
+    prompt?: string,
+    modelParams?: {
+      baseScoreThresh?: number;
+      lowerScoreThresh?: number;
+      maxDetections?: number;
+    }
+  ): Promise<AutoAnnotationResponse> => {
     const response = await apiClient.post<AutoAnnotationResponse>('/annotate/auto', {
       imageId,
       prompt,
+      modelParams,
     });
     return response.data;
   },

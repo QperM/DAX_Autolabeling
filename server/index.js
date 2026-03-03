@@ -441,9 +441,13 @@ async function checkGroundedSAM2Health(apiUrl) {
 // 自动标注接口 - 集成Grounded SAM2
 app.post('/api/annotate/auto', async (req, res) => {
   try {
-    const { imageId, prompt } = req.body;
+    const { imageId, prompt, modelParams } = req.body;
     
-    console.log(`[AI标注] 开始处理图片ID: ${imageId}, prompt: ${prompt || '无'}`);
+    console.log(
+      `[AI标注] 开始处理图片ID: ${imageId}, prompt: ${prompt || '无'}, modelParams: ${
+        modelParams ? JSON.stringify(modelParams) : '默认'
+      }`
+    );
     
     // 获取图片信息
     const image = await new Promise((resolve, reject) => {
@@ -490,7 +494,11 @@ app.post('/api/annotate/auto', async (req, res) => {
     
     try {
       console.log(`[AI标注] 调用Grounded SAM2 API: ${GROUNDED_SAM2_API_URL}`);
-      console.log(`[AI标注] 请求参数: imageId=${imageId}, prompt=${prompt || '无'}`);
+      console.log(
+        `[AI标注] 请求参数: imageId=${imageId}, prompt=${prompt || '无'}, modelParams=${
+          modelParams ? JSON.stringify(modelParams) : '默认'
+        }`
+      );
       
       // 读取图片文件并发送到Grounded SAM2
       const formData = new FormData();
@@ -508,11 +516,28 @@ app.post('/api/annotate/auto', async (req, res) => {
         // 某些 API 可能使用 prompt 字段
         // formData.append('prompt', prompt);
       }
+
+      // 模型参数（可选，透传给 Python SAM2 服务）
+      if (modelParams && typeof modelParams === 'object') {
+        if (typeof modelParams.baseScoreThresh === 'number') {
+          formData.append('base_score_thresh', String(modelParams.baseScoreThresh));
+        }
+        if (typeof modelParams.lowerScoreThresh === 'number') {
+          formData.append('lower_score_thresh', String(modelParams.lowerScoreThresh));
+        }
+        if (typeof modelParams.maxDetections === 'number') {
+          formData.append('max_detections', String(modelParams.maxDetections));
+        }
+      }
       
       // 添加图片URL作为备用参数（某些 API 可能支持）
       // formData.append('image_url', imageUrl);
       
-      console.log(`[AI标注] FormData字段: image${prompt ? ', text_prompt' : ''}`);
+      console.log(
+        `[AI标注] FormData字段: image` +
+          `${prompt ? ', text_prompt' : ''}` +
+          `${modelParams ? ', base_score_thresh/lower_score_thresh/max_detections' : ''}`
+      );
       
       // 调用Grounded SAM2 API
       const samResponse = await axios.post(GROUNDED_SAM2_API_URL, formData, {

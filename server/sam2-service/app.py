@@ -146,7 +146,10 @@ async def health_check():
 async def auto_label(
     image: UploadFile = File(..., description="要标注的图片文件"),
     text_prompt: Optional[str] = Form(None, description="文本提示词（可选）"),
-    prompt: Optional[str] = Form(None, description="提示词别名（可选）")
+    prompt: Optional[str] = Form(None, description="提示词别名（可选）"),
+    base_score_thresh: float = Form(0.5, description="初始置信度阈值（默认 0.5）"),
+    lower_score_thresh: float = Form(0.3, description="兜底置信度下限（默认 0.3）"),
+    max_detections: int = Form(50, description="每张图片最多检测目标数（默认 50）"),
 ):
     """
     自动标注接口
@@ -177,6 +180,10 @@ async def auto_label(
         print(f"[SAM2服务] 收到标注请求:")
         print(f"  - 图片: {image.filename} ({width}x{height})")
         print(f"  - 提示词: {prompt_text or '（空，使用所有类别）'}")
+        print(
+            f"  - 模型参数: base_score_thresh={base_score_thresh}, "
+            f"lower_score_thresh={lower_score_thresh}, max_detections={max_detections}"
+        )
 
         # 如果模型已加载，使用真实推理
         if model_loaded and model is not None and image_transform is not None and torch is not None:
@@ -205,8 +212,11 @@ async def auto_label(
                     # 形状通常是 [N, 1, H, W] 或 [N, H, W]
                     masks_np = masks_prob
 
-                # 第一轮评分阈值（稍微保守一点）
-                base_score_thresh = 0.5
+                # 评分阈值（可通过前端调整，默认 0.5 / 0.3）
+                # 防御性截断，避免非法值
+                base_score_thresh_clamped = float(max(0.01, min(0.99, base_score_thresh)))
+                lower_score_thresh_clamped = float(max(0.01, min(0.99, lower_score_thresh)))
+                max_detections_clamped = int(max(1, min(500, max_detections)))
                 prompt_tokens = [t.strip().lower() for t in prompt_text.split(",") if t.strip()] if prompt_text else []
 
                 result_masks = []
@@ -215,6 +225,8 @@ async def auto_label(
                 def collect_segments(score_thresh: float, use_prompt_filter: bool) -> None:
                     """根据阈值和是否按提示词过滤，收集检测结果到 result_masks/result_segments 中"""
                     for i in range(len(boxes)):
+                        if len(result_segments) >= max_detections_clamped:
+                            break
                         score = float(scores[i])
                         if score < score_thresh:
                             continue
@@ -281,18 +293,20 @@ async def auto_label(
                         )
 
                 # 1) 先用较高阈值 + 提示词过滤
-                collect_segments(base_score_thresh, use_prompt_filter=True)
+                collect_segments(base_score_thresh_clamped, use_prompt_filter=True)
 
                 # 2) 如果用户给了提示词但一个都没匹配上：忽略提示词，只按分数筛
                 if prompt_tokens and not result_segments:
                     print("[SAM2服务] 提示词过滤后没有检测到对象，尝试忽略提示词仅按分数筛选")
-                    collect_segments(base_score_thresh, use_prompt_filter=False)
+                    collect_segments(base_score_thresh_clamped, use_prompt_filter=False)
 
                 # 3) 如果仍然为空：降一点阈值，再尝试一次
                 if not result_segments:
-                    lower_score_thresh = 0.3
-                    print(f"[SAM2服务] score_thresh={base_score_thresh} 下仍未检测到对象，尝试降低阈值到 {lower_score_thresh}")
-                    collect_segments(lower_score_thresh, use_prompt_filter=False)
+                    print(
+                        f"[SAM2服务] score_thresh={base_score_thresh_clamped} 下仍未检测到对象，"
+                        f"尝试降低阈值到 {lower_score_thresh_clamped}"
+                    )
+                    collect_segments(lower_score_thresh_clamped, use_prompt_filter=False)
 
                 # 4) 如果还是空，兜底：直接取最高分的那个框，保证至少有 1 个结果
                 if not result_segments and len(boxes) > 0:

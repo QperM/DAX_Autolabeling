@@ -54,6 +54,16 @@ const AnnotationPage: React.FC = () => {
   const [showLabelMappingModal, setShowLabelMappingModal] = useState(false); // 是否显示 label 对照表弹窗
   const [colorLabelMapping, setColorLabelMapping] = useState<Map<string, string>>(new Map()); // 颜色 -> label 映射
   const [labelMappingLoading, setLabelMappingLoading] = useState(false); // 加载/保存中
+  const [showModelParamModal, setShowModelParamModal] = useState(false); // 是否显示模型参数弹窗
+  const [modelParams, setModelParams] = useState<{
+    baseScoreThresh: number;
+    lowerScoreThresh: number;
+    maxDetections: number;
+  }>({
+    baseScoreThresh: 0.5,
+    lowerScoreThresh: 0.3,
+    maxDetections: 50,
+  });
 
   // 图片 URL 缓存破坏因子：只在列表内容发生变化时更新，避免每次 render 都触发图片重新请求
   const [imageCacheBust, setImageCacheBust] = useState(0);
@@ -73,6 +83,45 @@ const AnnotationPage: React.FC = () => {
 
   // 项目级 label -> color 映射表（同一项目内保持稳定）
   const labelColorMapRef = React.useRef<Map<string, string>>(new Map());
+
+  // 加载当前项目的模型参数（从 localStorage）
+  useEffect(() => {
+    if (!currentProject || !currentProject.id) {
+      setModelParams({
+        baseScoreThresh: 0.5,
+        lowerScoreThresh: 0.3,
+        maxDetections: 50,
+      });
+      return;
+    }
+    const key = `modelParams:${currentProject.id}`;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<{
+        baseScoreThresh: number;
+        lowerScoreThresh: number;
+        maxDetections: number;
+      }>;
+      setModelParams({
+        baseScoreThresh: typeof parsed.baseScoreThresh === 'number' ? parsed.baseScoreThresh : 0.5,
+        lowerScoreThresh: typeof parsed.lowerScoreThresh === 'number' ? parsed.lowerScoreThresh : 0.3,
+        maxDetections: typeof parsed.maxDetections === 'number' ? parsed.maxDetections : 50,
+      });
+    } catch (e) {
+      console.warn('加载模型参数失败，将使用默认值', e);
+    }
+  }, [currentProject?.id]);
+
+  const saveModelParamsToStorage = () => {
+    if (!currentProject || !currentProject.id) return;
+    const key = `modelParams:${currentProject.id}`;
+    try {
+      localStorage.setItem(key, JSON.stringify(modelParams));
+    } catch (e) {
+      console.warn('保存模型参数失败', e);
+    }
+  };
 
   // 切换项目时，重置当前项目的颜色映射
   useEffect(() => {
@@ -517,8 +566,8 @@ const AnnotationPage: React.FC = () => {
         }));
 
         try {
-          // 调用后端AI标注API
-          const result = await annotationApi.autoAnnotate(image.id, aiPrompt || undefined);
+          // 调用后端AI标注API（携带当前项目的模型参数）
+          const result = await annotationApi.autoAnnotate(image.id, aiPrompt || undefined, modelParams);
 
           // 为本次结果分配颜色（同一标签复用同一颜色）
           const colored = assignColorsForAnnotations(result.annotations);
@@ -656,10 +705,10 @@ const AnnotationPage: React.FC = () => {
                   <div className="ai-controls">
                     <div className="ai-controls-top">
                       <div className="ai-prompt-group">
-                  <button 
+                        <button 
                           type="button"
                           className="ai-prompt-manage-btn"
-                    onClick={() => {
+                          onClick={() => {
                             if (aiPrompts.length === 0) {
                               setAiPrompts(['']);
                             }
@@ -669,6 +718,19 @@ const AnnotationPage: React.FC = () => {
                           {aiPrompts.filter((p) => p.trim().length > 0).length > 0
                             ? `已配置 ${aiPrompts.filter((p) => p.trim().length > 0).length} 条提示词`
                             : '点击配置提示词'}
+                        </button>
+                        <button
+                          type="button"
+                          className="ai-model-config-btn"
+                          onClick={() => {
+                            if (!currentProject) {
+                              alert('请先选择项目');
+                              return;
+                            }
+                            setShowModelParamModal(true);
+                          }}
+                        >
+                          调整模型参数
                         </button>
                         <div className="ai-prompt-helper">
                           无提示词默认识别全部目标。
@@ -1108,6 +1170,126 @@ const AnnotationPage: React.FC = () => {
                 onClick={() => setShowPromptModal(false)}
               >
                 完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 模型参数调整弹窗 */}
+      {showModelParamModal && (
+        <div
+          className="ai-prompt-modal-backdrop"
+          onClick={() => setShowModelParamModal(false)}
+        >
+          <div
+            className="ai-prompt-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="ai-prompt-modal-title">调整模型参数</h3>
+            <p className="ai-prompt-modal-desc">
+              这些参数会影响 Grounded SAM2 / Mask R-CNN 的检测结果，并按项目单独保存。
+            </p>
+            <div className="model-param-group">
+              <div className="model-param-row">
+                <div className="model-param-label">
+                  初始置信度阈值
+                  <span className="model-param-value">
+                    {modelParams.baseScoreThresh.toFixed(2)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.1}
+                  max={0.9}
+                  step={0.05}
+                  value={modelParams.baseScoreThresh}
+                  onChange={(e) =>
+                    setModelParams((prev) => ({
+                      ...prev,
+                      baseScoreThresh: Number(e.target.value),
+                    }))
+                  }
+                />
+                <div className="model-param-hint">
+                  越高越严格，低分目标会被过滤掉（默认 0.50）。
+                </div>
+              </div>
+
+              <div className="model-param-row">
+                <div className="model-param-label">
+                  兜底置信度下限
+                  <span className="model-param-value">
+                    {modelParams.lowerScoreThresh.toFixed(2)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.1}
+                  max={0.9}
+                  step={0.05}
+                  value={modelParams.lowerScoreThresh}
+                  onChange={(e) =>
+                    setModelParams((prev) => ({
+                      ...prev,
+                      lowerScoreThresh: Number(e.target.value),
+                    }))
+                  }
+                />
+                <div className="model-param-hint">
+                  当高阈值下没有结果时，会尝试降到这个阈值再筛一轮（默认 0.30）。
+                </div>
+              </div>
+
+              <div className="model-param-row">
+                <div className="model-param-label">
+                  最多检测目标数
+                  <span className="model-param-value">
+                    {modelParams.maxDetections}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={5}
+                  max={200}
+                  step={5}
+                  value={modelParams.maxDetections}
+                  onChange={(e) =>
+                    setModelParams((prev) => ({
+                      ...prev,
+                      maxDetections: Number(e.target.value),
+                    }))
+                  }
+                />
+                <div className="model-param-hint">
+                  限制每张图最多输出多少个目标，避免结果过多影响标注效率（默认 50）。
+                </div>
+              </div>
+            </div>
+            <div className="ai-prompt-modal-actions">
+              <button
+                type="button"
+                className="ai-prompt-modal-btn secondary"
+                onClick={() => {
+                  // 恢复默认参数但不立即保存
+                  setModelParams({
+                    baseScoreThresh: 0.5,
+                    lowerScoreThresh: 0.3,
+                    maxDetections: 50,
+                  });
+                }}
+              >
+                恢复默认
+              </button>
+              <button
+                type="button"
+                className="ai-prompt-modal-btn primary"
+                onClick={() => {
+                  saveModelParamsToStorage();
+                  setShowModelParamModal(false);
+                }}
+              >
+                保存并关闭
               </button>
             </div>
           </div>
