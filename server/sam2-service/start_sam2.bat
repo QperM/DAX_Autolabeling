@@ -1,43 +1,15 @@
 @echo off
-echo ========================================
-echo Grounded SAM2 API Service 启动脚本
-echo ========================================
 
-REM 检查 conda 环境是否存在
-where conda >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [错误] 未找到 conda，请先安装 Anaconda 或 Miniconda
-    pause
-    exit /b 1
-)
+REM 1. 激活 conda 环境
+REM 注意：确保 conda 已添加到系统 PATH，或者使用绝对路径调用 activate.bat
+call conda activate sam2
 
-REM 检查 sam2 环境是否存在（避免依赖 conda activate，在脚本/非交互场景更稳定）
-call conda info --envs | findstr "sam2" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [错误] 未找到 conda 环境 sam2
-    echo.
-    echo 请先运行初始化脚本进行首次安装:
-    echo   cd server\sam2-service
-    echo   setup.bat
-    echo.
-    pause
-    exit /b 1
-)
+REM 2. 设置环境变量 (格式: set 变量名=值，中间不能有空格)
+set SAM2_CHECKPOINT=C:\Project\DAX\DAXautolabeling\server\sam2-service\grounded-sam2\checkpoints\sam2_hiera_large.pt
+set SAM2_MODEL_CFG=configs/sam2/sam2_hiera_l.yaml
 
-REM 切换到服务目录
-cd /d %~dp0
+REM 3. 运行 Python 脚本
+python app.py
 
-REM 检查 app.py 是否存在
-if not exist app.py (
-    echo [错误] 未找到 app.py 文件
-    pause
-    exit /b 1
-)
-
-REM 启动服务
-echo 正在启动 Grounded SAM2 API 服务...
-echo 服务地址: http://localhost:7860
-echo.
-conda run -n sam2 python app.py
-
+REM 防止窗口立即关闭，方便查看报错信息
 pause

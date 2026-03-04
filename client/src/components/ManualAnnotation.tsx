@@ -14,7 +14,8 @@ const ManualAnnotation: React.FC = () => {
   const [selectedTool, setSelectedTool] = useState<'eraser' | 'mask' | 'point' | 'draw'>('mask');
   const [brushSize, setBrushSize] = useState(20);
   // 需求：每次进入人工标注页，默认显示“标注图层”
-  const [activeLayer, setActiveLayer] = useState<'background' | 'annotation'>('annotation');
+  // 图层类型：背景 / 标注(Mask+BBox) / 仅 Bounding Box
+  const [activeLayer, setActiveLayer] = useState<'background' | 'annotation' | 'bbox'>('annotation');
   const [masks, setMasks] = useState<Mask[]>([]);
   const [boundingBoxes, setBoundingBoxes] = useState<BoundingBox[]>([]);
   const [polygons, setPolygons] = useState<Polygon[]>([]);
@@ -462,8 +463,10 @@ const ManualAnnotation: React.FC = () => {
           <div className="canvas-area">
             <AnnotationCanvas
               imageUrl={`http://localhost:3001${currentImage.url}`}
+              // “Mask 图层”：只显示 Mask
+              // “Bounding Box 图层”：只显示 BBox，隐藏 Mask
               masks={activeLayer === 'annotation' ? masks : []}
-              boundingBoxes={activeLayer === 'annotation' ? boundingBoxes : []}
+              boundingBoxes={activeLayer === 'bbox' ? boundingBoxes : []}
               polygons={activeLayer === 'annotation' ? polygons : []}
               toolMode={
                 selectedTool === 'eraser'
@@ -543,7 +546,17 @@ const ManualAnnotation: React.FC = () => {
                     setActiveLayer('annotation');
                   }}
                 >
-                  <span>标注图层</span>
+                  <span>Mask 图层</span>
+                  <span className="layer-visible">👁️</span>
+                </div>
+                <div
+                  className={`layer-item ${activeLayer === 'bbox' ? 'active' : ''}`}
+                  onClick={() => {
+                    console.log('[ManualAnnotation] 切换图层: bbox');
+                    setActiveLayer('bbox');
+                  }}
+                >
+                  <span>Bounding Box 图层</span>
                   <span className="layer-visible">👁️</span>
                 </div>
               </div>
