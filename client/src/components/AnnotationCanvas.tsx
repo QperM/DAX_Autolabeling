@@ -276,19 +276,19 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     const loadProjectLabelColorMap = (pid: number | null): Map<string, string> => {
       const map = new Map<string, string>();
       if (pid) {
-        const key = `labelColorMap:${pid}`;
-        try {
-          const raw = localStorage.getItem(key);
+      const key = `labelColorMap:${pid}`;
+      try {
+        const raw = localStorage.getItem(key);
           if (raw) {
-            const obj = JSON.parse(raw) as Record<string, string>;
+        const obj = JSON.parse(raw) as Record<string, string>;
             Object.entries(obj).forEach(([label, color]) => {
               if (label && color) {
                 map.set(label, color);
               }
             });
           }
-        } catch (err) {
-          console.warn('[AnnotationCanvas] 读取 labelColorMap 失败', err);
+      } catch (err) {
+        console.warn('[AnnotationCanvas] 读取 labelColorMap 失败', err);
         }
       }
 
@@ -299,7 +299,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         if (!label || !color) return;
         if (!map.has(label)) {
           map.set(label, color);
-        }
+      }
       });
 
       boundingBoxes.forEach((bbox) => {
@@ -945,7 +945,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       const width = Math.abs(x2 - x1);
       const height = Math.abs(y2 - y1);
       setBoxSelectRect({ x, y, width, height });
-    };
+  };
 
     const handleContainerMouseUp = (e: MouseEvent) => {
       if (!isBoxSelecting || !boxSelectRect || !boxSelectStart) return;
@@ -983,9 +983,9 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
               const area = Math.max(0, maxX - minX) * Math.max(0, maxY - minY);
               if (area < smallestArea) {
                 smallestArea = area;
-                clickedId = mask.id;
-              }
+              clickedId = mask.id;
             }
+          }
           });
 
           setSelectedMaskIds(clickedId ? [clickedId] : []);
@@ -1284,9 +1284,9 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
         // 构建标签列表，并按最近使用顺序排序
         const allLabels = Array.from(map.entries()).map(([label, color]) => ({
-          label,
-          color,
-        }));
+              label,
+              color,
+            }));
 
         // 排序：最近使用的在前，其他按字母顺序
         existingLabels = allLabels.sort((a, b) => {
@@ -1305,7 +1305,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
           return a.label.localeCompare(b.label);
         });
 
-        const trimmed = renameInputValue.trim();
+            const trimmed = renameInputValue.trim();
         if (trimmed && map.has(trimmed)) {
           currentColor = map.get(trimmed);
         }

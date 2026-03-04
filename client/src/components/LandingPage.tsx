@@ -12,6 +12,10 @@ const LandingPage: React.FC = () => {
   const [projects, setProjects] = useState<any[]>([]);
   // 是否显示项目列表弹窗
   const [showProjectList, setShowProjectList] = useState(false);
+  // 是否显示项目描述弹窗
+  const [showDescriptionModal, setShowDescriptionModal] = useState(false);
+  const [descriptionModalTitle, setDescriptionModalTitle] = useState('');
+  const [descriptionModalContent, setDescriptionModalContent] = useState('');
   // 是否显示“新建项目”弹窗
   const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
   // 新建项目表单
@@ -136,6 +140,14 @@ const LandingPage: React.FC = () => {
     // 切换项目时可以清空已选模块，避免误操作
     setSelectedModules([]);
     console.log('状态更新: 选择项目并保持在主页');
+  };
+
+  // 查看项目描述
+  const handleShowProjectDescription = (project: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDescriptionModalTitle(project.name || `项目 ${project.id}`);
+    setDescriptionModalContent(project.description || '暂无描述');
+    setShowDescriptionModal(true);
   };
 
   // 删除项目
@@ -271,6 +283,7 @@ const LandingPage: React.FC = () => {
                     {/* 列表表头 */}
                     <div className="project-list-header-row">
                       <div className="project-column name">项目名称</div>
+                      <div className="project-column description">描述</div>
                       <div className="project-column id">ID</div>
                       <div className="project-column created">创建时间</div>
                       <div className="project-column updated">更新时间</div>
@@ -286,6 +299,14 @@ const LandingPage: React.FC = () => {
                         <div className="project-column name">
                           <div className="project-icon">📁</div>
                           <span>{project.name}</span>
+                        </div>
+                        <div className="project-column description">
+                          <button
+                            className="project-desc-btn"
+                            onClick={(e) => handleShowProjectDescription(project, e)}
+                          >
+                            查看描述
+                          </button>
                         </div>
                         <div className="project-column id">{project.id}</div>
                         <div className="project-column created">{new Date(project.created_at).toLocaleString()}</div>
@@ -419,6 +440,38 @@ const LandingPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* 项目描述弹窗 */}
+      {showDescriptionModal && (
+        <div className="description-modal-overlay">
+          <div className="description-modal">
+            <div className="description-modal-header">
+              <h3>项目描述：{descriptionModalTitle}</h3>
+              <button
+                className="close-description-btn"
+                onClick={() => setShowDescriptionModal(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="description-modal-body">
+              <textarea
+                className="description-textarea"
+                readOnly
+                value={descriptionModalContent}
+              />
+            </div>
+            <div className="description-modal-footer">
+              <button
+                className="description-close-btn"
+                onClick={() => setShowDescriptionModal(false)}
+              >
+                知道了
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

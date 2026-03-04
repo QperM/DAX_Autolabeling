@@ -182,7 +182,7 @@
 /* 项目列表表头 */
 .project-list-header-row {
   display: grid;
-  grid-template-columns: 1fr 80px 140px 140px 80px;
+  grid-template-columns: 1.3fr 90px 80px 140px 140px 80px;
   gap: 1rem;
   padding: 0.75rem 1.5rem;
   background: rgba(102, 126, 234, 0.05);
@@ -197,7 +197,7 @@
 /* 项目列表行 */
 .project-list-row {
   display: grid;
-  grid-template-columns: 1fr 80px 140px 140px 80px;
+  grid-template-columns: 1.3fr 90px 80px 140px 140px 80px;
   gap: 1rem;
   padding: 0.75rem 1.5rem;
   border-bottom: 1px solid #eee;
@@ -233,8 +233,132 @@
   font-weight: 500;
 }
 
+.project-column.description {
+  justify-content: center;
+}
+
 .project-column.actions {
   justify-content: flex-end;
+}
+
+.project-desc-btn {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: 999px;
+  border: 1px solid #d0d7e2;
+  background: #f9fafb;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.project-desc-btn:hover {
+  background: #eef2ff;
+  border-color: #667eea;
+  color: #1d4ed8;
+}
+
+.project-desc-btn:active {
+  transform: translateY(1px);
+}
+
+/* 项目描述弹窗 */
+.description-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+}
+
+.description-modal {
+  width: 480px;
+  max-width: 90vw;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.description-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.25rem;
+  background: rgba(102, 126, 234, 0.08);
+  border-bottom: 1px solid rgba(102, 126, 234, 0.18);
+}
+
+.description-modal-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #111827;
+}
+
+.close-description-btn {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  color: #6b7280;
+  padding: 0.1rem 0.25rem;
+  transition: all 0.2s ease;
+}
+
+.close-description-btn:hover {
+  color: #ef4444;
+  transform: scale(1.05);
+}
+
+.description-modal-body {
+  padding: 0.75rem 1.25rem;
+}
+
+.description-textarea {
+  width: 100%;
+  min-height: 140px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  padding: 0.75rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #111827;
+  background: #f9fafb;
+  resize: vertical;
+}
+
+.description-textarea:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.18);
+}
+
+.description-modal-footer {
+  padding: 0.6rem 1.25rem 0.8rem;
+  display: flex;
+  justify-content: flex-end;
+  background: #f9fafb;
+  border-top: 1px solid #e5e7eb;
+}
+
+.description-close-btn {
+  padding: 0.4rem 1.1rem;
+  border-radius: 999px;
+  border: none;
+  background: #4b5563;
+  color: #ffffff;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.description-close-btn:hover {
+  background: #111827;
 }
 
 .project-column.created,
