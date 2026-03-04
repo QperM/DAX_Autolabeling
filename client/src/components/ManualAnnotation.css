@@ -548,16 +548,28 @@
 .auto-save-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.85rem;
-  color: #495057;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #10b981;
   cursor: pointer;
+  padding: 0.5rem 0.75rem;
+  background: rgba(16, 185, 129, 0.1);
+  border-radius: 6px;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  transition: all 0.2s ease;
+}
+
+.auto-save-toggle:hover {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.5);
 }
 
 .auto-save-toggle input[type='checkbox'] {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   cursor: pointer;
+  accent-color: #10b981;
 }
 
 .layer-visible {
@@ -667,17 +679,25 @@
 .rename-modal-input {
   width: 100%;
   padding: 8px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid #d0d0d0;
   border-radius: 4px;
   font-size: 14px;
   margin-bottom: 12px;
   box-sizing: border-box;
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+  background-color: #f7f7f7; /* 浅灰底，黑字 */
+  color: #111111;
+}
+
+.rename-modal-input::placeholder {
+  color: #999999;
 }
 
 .rename-modal-input:focus {
   border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.18);
+  background-color: #ffffff;
 }
 
 .rename-modal-actions {
@@ -725,13 +745,18 @@
   flex: 1;
   padding: 6px 10px;
   border-radius: 4px;
-  border: 1px solid #ddd;
+  border: 1px solid #d0d0d0;
   font-size: 14px;
   outline: none;
+  background-color: #f7f7f7;
+  color: #111111;
+  transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s, color 0.2s;
 }
 
 .rename-modal-select:focus {
   border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.18);
+  background-color: #ffffff;
 }
 
 .rename-modal-color-preview {

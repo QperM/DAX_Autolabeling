@@ -401,9 +401,16 @@
   border: 1px solid #e0e0e0;
   padding: 0.6rem 0.75rem;
   font-size: 0.95rem;
+  background-color: #f7f7f7; /* 浅灰色输入框背景，更容易看清 */
+  color: #111111;           /* 深色文字，提高对比度 */
   outline: none;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
   resize: vertical;
+}
+
+.form-group input::placeholder,
+.form-group textarea::placeholder {
+  color: #999999; /* 稍深一点的灰色占位符，避免过浅看不清 */
 }
 
 .form-group input:focus,

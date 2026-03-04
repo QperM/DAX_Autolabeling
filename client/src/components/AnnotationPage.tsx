@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { setImages, setLoading, setError, setCurrentImage } from '../store/annotationSlice';
 import { imageApi, annotationApi, projectApi } from '../services/api';
-import type { Image, Mask, BoundingBox } from '../types';
+import type { Image, Mask, BoundingBox, Polygon } from '../types';
 import ImageUploader from './ImageUploader';
 import './AnnotationPage.css';
 
@@ -105,6 +105,28 @@ const AnnotationPage: React.FC = () => {
     '#8C564B', // 棕褐 - 家具/树木
     '#E377C2', // 粉红 - 小物件
     '#7F7F7F', // 灰绿/灰 - 其他/次要目标
+    '#17BECF', // 青色 - 辅助目标
+    '#BCBD22', // 橄榄绿 - 统计/辅助区域
+    '#FF9896', // 浅红 - 次要告警
+    '#98DF8A', // 浅绿 - 次要物体
+    '#AEC7E8', // 浅蓝 - 背景物体
+    '#C49C94', // 浅棕 - 结构/支撑
+    '#F7B6D2', // 浅粉 - 其他类别
+    '#C5B0D5', // 淡紫
+    '#FFBB78', // 淡橙
+    '#FF7F7F', // 珊瑚红
+    '#C7C7C7', // 浅灰
+    '#DBDB8D', // 淡黄绿
+    '#9EDAE5', // 天蓝
+    '#FDB462', // 金橙
+    '#B5CF6B', // 黄绿
+    '#BD9E39', // 土黄
+    '#8C6D31', // 深棕
+    '#E7969C', // 玫瑰粉
+    '#A55194', // 深紫
+    '#6B6ECF', // 靛蓝
+    '#B5A300', // 橄榄黄
+    '#393B79', // 深蓝
   ];
 
   // 项目级 label -> color 映射表（同一项目内保持稳定）
@@ -458,6 +480,257 @@ const AnnotationPage: React.FC = () => {
     }
   };
 
+  // 导入标注数据从 JSON
+  const handleImportAnnotations = async () => {
+    if (!currentProject) {
+      alert('请先选择项目');
+      return;
+    }
+
+    // 创建文件选择器
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = async (e: any) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      try {
+        dispatch(setLoading(true));
+        const text = await file.text();
+        const importData = JSON.parse(text);
+
+        // 验证 JSON 格式
+        if (!importData.images || !Array.isArray(importData.images)) {
+          alert('导入文件格式错误：缺少 images 数组');
+          return;
+        }
+
+        let successCount = 0;
+        let failCount = 0;
+        let notFoundCount = 0;
+        const labelColorMap = new Map<string, string>();
+
+        // 遍历导入数据中的每张图片
+        for (const importedImage of importData.images) {
+          // 在当前项目的图片列表中查找匹配的图片（优先用 originalName，其次用 filename）
+          const matchedImage = images.find(
+            (img: Image) =>
+              img.originalName === importedImage.originalName ||
+              img.filename === importedImage.filename ||
+              img.originalName === importedImage.filename ||
+              img.filename === importedImage.originalName
+          );
+
+          if (!matchedImage) {
+            notFoundCount++;
+            console.warn(`未找到匹配的图片: ${importedImage.originalName || importedImage.filename}`);
+            continue;
+          }
+
+          try {
+            // 保存标注数据到匹配的图片
+            await annotationApi.saveAnnotation(matchedImage.id, {
+              masks: importedImage.masks || [],
+              boundingBoxes: importedImage.boundingBoxes || [],
+              polygons: importedImage.polygons || [],
+            });
+
+            // 收集 label -> color 映射（用于更新项目级映射）
+            // 注意：这里要收集所有标签，即使重复也要记录（因为可能不同图片有相同标签但颜色不同，需要统一）
+            [...(importedImage.masks || []), ...(importedImage.boundingBoxes || [])].forEach((item: any) => {
+              if (item.label && item.color) {
+                const label = item.label.trim();
+                if (label) {
+                  // 如果已有该 label，保持第一个出现的颜色（或者可以改为覆盖，这里保持第一个）
+                  if (!labelColorMap.has(label)) {
+                    labelColorMap.set(label, item.color);
+                  }
+                }
+              }
+            });
+
+            successCount++;
+          } catch (error: any) {
+            console.error(`导入图片 ${matchedImage.originalName} 的标注失败:`, error);
+            failCount++;
+          }
+        }
+
+        // 更新项目级的 label-color 映射
+        // 注意：需要遍历所有导入的图片，收集所有标签（不仅仅是匹配成功的图片）
+        const allImportedLabels = new Map<string, string>();
+        importData.images.forEach((importedImage: any) => {
+          [...(importedImage.masks || []), ...(importedImage.boundingBoxes || [])].forEach((item: any) => {
+            if (item.label && item.color) {
+              const label = item.label.trim();
+              if (label && !allImportedLabels.has(label)) {
+                allImportedLabels.set(label, item.color);
+              }
+            }
+          });
+        });
+
+        // 合并导入时匹配成功的图片的标签（这些已经保存到后端）
+        labelColorMap.forEach((color, label) => {
+          allImportedLabels.set(label, color);
+        });
+
+        // 更新项目级的 label-color 映射（包含所有导入的标签，不仅仅是匹配成功的）
+        if (allImportedLabels.size > 0) {
+          try {
+            const projectId = currentProject.id;
+            const key = `labelColorMap:${projectId}`;
+            const existingMap = new Map<string, string>();
+            
+            // 读取现有映射
+            const raw = localStorage.getItem(key);
+            if (raw) {
+              const obj = JSON.parse(raw) as Record<string, string>;
+              Object.entries(obj).forEach(([label, color]) => {
+                existingMap.set(label, color);
+              });
+            }
+
+            // 合并导入的映射（导入的优先级更高）
+            allImportedLabels.forEach((color, label) => {
+              existingMap.set(label, color);
+            });
+
+            // 保存回 localStorage
+            const obj: Record<string, string> = {};
+            existingMap.forEach((color, label) => {
+              obj[label] = color;
+            });
+            localStorage.setItem(key, JSON.stringify(obj));
+            console.log(`[导入] 已更新项目级 labelColorMap，共 ${existingMap.size} 个标签`);
+          } catch (err) {
+            console.warn('更新 label-color 映射失败:', err);
+          }
+        }
+
+        // 刷新图片列表和标注汇总
+        if (currentProject) {
+          const loadedImages = await imageApi.getImages(currentProject.id);
+          dispatch(setImages(loadedImages));
+          await refreshAnnotationSummary();
+        }
+
+        // 显示导入结果
+        let message = `导入完成！\n\n成功: ${successCount} 张`;
+        if (notFoundCount > 0) {
+          message += `\n未找到匹配图片: ${notFoundCount} 张（请确保图片已上传）`;
+        }
+        if (failCount > 0) {
+          message += `\n失败: ${failCount} 张`;
+        }
+        alert(message);
+      } catch (error: any) {
+        console.error('导入标注数据失败:', error);
+        if (error instanceof SyntaxError) {
+          alert('导入失败：JSON 文件格式错误，请检查文件是否完整');
+        } else {
+          alert(`导入失败: ${error.message || '未知错误'}`);
+        }
+      } finally {
+        dispatch(setLoading(false));
+      }
+    };
+
+    input.click();
+  };
+
+  // 导出标注数据为 JSON
+  const handleExportAnnotations = async () => {
+    if (!currentProject) {
+      alert('请先选择项目');
+      return;
+    }
+
+    if (images.length === 0) {
+      alert('当前没有可导出的图片');
+      return;
+    }
+
+    try {
+      dispatch(setLoading(true));
+      const exportData = {
+        project: {
+          id: currentProject.id,
+          name: currentProject.name,
+          description: currentProject.description || '',
+        },
+        exportTime: new Date().toISOString(),
+        totalImages: images.length,
+        images: [] as Array<{
+          imageId: number;
+          filename: string;
+          originalName: string;
+          url: string;
+          width?: number;
+          height?: number;
+          masks: Mask[];
+          boundingBoxes: BoundingBox[];
+          polygons: Polygon[];
+        }>,
+      };
+
+      // 遍历所有图片，获取标注数据
+      for (let i = 0; i < images.length; i++) {
+        const image = images[i];
+        try {
+          const resp = await annotationApi.getAnnotation(image.id);
+          const anno = resp?.annotation;
+          
+          exportData.images.push({
+            imageId: image.id,
+            filename: image.filename,
+            originalName: image.originalName,
+            url: image.url,
+            width: image.width,
+            height: image.height,
+            masks: anno?.masks || [],
+            boundingBoxes: anno?.boundingBoxes || [],
+            polygons: anno?.polygons || [],
+          });
+        } catch (e) {
+          console.warn(`获取图片 ${image.id} 的标注失败:`, e);
+          // 即使获取失败，也添加图片信息（标注为空）
+          exportData.images.push({
+            imageId: image.id,
+            filename: image.filename,
+            originalName: image.originalName,
+            url: image.url,
+            width: image.width,
+            height: image.height,
+            masks: [],
+            boundingBoxes: [],
+            polygons: [],
+          });
+        }
+      }
+
+      // 生成 JSON 文件并下载
+      const jsonStr = JSON.stringify(exportData, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `annotations_${currentProject.name}_${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      alert(`标注数据导出成功！\n\n共导出 ${exportData.images.length} 张图片的标注数据`);
+    } catch (error: any) {
+      console.error('导出标注数据失败:', error);
+      alert(`导出失败: ${error.message || '未知错误'}`);
+    } finally {
+      dispatch(setLoading(false));
+    }
+  };
+
   // 加载项目中所有标注的颜色-label 映射
   const loadColorLabelMapping = async () => {
     if (!currentProject || images.length === 0) {
@@ -736,6 +1009,55 @@ const AnnotationPage: React.FC = () => {
     navigate('./manual-annotation');
   };
 
+  // 单张图片 AI 试标注（仅对当前选中图片调用一次 AI，不做批量）
+  const handleSingleAIAutoAnnotation = async (image: Image) => {
+    if (!image) return;
+    if (!currentProject) {
+      alert('请先选择项目');
+      return;
+    }
+    try {
+      dispatch(setLoading(true));
+      console.log(`[前端] 单张AI试标注开始，imageId=${image.id}, name=${image.originalName}`);
+      const result = await annotationApi.autoAnnotate(image.id, aiPrompt || undefined, modelParams);
+      const colored = assignColorsForAnnotations(result.annotations);
+      await annotationApi.saveAnnotation(image.id, {
+        masks: colored.masks,
+        boundingBoxes: colored.boundingBoxes,
+        polygons: [],
+      });
+      console.log('[前端] 单张AI试标注完成并已保存标注：', {
+        imageId: image.id,
+        masks: colored.masks.length,
+        bboxes: colored.boundingBoxes.length,
+      });
+      alert('当前图片 AI 试标注完成（结果已保存，可在“人工标注”中查看和微调）');
+      await refreshAnnotationSummary();
+      // 刷新缩略图的 Mask 叠加（不依赖旧缓存，直接覆盖当前这张的缓存）
+      if (showThumbnailMasks) {
+        try {
+          const resp = await annotationApi.getAnnotation(image.id);
+          const anno = resp?.annotation;
+          setThumbnailMasks(prev => ({
+            ...prev,
+            [image.id]: anno?.masks || [],
+          }));
+        } catch (e) {
+          console.warn('[前端] 单张AI试标注后刷新缩略图 masks 失败, imageId =', image.id, e);
+        }
+      }
+      // 如果当前大图预览正好是这张图片，且处于 Mask 模式，则主动刷新一次预览 Mask
+      if (selectedPreviewImage && selectedPreviewImage.id === image.id && previewDisplayMode === 'mask') {
+        await loadPreviewMasks(image.id);
+      }
+    } catch (e: any) {
+      console.error('[前端] 单张AI试标注失败:', e);
+      alert(e?.message || 'AI 试标注失败，请稍后重试');
+    } finally {
+      dispatch(setLoading(false));
+    }
+  };
+
   const handleBack = () => {
     navigate('/');
   };
@@ -967,10 +1289,24 @@ const AnnotationPage: React.FC = () => {
                   >
                       {batchAnnotating ? '批量标注中...' : `🤖 批量AI标注 (${images.length}张)`}
                   </button>
+                    <div className="import-export-buttons">
+                      <button 
+                        className="ai-annotation-btn import-btn"
+                        onClick={handleImportAnnotations}
+                        disabled={!currentProject || loading}
+                      >
+                        📤 导入标注数据 (JSON)
+                      </button>
+                      <button 
+                        className="ai-annotation-btn export-btn"
+                        onClick={handleExportAnnotations}
+                        disabled={images.length === 0 || loading}
+                      >
+                        📥 导出标注数据 (JSON)
+                      </button>
+                    </div>
                   </div>
-                  <p className="ai-description">
-                    AI自动分割与识别
-                  </p>
+                  
                   
                   {/* 批量标注进度 */}
                   {batchAnnotating && (
@@ -1105,14 +1441,20 @@ const AnnotationPage: React.FC = () => {
                     </button>
 
                     <div className="preview-actions-center">
-                    <button 
-                      className="start-annotation-btn"
-                      onClick={() => handleStartManualAnnotation(selectedPreviewImage)}
-                    >
-                      开始人工标注
-                    </button>
-                    <button 
-                      className="delete-image-btn"
+                      <button
+                        className="start-annotation-btn ai-single-annotate-btn"
+                        onClick={() => handleSingleAIAutoAnnotation(selectedPreviewImage)}
+                      >
+                        AI 试标注
+                      </button>
+                      <button 
+                        className="start-annotation-btn"
+                        onClick={() => handleStartManualAnnotation(selectedPreviewImage)}
+                      >
+                        开始人工标注
+                      </button>
+                      <button 
+                        className="delete-image-btn"
                         onClick={async (e) => {
                         e.stopPropagation();
                         if (window.confirm(`确定要删除图片 "${selectedPreviewImage.originalName}" 吗？`)) {
@@ -1703,6 +2045,56 @@ const AnnotationPage: React.FC = () => {
                       }
                     />
                     <div className="model-param-hint">越高越偏向稳定的大块区域（默认 0.95）。</div>
+                  </div>
+
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      SAM2 box_nms_thresh
+                      <span className="model-param-value">
+                        {modelParams.sam2BoxNmsThresh.toFixed(2)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={0.95}
+                      step={0.05}
+                      value={modelParams.sam2BoxNmsThresh}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          sam2BoxNmsThresh: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">
+                      控制相邻 mask 的合并程度：越低越容易保留相近的多个目标，越高越容易合并（默认 0.70）。
+                    </div>
+                  </div>
+
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      SAM2 min_mask_region_area
+                      <span className="model-param-value">
+                        {modelParams.sam2MinMaskRegionArea}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={20000}
+                      step={500}
+                      value={modelParams.sam2MinMaskRegionArea}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          sam2MinMaskRegionArea: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">
+                      过滤掉特别小的噪声区域（像素面积）。0 表示不过滤（默认 0，可按需要提高到几千）。
+                    </div>
                   </div>
                 </>
               )}

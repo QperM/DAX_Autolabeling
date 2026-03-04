@@ -575,11 +575,34 @@ app.post('/api/annotate/auto', async (req, res) => {
       // 添加图片URL作为备用参数（某些 API 可能支持）
       // formData.append('image_url', imageUrl);
       
-      console.log(
-        `[AI标注] FormData字段: image` +
-          `${prompt ? ', text_prompt' : ''}` +
-          `${modelParams ? ', base_score_thresh/lower_score_thresh/max_detections' : ''}`
-      );
+      if (modelParams && typeof modelParams === 'object') {
+        console.log('[AI标注] FormData 已附加的模型参数字段:');
+        console.log(`  - model_backend = ${modelParams.modelBackend || '默认(maskrcnn)'}`);
+        console.log(
+          `  - 通用参数: base_score_thresh=${modelParams.baseScoreThresh ?? '默认'}, ` +
+          `lower_score_thresh=${modelParams.lowerScoreThresh ?? '默认'}, ` +
+          `max_detections=${modelParams.maxDetections ?? '默认'}, ` +
+          `mask_threshold=${modelParams.maskThreshold ?? '默认'}, ` +
+          `max_polygon_points=${modelParams.maxPolygonPoints ?? '默认'}`
+        );
+        console.log(
+          '  - YOLO-Seg 参数: ' +
+          `yolo_conf=${modelParams.yoloConf ?? '默认'}, ` +
+          `yolo_iou=${modelParams.yoloIou ?? '默认'}, ` +
+          `yolo_imgsz=${modelParams.yoloImgSize ?? '默认'}, ` +
+          `yolo_max_det=${modelParams.yoloMaxDet ?? '默认'}`
+        );
+        console.log(
+          '  - SAM2 AMG 参数: ' +
+          `sam2_points_per_side=${modelParams.sam2PointsPerSide ?? '默认'}, ` +
+          `sam2_pred_iou_thresh=${modelParams.sam2PredIouThresh ?? '默认'}, ` +
+          `sam2_stability_score_thresh=${modelParams.sam2StabilityScoreThresh ?? '默认'}, ` +
+          `sam2_box_nms_thresh=${modelParams.sam2BoxNmsThresh ?? '默认'}, ` +
+          `sam2_min_mask_region_area=${modelParams.sam2MinMaskRegionArea ?? '默认'}`
+        );
+      } else {
+        console.log('[AI标注] FormData字段: image' + (prompt ? ', text_prompt' : '') + '（使用后端默认参数）');
+      }
       
       // 调用Grounded SAM2 API
       const samResponse = await axios.post(GROUNDED_SAM2_API_URL, formData, {

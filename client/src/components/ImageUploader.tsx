@@ -131,6 +131,7 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
+    multiple: true, // 一次可拖拽 / 选择多张图片或多个 ZIP
     accept: {
       'image/*': ['.jpeg', '.jpg', '.png', '.gif', '.bmp', '.tiff', '.webp'],
       'application/zip': ['.zip'],

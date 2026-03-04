@@ -27,6 +27,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 }) => {
   const [image] = useImage(imageUrl);
   const stageRef = useRef<any>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
   const [imageScale, setImageScale] = useState(1);
   const [isDrawing, setIsDrawing] = useState(false); // 新建 Mask 绘制状态
@@ -224,8 +225,36 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     const trimmed = renameInputValue.trim();
 
     const COLOR_PALETTE = [
-      '#1F77B4', '#FF7F0E', '#2CA02C', '#D62728',
-      '#9467BD', '#8C564B', '#E377C2', '#7F7F7F',
+      '#1F77B4', // 亮蓝
+      '#FF7F0E', // 橙色
+      '#2CA02C', // 绿色
+      '#D62728', // 红色
+      '#9467BD', // 紫色
+      '#8C564B', // 棕色
+      '#E377C2', // 粉色
+      '#7F7F7F', // 中性灰
+      '#17BECF', // 青色
+      '#BCBD22', // 橄榄绿
+      '#FF9896', // 浅红
+      '#98DF8A', // 浅绿
+      '#AEC7E8', // 浅蓝
+      '#C49C94', // 浅棕
+      '#F7B6D2', // 浅粉
+      '#C5B0D5', // 淡紫
+      '#FFBB78', // 淡橙
+      '#FF7F7F', // 珊瑚红
+      '#C7C7C7', // 浅灰
+      '#DBDB8D', // 淡黄绿
+      '#9EDAE5', // 天蓝
+      '#FDB462', // 金橙
+      '#B5CF6B', // 黄绿
+      '#BD9E39', // 土黄
+      '#8C6D31', // 深棕
+      '#E7969C', // 玫瑰粉
+      '#A55194', // 深紫
+      '#6B6ECF', // 靛蓝
+      '#B5A300', // 橄榄黄
+      '#393B79', // 深蓝
     ];
 
     // 1. 读取当前项目（从 AnnotationPage 存在 localStorage 里的 currentProject）
@@ -242,19 +271,47 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       console.warn('[AnnotationCanvas] 解析 currentProject 失败，用默认颜色逻辑', err);
     }
 
-    // label -> color 映射按项目级持久化在 localStorage
+    // label -> color 映射按项目级持久化在 localStorage，
+    // 同时在首次使用时，会自动从当前图像已有的 Mask / BBox 中补全映射，避免忽略“object”等已有标签。
     const loadProjectLabelColorMap = (pid: number | null): Map<string, string> => {
-      if (!pid) return new Map();
-      const key = `labelColorMap:${pid}`;
-      try {
-        const raw = localStorage.getItem(key);
-        if (!raw) return new Map();
-        const obj = JSON.parse(raw) as Record<string, string>;
-        return new Map(Object.entries(obj));
-      } catch (err) {
-        console.warn('[AnnotationCanvas] 读取 labelColorMap 失败', err);
-        return new Map();
+      const map = new Map<string, string>();
+      if (pid) {
+        const key = `labelColorMap:${pid}`;
+        try {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const obj = JSON.parse(raw) as Record<string, string>;
+            Object.entries(obj).forEach(([label, color]) => {
+              if (label && color) {
+                map.set(label, color);
+              }
+            });
+          }
+        } catch (err) {
+          console.warn('[AnnotationCanvas] 读取 labelColorMap 失败', err);
+        }
       }
+
+      // 额外：从当前图像中已有的 Mask / BBox 补全 label -> color（仅在尚未有映射时才写入）
+      masks.forEach((mask) => {
+        const label = (mask.label || '').trim();
+        const color = mask.color;
+        if (!label || !color) return;
+        if (!map.has(label)) {
+          map.set(label, color);
+        }
+      });
+
+      boundingBoxes.forEach((bbox) => {
+        const label = (bbox.label || '').trim();
+        const color = bbox.color;
+        if (!label || !color) return;
+        if (!map.has(label)) {
+          map.set(label, color);
+        }
+      });
+
+      return map;
     };
 
     const saveProjectLabelColorMap = (pid: number | null, map: Map<string, string>) => {
@@ -320,6 +377,28 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
     // 4. 写回映射
     saveProjectLabelColorMap(projectId, labelColorMap);
+
+    // 5. 更新最近使用的标签顺序（仅在成功重命名时）
+    if (trimmed.length > 0 && projectId) {
+      try {
+        const usageKey = `labelUsageOrder:${projectId}`;
+        const raw = localStorage.getItem(usageKey);
+        let usageOrder: string[] = raw ? JSON.parse(raw) : [];
+        
+        // 将当前使用的 label 移到最前面
+        usageOrder = usageOrder.filter(l => l !== trimmed);
+        usageOrder.unshift(trimmed);
+        
+        // 限制最多保存50个最近使用的标签
+        if (usageOrder.length > 50) {
+          usageOrder = usageOrder.slice(0, 50);
+        }
+        
+        localStorage.setItem(usageKey, JSON.stringify(usageOrder));
+      } catch (err) {
+        console.warn('[AnnotationCanvas] 更新标签使用顺序失败', err);
+      }
+    }
 
     onMaskUpdate(updatedMasks);
     setShowRenameModal(false);
@@ -695,8 +774,23 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     onMaskUpdate(updatedMasks);
   };
 
-  // 处理鼠标事件
+  // 将页面坐标转换为舞台坐标（允许在图片外部区域产生负值或超出 stageSize）
+  const clientToStagePos = (clientX: number, clientY: number) => {
+    const stage = stageRef.current?.getStage?.();
+    if (!stage) return null;
+    const container = stage.container();
+    const rect = container.getBoundingClientRect();
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top,
+    };
+  };
+
+  // 处理鼠标事件（主要用于橡皮擦 / 新建 Mask 等需要严格在图片区域内的工具）
   const handleMouseDown = (e: any) => {
+    // “整块 Mask 选择”改为在更大区域（canvas-area）监听，由独立逻辑处理
+    if (toolMode === 'mask-select') return;
+
     const stage = e.target.getStage?.() ?? stageRef.current?.getStage?.();
     const pos = stage?.getPointerPosition?.();
 
@@ -778,14 +872,13 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       const imgX = pos.x / imageScale;
       const imgY = pos.y / imageScale;
       setEraserStroke([{ x: imgX, y: imgY }]);
-    } else if (toolMode === 'mask-select') {
-      setIsBoxSelecting(true);
-      setBoxSelectStart(pos);
-      setBoxSelectRect({ x: pos.x, y: pos.y, width: 0, height: 0 });
     }
   };
 
   const handleMouseMove = (e: any) => {
+    // “整块 Mask 选择”模式下的框选移动改由容器级事件处理
+    if (toolMode === 'mask-select') return;
+
     const stage = e.target.getStage?.() ?? stageRef.current?.getStage?.();
     const pos = stage?.getPointerPosition?.();
 
@@ -805,7 +898,43 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         }
         return [...prev, { x: imgX, y: imgY }];
       });
-    } else if (toolMode === 'mask-select' && isBoxSelecting && boxSelectStart) {
+    }
+  };
+
+  const handleMouseUp = (e: any) => {
+    // “整块 Mask 选择”模式下的框选结束改由容器级事件处理
+    if (toolMode === 'mask-select') return;
+
+    if (toolMode === 'eraser' && isErasing) {
+      setIsErasing(false);
+      setEraserCenter(null);
+      applyEraserStroke();
+      setEraserStroke([]);
+    }
+  };
+
+  /**
+   * “整块 Mask 选择”模式下的框选：
+   * - 起点/终点均允许落在图片之外，只要在 canvas 区域内即可
+   * - 不改变原有的图片缩放与 Mask 交集判定逻辑
+   */
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (toolMode !== 'mask-select') return;
+
+    const handleContainerMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return; // 只处理左键
+      const pos = clientToStagePos(e.clientX, e.clientY);
+      if (!pos) return;
+      setIsBoxSelecting(true);
+      setBoxSelectStart(pos);
+      setBoxSelectRect({ x: pos.x, y: pos.y, width: 0, height: 0 });
+    };
+
+    const handleContainerMouseMove = (e: MouseEvent) => {
+      if (!isBoxSelecting || !boxSelectStart) return;
+      const pos = clientToStagePos(e.clientX, e.clientY);
       if (!pos) return;
       const x1 = boxSelectStart.x;
       const y1 = boxSelectStart.y;
@@ -816,30 +945,25 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       const width = Math.abs(x2 - x1);
       const height = Math.abs(y2 - y1);
       setBoxSelectRect({ x, y, width, height });
-    }
-  };
+    };
 
-  const handleMouseUp = (e: any) => {
-    if (toolMode === 'eraser' && isErasing) {
-      setIsErasing(false);
-      setEraserCenter(null);
-      applyEraserStroke();
-      setEraserStroke([]);
-    } else if (toolMode === 'mask-select' && isBoxSelecting && boxSelectRect && boxSelectStart) {
+    const handleContainerMouseUp = (e: MouseEvent) => {
+      if (!isBoxSelecting || !boxSelectRect || !boxSelectStart) return;
+      const pos = clientToStagePos(e.clientX, e.clientY);
+
       setIsBoxSelecting(false);
-
-      const stage = e?.target?.getStage?.() ?? stageRef.current?.getStage?.();
-      const pos = stage?.getPointerPosition?.() as { x: number; y: number } | null | undefined;
 
       const dragDistance = Math.max(boxSelectRect.width, boxSelectRect.height);
       // 拖拽距离太小，当作单击处理（Windows 体验：按住左键不动≈单击）
       if (dragDistance < 5) {
         if (pos) {
-          // 点击空白处清空选择；点击到某个 Mask 则选中该 Mask（取最后绘制的优先）
+          // 点击空白处清空选择；
+          // 若点击位置同时落在多个 Mask 的包围盒内，优先选择“面积更小”的 Mask（更贴近用户想点的前景目标）
           let clickedId: string | null = null;
-          for (let mi = masks.length - 1; mi >= 0; mi--) {
-            const mask = masks[mi];
-            if (!mask.points || mask.points.length < 2) continue;
+          let smallestArea = Infinity;
+
+          masks.forEach((mask) => {
+            if (!mask.points || mask.points.length < 2) return;
 
             let minX = Infinity;
             let maxX = -Infinity;
@@ -856,10 +980,14 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
             }
 
             if (pos.x >= minX && pos.x <= maxX && pos.y >= minY && pos.y <= maxY) {
-              clickedId = mask.id;
-              break;
+              const area = Math.max(0, maxX - minX) * Math.max(0, maxY - minY);
+              if (area < smallestArea) {
+                smallestArea = area;
+                clickedId = mask.id;
+              }
             }
-          }
+          });
+
           setSelectedMaskIds(clickedId ? [clickedId] : []);
         }
         setBoxSelectRect(null);
@@ -914,8 +1042,19 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
       setBoxSelectRect(null);
       setBoxSelectStart(null);
-    }
-  };
+    };
+
+    container.addEventListener('mousedown', handleContainerMouseDown);
+    container.addEventListener('mousemove', handleContainerMouseMove);
+    // mouseup 可能发生在外层（例如拖出容器又放开），这里绑定在 window 上更稳妥
+    window.addEventListener('mouseup', handleContainerMouseUp);
+
+    return () => {
+      container.removeEventListener('mousedown', handleContainerMouseDown);
+      container.removeEventListener('mousemove', handleContainerMouseMove);
+      window.removeEventListener('mouseup', handleContainerMouseUp);
+    };
+  }, [toolMode, isBoxSelecting, boxSelectStart, boxSelectRect, masks, imageScale]);
 
   // 渲染Mask
   const renderMasks = () => {
@@ -1082,7 +1221,8 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   const renderRenameModal = () => {
     if (!showRenameModal || !renameModalPosition) return null;
 
-    // 从 localStorage 读取当前项目下已有的 label -> color 映射，用于下拉选择
+    // 从 localStorage 读取当前项目下已有的 label -> color 映射，并结合当前图像的 Mask / BBox 自动补全，
+    // 用于下拉选择，避免忽略掉例如“object”等已经存在于图上的标签。
     let existingLabels: Array<{ label: string; color: string }> = [];
     let currentColor: string | undefined;
     try {
@@ -1090,24 +1230,88 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       if (savedProject) {
         const p = JSON.parse(savedProject);
         const projectId = p && typeof p.id === 'number' ? p.id : null;
+        const map = new Map<string, string>();
+
         if (projectId) {
           const key = `labelColorMap:${projectId}`;
           const raw = localStorage.getItem(key);
           if (raw) {
             const obj = JSON.parse(raw) as Record<string, string>;
-            existingLabels = Object.entries(obj).map(([label, color]) => ({
-              label,
-              color,
-            }));
-            const trimmed = renameInputValue.trim();
-            if (trimmed && obj[trimmed]) {
-              currentColor = obj[trimmed];
-            }
+            Object.entries(obj).forEach(([label, color]) => {
+              if (label && color) {
+                map.set(label, color);
+              }
+            });
           }
+        }
+
+        // 补全：把当前图像上的 Mask / BBox 中已有的 label->color 也加进来（仅在 map 中还没有该 label 时）
+        // 注意：这个补全逻辑是为了处理"图上已有但 labelColorMap 中还没有"的情况（例如 AI 自动标注生成的）
+        // 但导入后，labelColorMap 应该已经包含了所有标签，所以这个补全主要是兜底
+        masks.forEach((mask) => {
+          const label = (mask.label || '').trim();
+          const color = mask.color;
+          if (!label || !color) return;
+          // 如果 labelColorMap 中还没有，则添加；如果已有但颜色不同，优先使用 labelColorMap 中的（项目级统一）
+          if (!map.has(label)) {
+            map.set(label, color);
+          }
+        });
+
+        boundingBoxes.forEach((bbox) => {
+          const label = (bbox.label || '').trim();
+          const color = bbox.color;
+          if (!label || !color) return;
+          // 如果 labelColorMap 中还没有，则添加；如果已有但颜色不同，优先使用 labelColorMap 中的（项目级统一）
+          if (!map.has(label)) {
+            map.set(label, color);
+          }
+        });
+
+        // 读取最近使用的标签顺序
+        let usageOrder: string[] = [];
+        if (projectId) {
+          try {
+            const usageKey = `labelUsageOrder:${projectId}`;
+            const raw = localStorage.getItem(usageKey);
+            if (raw) {
+              usageOrder = JSON.parse(raw);
+            }
+          } catch (err) {
+            console.warn('[AnnotationCanvas] 读取标签使用顺序失败', err);
+          }
+        }
+
+        // 构建标签列表，并按最近使用顺序排序
+        const allLabels = Array.from(map.entries()).map(([label, color]) => ({
+          label,
+          color,
+        }));
+
+        // 排序：最近使用的在前，其他按字母顺序
+        existingLabels = allLabels.sort((a, b) => {
+          const aIndex = usageOrder.indexOf(a.label);
+          const bIndex = usageOrder.indexOf(b.label);
+          
+          // 如果都在使用顺序中，按顺序排序
+          if (aIndex !== -1 && bIndex !== -1) {
+            return aIndex - bIndex;
+          }
+          // 如果只有 a 在使用顺序中，a 在前
+          if (aIndex !== -1) return -1;
+          // 如果只有 b 在使用顺序中，b 在前
+          if (bIndex !== -1) return 1;
+          // 都不在使用顺序中，按字母顺序
+          return a.label.localeCompare(b.label);
+        });
+
+        const trimmed = renameInputValue.trim();
+        if (trimmed && map.has(trimmed)) {
+          currentColor = map.get(trimmed);
         }
       }
     } catch (err) {
-      console.warn('[AnnotationCanvas] 渲染重命名弹窗时读取 labelColorMap 失败', err);
+      console.warn('[AnnotationCanvas] 渲染重命名弹窗时读取 / 汇总 labelColorMap 失败', err);
     }
 
     return createPortal(
@@ -1127,6 +1331,15 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
             <div className="rename-modal-select-row">
               <select
                 className="rename-modal-select"
+                style={
+                  currentColor
+                    ? {
+                        backgroundColor: currentColor,
+                        // 简单对比度处理：亮色背景用深字色，深色背景用白字色
+                        color: '#ffffff',
+                      }
+                    : undefined
+                }
                 value={
                   existingLabels.some(
                     (item) => item.label === renameInputValue.trim()
@@ -1138,23 +1351,49 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
                   const val = e.target.value;
                   if (val) {
                     setRenameInputValue(val);
+                    // 更新最近使用的标签顺序（从下拉框选择时也记录）
+                    try {
+                      const savedProject = localStorage.getItem('currentProject');
+                      if (savedProject) {
+                        const p = JSON.parse(savedProject);
+                        const projectId = p && typeof p.id === 'number' ? p.id : null;
+                        if (projectId) {
+                          const usageKey = `labelUsageOrder:${projectId}`;
+                          const raw = localStorage.getItem(usageKey);
+                          let usageOrder: string[] = raw ? JSON.parse(raw) : [];
+                          
+                          // 将选中的 label 移到最前面
+                          usageOrder = usageOrder.filter(l => l !== val);
+                          usageOrder.unshift(val);
+                          
+                          // 限制最多保存50个最近使用的标签
+                          if (usageOrder.length > 50) {
+                            usageOrder = usageOrder.slice(0, 50);
+                          }
+                          
+                          localStorage.setItem(usageKey, JSON.stringify(usageOrder));
+                        }
+                      }
+                    } catch (err) {
+                      console.warn('[AnnotationCanvas] 更新标签使用顺序失败', err);
+                    }
                   }
                 }}
               >
                 <option value="">选择已有标签（可选）</option>
                 {existingLabels.map((item) => (
-                  <option key={item.label} value={item.label}>
+                  <option
+                    key={item.label}
+                    value={item.label}
+                    style={{
+                      backgroundColor: item.color,
+                      color: '#ffffff',
+                    }}
+                  >
                     {item.label}
                   </option>
                 ))}
               </select>
-              {currentColor && (
-                <div
-                  className="rename-modal-color-preview"
-                  style={{ backgroundColor: currentColor }}
-                  title={`当前颜色：${currentColor}`}
-                />
-              )}
             </div>
           )}
           <input
@@ -1195,7 +1434,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   };
 
   return (
-    <div className="annotation-canvas-container">
+    <div className="annotation-canvas-container" ref={containerRef}>
       <Stage
         ref={stageRef}
         width={stageSize.width}

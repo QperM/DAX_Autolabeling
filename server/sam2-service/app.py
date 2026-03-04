@@ -274,17 +274,50 @@ async def auto_label(
         # 获取提示词
         prompt_text = (text_prompt or prompt or "").strip()
 
+        backend = (model_backend or "maskrcnn").strip().lower()
         print(f"[SAM2服务] 收到标注请求:")
         print(f"  - 图片: {image.filename} ({width}x{height})")
         print(f"  - 提示词: {prompt_text or '（空，使用所有类别）'}")
-        print(f"  - 后端: {model_backend}")
+        print(f"  - 后端: {backend}")
+        # 通用参数（目前主要给 Mask R-CNN / YOLO 使用，SAM2 里仅 max_polygon_points 参与轮廓抽样）
         print(
-            f"  - 模型参数: base_score_thresh={base_score_thresh}, "
-            f"lower_score_thresh={lower_score_thresh}, max_detections={max_detections}, "
-            f"mask_threshold={mask_threshold}, max_polygon_points={max_polygon_points}"
+            "  - 通用参数: "
+            f"base_score_thresh={base_score_thresh}, "
+            f"lower_score_thresh={lower_score_thresh}, "
+            f"max_detections={max_detections}, "
+            f"mask_threshold={mask_threshold}, "
+            f"max_polygon_points={max_polygon_points}"
         )
 
-        backend = (model_backend or "maskrcnn").strip().lower()
+        # 按后端分别打印专属参数，方便和前端三组 slider 对上号
+        if backend in ["maskrcnn"]:
+            print(
+                "  - Mask R-CNN 专用参数: "
+                f"base_score_thresh={base_score_thresh}, "
+                f"lower_score_thresh={lower_score_thresh}, "
+                f"max_detections={max_detections}, "
+                f"mask_threshold={mask_threshold}, "
+                f"max_polygon_points={max_polygon_points}"
+            )
+        elif backend in ["yolo", "yolo_seg", "yolov8_seg", "yolov11_seg"]:
+            print(
+                "  - YOLO-Seg 专用参数: "
+                f"yolo_conf={yolo_conf}, "
+                f"yolo_iou={yolo_iou}, "
+                f"yolo_imgsz={yolo_imgsz}, "
+                f"yolo_max_det={yolo_max_det}, "
+                f"max_polygon_points={max_polygon_points}"
+            )
+        elif backend in ["sam2", "sam2_amg"]:
+            print(
+                "  - SAM2 AMG 专用参数: "
+                f"sam2_points_per_side={sam2_points_per_side}, "
+                f"sam2_pred_iou_thresh={sam2_pred_iou_thresh}, "
+                f"sam2_stability_score_thresh={sam2_stability_score_thresh}, "
+                f"sam2_box_nms_thresh={sam2_box_nms_thresh}, "
+                f"sam2_min_mask_region_area={sam2_min_mask_region_area}, "
+                f"max_polygon_points={max_polygon_points}"
+            )
 
         # 防御性截断，避免非法值（各后端共用）
         max_polygon_points_clamped = int(max(10, min(2000, max_polygon_points)))

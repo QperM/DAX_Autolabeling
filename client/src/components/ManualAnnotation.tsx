@@ -24,7 +24,7 @@ const ManualAnnotation: React.FC = () => {
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [showEraserDropdown, setShowEraserDropdown] = useState(false);
   const eraserWrapperRef = useRef<HTMLDivElement | null>(null);
-  const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(true); // 默认开启自动保存
 
   // 检查是否有选中的图片
   useEffect(() => {
@@ -371,7 +371,7 @@ const ManualAnnotation: React.FC = () => {
                 handleToolSelect('mask');
                 setShowEraserDropdown(false);
               }}
-              title="选择（整块 Mask：点击选中，高亮，Delete 删除，R 改颜色和标签）"
+              title="选择（整块 Mask：点击选中，长按框选，Delete 删除，R 改颜色和标签）"
             >
               <div className="select-icon-box">
                 <span className="select-icon">🧊</span>
@@ -500,7 +500,7 @@ const ManualAnnotation: React.FC = () => {
               <h4>当前工具</h4>
               <div className="current-tool">
                 {selectedTool === 'eraser' && '橡皮擦'}
-                {selectedTool === 'mask' && '选择（整块 Mask：点击选中，高亮，Delete 删除，R 改颜色和标签）'}
+                {selectedTool === 'mask' && '选择（整块 Mask：点击选中，长按框选，Delete 删除，R 改颜色和标签）'}
                 {selectedTool === 'point' && '点编辑（拖动/删除"Delete"/插入"I"）'}
                 {selectedTool === 'draw' && '新建 Mask：鼠标点击依次创建点，连成一圈后自动闭合生成新的 Mask。'}
               </div>

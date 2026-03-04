@@ -1028,7 +1028,7 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
-.start-annotation-btn {
+.landing-page .start-annotation-btn {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
   border: none;
@@ -1040,7 +1040,7 @@ body {
   box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
 }
 
-.start-annotation-btn:hover {
+.landing-page .start-annotation-btn:hover {
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
 }
