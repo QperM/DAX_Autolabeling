@@ -447,8 +447,12 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     }
   }, [toolMode, selectedMaskIds]);
 
-  // 图片切换时，重置所有交互状态
+  // 图片切换时，重置所有交互状态和缩放
   useEffect(() => {
+    // 先重置 imageScale，避免使用旧图片的缩放值
+    setImageScale(1);
+    setStageSize({ width: 800, height: 600 });
+    
     setSelectedMaskIds([]);
     setSelectedPoint(null);
     setIsBoxSelecting(false);
@@ -525,11 +529,24 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
     // 使用 requestAnimationFrame 确保容器尺寸已更新
     const updateSize = () => {
-      const container = stageRef.current?.container();
-      if (!container) return;
+      // 使用 containerRef 获取外层容器，而不是 stageRef.container()（Konva 内部容器可能尺寸不对）
+      const container = containerRef.current;
+      if (!container) {
+        // 如果 containerRef 还没准备好，延迟重试
+        setTimeout(updateSize, 50);
+        return;
+      }
 
-      const maxWidth = container.clientWidth - 40;
-      const maxHeight = container.clientHeight - 40;
+      // 获取容器的父元素（canvas-area），它才是真正的可用空间容器
+      const parentContainer = container.parentElement;
+      if (!parentContainer) {
+        setTimeout(updateSize, 50);
+        return;
+      }
+
+      // 使用父容器（canvas-area）的尺寸，减去一些边距
+      const maxWidth = parentContainer.clientWidth - 40;
+      const maxHeight = parentContainer.clientHeight - 40;
       
       // 确保容器尺寸有效
       if (maxWidth <= 0 || maxHeight <= 0) {
@@ -544,15 +561,28 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         return;
       }
       
-      const scale = Math.min(
-        maxWidth / image.width,
-        maxHeight / image.height
-      );
+      // 默认图片尺寸：1280*720，如果容器足够大，直接使用原始尺寸（不缩放）
+      const DEFAULT_WIDTH = 1280;
+      const DEFAULT_HEIGHT = 720;
+      const isDefaultSize = image.width === DEFAULT_WIDTH && image.height === DEFAULT_HEIGHT;
       
-      console.log('[AnnotationCanvas] 原始图片尺寸:', image.width, image.height);
-      console.log('[AnnotationCanvas] 容器最大尺寸:', maxWidth, maxHeight);
-      console.log('[AnnotationCanvas] 计算得到的缩放比例 scale =', scale);
-
+      let scale: number;
+      if (isDefaultSize && maxWidth >= DEFAULT_WIDTH && maxHeight >= DEFAULT_HEIGHT) {
+        // 默认尺寸且容器足够大，不缩放
+        scale = 1;
+        console.log('[AnnotationCanvas] 使用默认尺寸 1280*720，容器足够大，不缩放 (scale = 1)');
+      } else {
+        // 其他情况：计算缩放比例
+        scale = Math.min(
+          maxWidth / image.width,
+          maxHeight / image.height
+        );
+        // 如果计算出的 scale >= 1，说明容器足够大，也不缩放
+        if (scale >= 1) {
+          scale = 1;
+        }
+      }
+      
       setImageScale(scale);
       setStageSize({
         width: image.width * scale,
@@ -901,7 +931,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     }
   };
 
-  const handleMouseUp = (e: any) => {
+  const handleMouseUp = () => {
     // “整块 Mask 选择”模式下的框选结束改由容器级事件处理
     if (toolMode === 'mask-select') return;
 

@@ -25,6 +25,7 @@ const ManualAnnotation: React.FC = () => {
   const [showEraserDropdown, setShowEraserDropdown] = useState(false);
   const eraserWrapperRef = useRef<HTMLDivElement | null>(null);
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(true); // 默认开启自动保存
+  const lastKeyNavigateAtRef = useRef<number | null>(null); // 记录上一次键盘切图时间，用于限速
 
   // 检查是否有选中的图片
   useEffect(() => {
@@ -167,7 +168,7 @@ const ManualAnnotation: React.FC = () => {
 
   // 键盘左右方向键切换上一张 / 下一张图片 + 撤销/重做
   useEffect(() => {
-  const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = (e: KeyboardEvent) => {
       // 如果当前焦点在输入框 / 文本域 / 下拉框中，则不处理左右键，避免与重命名弹窗等表单输入冲突
       const active = document.activeElement as HTMLElement | null;
       if (
@@ -193,12 +194,23 @@ const ManualAnnotation: React.FC = () => {
         return;
       }
 
-      if (e.key === 'ArrowLeft') {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
-        handleNavigateImage('prev');
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        handleNavigateImage('next');
+
+        // 键盘切图限速：最多每 500ms 切一张，避免连续快速触发导致自动保存/加载竞态
+        const now = Date.now();
+        const last = lastKeyNavigateAtRef.current ?? 0;
+        const MIN_INTERVAL = 500; // 毫秒，对应每秒最多 2 张
+        if (now - last < MIN_INTERVAL) {
+          return;
+        }
+        lastKeyNavigateAtRef.current = now;
+
+        if (e.key === 'ArrowLeft') {
+          handleNavigateImage('prev');
+        } else {
+          handleNavigateImage('next');
+        }
       }
     };
 
@@ -206,7 +218,18 @@ const ManualAnnotation: React.FC = () => {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [currentImage, images, autoSaveEnabled, canUndo, canRedo, historyIndex, history.length]);
+  }, [
+    currentImage,
+    images,
+    autoSaveEnabled,
+    canUndo,
+    canRedo,
+    historyIndex,
+    history.length,
+    masks,
+    boundingBoxes,
+    polygons,
+  ]);
 
   const handleSaveAnnotation = async (options?: { silent?: boolean }): Promise<boolean> => {
     if (!currentImage) return false;

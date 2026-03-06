@@ -20,13 +20,15 @@ const AnnotationPage: React.FC = () => {
   const [thumbnailMasks, setThumbnailMasks] = useState<Record<number, Mask[]>>({});
   const [thumbnailSizes, setThumbnailSizes] = useState<Record<number, { width: number; height: number }>>({});
   const [showThumbnailMasks, setShowThumbnailMasks] = useState(false);
+  const loadingThumbnailMasksRef = useRef<Set<number>>(new Set()); // 正在加载的 mask ID 集合
   // 缩略图虚拟滚动（Windows 文件管理器式：只渲染视口范围内）
   const thumbnailsScrollRef = useRef<HTMLDivElement | null>(null);
   const thumbnailsMeasureRef = useRef<HTMLDivElement | null>(null);
-  // callback ref 的兜底：确保节点挂载时能触发重新测量（避免条件渲染导致测量为 0）
-  const [thumbScrollEl, setThumbScrollEl] = useState<HTMLDivElement | null>(null);
-  const [thumbMeasureEl, setThumbMeasureEl] = useState<HTMLDivElement | null>(null);
+  // 使用 ref 而不是 state，避免 ref 回调中的 setState 导致无限循环
+  const thumbScrollElRef = useRef<HTMLDivElement | null>(null);
+  const thumbMeasureElRef = useRef<HTMLDivElement | null>(null);
   const thumbScrollRafRef = useRef<number | null>(null);
+  const thumbViewportRafRef = useRef<number | null>(null);
   const [thumbScrollTop, setThumbScrollTop] = useState(0);
   const [thumbViewport, setThumbViewport] = useState({ width: 0, height: 0 });
   const [currentProject, setCurrentProject] = useState<any>(null);  // 当前项目
@@ -46,7 +48,7 @@ const AnnotationPage: React.FC = () => {
   const [aiPrompt, setAiPrompt] = useState<string>(''); // AI提示词（传给 Grounded SAM2 / Mask R-CNN，逗号分隔多个）
   const [aiPrompts, setAiPrompts] = useState<string[]>([]); // 多条提示词输入
   const [showPromptModal, setShowPromptModal] = useState(false); // 是否显示提示词配置弹窗
-  const [annotationSummary, setAnnotationSummary] = useState<{
+  const [, setAnnotationSummary] = useState<{
     totalImages: number;
     annotatedImages: number;
     latestAnnotatedImageId: number | null;
@@ -55,6 +57,21 @@ const AnnotationPage: React.FC = () => {
   const [showLabelMappingModal, setShowLabelMappingModal] = useState(false); // 是否显示 label 对照表弹窗
   const [colorLabelMapping, setColorLabelMapping] = useState<Map<string, string>>(new Map()); // 颜色 -> label 映射
   const [labelMappingLoading, setLabelMappingLoading] = useState(false); // 加载/保存中
+  const [deleteByColorProgress, setDeleteByColorProgress] = useState<{
+    active: boolean;
+    total: number;
+    completed: number;
+    current: string;
+    color: string;
+    label?: string;
+  }>({
+    active: false,
+    total: 0,
+    completed: 0,
+    current: '',
+    color: '',
+    label: '',
+  });
   const [showModelParamModal, setShowModelParamModal] = useState(false); // 是否显示模型参数弹窗
   const [modelParams, setModelParams] = useState<{
     modelBackend: 'maskrcnn' | 'yolo_seg' | 'sam2_amg';
@@ -75,7 +92,7 @@ const AnnotationPage: React.FC = () => {
     sam2BoxNmsThresh: number;
     sam2MinMaskRegionArea: number;
   }>({
-    modelBackend: 'maskrcnn',
+    modelBackend: 'sam2_amg',
     baseScoreThresh: 0.5,
     lowerScoreThresh: 0.3,
     maxDetections: 50,
@@ -95,6 +112,19 @@ const AnnotationPage: React.FC = () => {
   // 图片 URL 缓存破坏因子：只在列表内容发生变化时更新，避免每次 render 都触发图片重新请求
   const [imageCacheBust, setImageCacheBust] = useState(0);
   const [exportFormat, setExportFormat] = useState<'project' | 'labelme-zip'>('project');
+  const [importExportProgress, setImportExportProgress] = useState<{
+    active: boolean;
+    mode: 'import' | 'export' | null;
+    total: number;
+    completed: number;
+    current: string;
+  }>({
+    active: false,
+    mode: null,
+    total: 0,
+    completed: 0,
+    current: '',
+  });
 
   // 统一的颜色调色板（项目级、按 label 固定）
   // 使用一组高对比度颜色，便于在同一项目中区分不同目标
@@ -138,7 +168,7 @@ const AnnotationPage: React.FC = () => {
   useEffect(() => {
     if (!currentProject || !currentProject.id) {
       setModelParams({
-        modelBackend: 'maskrcnn',
+        modelBackend: 'sam2_amg',
         baseScoreThresh: 0.5,
         lowerScoreThresh: 0.3,
         maxDetections: 50,
@@ -266,23 +296,29 @@ const AnnotationPage: React.FC = () => {
 
   useEffect(() => {
     // 注意：缩略图容器是条件渲染的（项目/图片加载后才出现），所以这里必须在依赖变化时重试挂载
-    const scrollEl = thumbScrollEl || thumbnailsScrollRef.current;
-    const measureEl = thumbMeasureEl || thumbnailsMeasureRef.current;
+    const scrollEl = thumbScrollElRef.current || thumbnailsScrollRef.current;
+    const measureEl = thumbMeasureElRef.current || thumbnailsMeasureRef.current;
     if (!scrollEl || !measureEl) return;
 
     const updateViewport = () => {
-      const cs = window.getComputedStyle(measureEl);
-      const padLeft = parseFloat(cs.paddingLeft || '0') || 0;
-      const padRight = parseFloat(cs.paddingRight || '0') || 0;
-      // 用 scroll 容器的 clientWidth 更稳定（避免内部绝对定位导致测量异常）
-      const contentW = Math.max(0, Math.round(scrollEl.clientWidth - padLeft - padRight));
-      const contentH = Math.max(0, Math.round(scrollEl.clientHeight));
+      // 使用 requestAnimationFrame 防抖，避免频繁更新导致无限循环
+      if (thumbViewportRafRef.current) {
+        cancelAnimationFrame(thumbViewportRafRef.current);
+      }
+      thumbViewportRafRef.current = requestAnimationFrame(() => {
+        const cs = window.getComputedStyle(measureEl);
+        const padLeft = parseFloat(cs.paddingLeft || '0') || 0;
+        const padRight = parseFloat(cs.paddingRight || '0') || 0;
+        // 用 scroll 容器的 clientWidth 更稳定（避免内部绝对定位导致测量异常）
+        const contentW = Math.max(0, Math.round(scrollEl.clientWidth - padLeft - padRight));
+        const contentH = Math.max(0, Math.round(scrollEl.clientHeight));
 
-      setThumbViewport((prev) => {
-        if (prev.width === contentW && prev.height === contentH) return prev;
-        return { width: contentW, height: contentH };
+        setThumbViewport((prev) => {
+          if (prev.width === contentW && prev.height === contentH) return prev;
+          return { width: contentW, height: contentH };
+        });
+        setThumbScrollTop(scrollEl.scrollTop || 0);
       });
-      setThumbScrollTop(scrollEl.scrollTop || 0);
     };
 
     updateViewport();
@@ -297,8 +333,12 @@ const AnnotationPage: React.FC = () => {
         cancelAnimationFrame(thumbScrollRafRef.current);
         thumbScrollRafRef.current = null;
       }
+      if (thumbViewportRafRef.current) {
+        cancelAnimationFrame(thumbViewportRafRef.current);
+        thumbViewportRafRef.current = null;
+      }
     };
-  }, [currentProject?.id, images.length, thumbScrollEl, thumbMeasureEl]);
+  }, [currentProject?.id, images.length]);
 
   const THUMB_SIZE = 125;
   const THUMB_GAP = 16; // 对应 CSS gap: 1rem
@@ -410,6 +450,9 @@ const AnnotationPage: React.FC = () => {
   const ensureThumbnailMasks = async (imageId: number) => {
     if (!showThumbnailMasks) return;
     if (thumbnailMasks[imageId]) return;
+    if (loadingThumbnailMasksRef.current.has(imageId)) return; // 正在加载中，避免重复请求
+    
+    loadingThumbnailMasksRef.current.add(imageId);
     try {
       const resp = await annotationApi.getAnnotation(imageId);
       const anno = resp?.annotation;
@@ -418,6 +461,8 @@ const AnnotationPage: React.FC = () => {
       }
     } catch (e) {
       console.warn('[AnnotationPage] 缩略图加载 masks 失败, imageId =', imageId, e);
+    } finally {
+      loadingThumbnailMasksRef.current.delete(imageId);
     }
   };
 
@@ -447,6 +492,87 @@ const AnnotationPage: React.FC = () => {
       console.warn('AnnotationPage: 未在 localStorage 中找到当前项目');
     }
   }, []);
+
+  // 保存批量标注进度到 localStorage
+  const saveBatchProgressToStorage = (progress: typeof batchProgress, isAnnotating: boolean, progressPercent: number) => {
+    if (!currentProject?.id) return;
+    const key = `batchAnnotationProgress:${currentProject.id}`;
+    try {
+      const data = {
+        projectId: currentProject.id,
+        batchAnnotating: isAnnotating,
+        batchProgress: progress,
+        aiProgress: progressPercent,
+        timestamp: Date.now()
+      };
+      localStorage.setItem(key, JSON.stringify(data));
+    } catch (e) {
+      console.warn('保存批量标注进度失败', e);
+    }
+  };
+
+  // 清除批量标注进度
+  const clearBatchProgressFromStorage = () => {
+    if (!currentProject?.id) return;
+    const key = `batchAnnotationProgress:${currentProject.id}`;
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {
+      console.warn('清除批量标注进度失败', e);
+    }
+  };
+
+  // 从 localStorage 恢复批量标注进度
+  useEffect(() => {
+    if (!currentProject?.id) {
+      // 如果没有项目，清除可能存在的旧进度
+      setBatchAnnotating(false);
+      setBatchProgress({
+        total: 0,
+        completed: 0,
+        current: '',
+        results: []
+      });
+      setAiProgress(0);
+      return;
+    }
+
+    const key = `batchAnnotationProgress:${currentProject.id}`;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) {
+        return;
+      }
+      const data = JSON.parse(raw);
+      
+      // 验证是否是同一个项目的进度
+      if (data.projectId !== currentProject.id) {
+        console.warn('批量标注进度项目ID不匹配，忽略恢复');
+        return;
+      }
+
+      // 如果进度已完成（completed >= total），不恢复为进行中状态
+      if (data.batchProgress && data.batchProgress.completed >= data.batchProgress.total) {
+        // 只恢复结果，不恢复为进行中状态
+        setBatchProgress(data.batchProgress);
+        setAiProgress(100);
+        setBatchAnnotating(false);
+        return;
+      }
+
+      // 恢复进度状态
+      if (data.batchProgress) {
+        setBatchProgress(data.batchProgress);
+        setAiProgress(data.aiProgress || 0);
+        // 注意：如果页面刷新了，实际任务已中断，所以不恢复 batchAnnotating 为 true
+        // 但保留进度显示，让用户知道之前有任务在进行
+        setBatchAnnotating(false);
+        console.log('[AnnotationPage] 恢复了批量标注进度:', data.batchProgress);
+      }
+    } catch (e) {
+      console.warn('恢复批量标注进度失败', e);
+    }
+  }, [currentProject?.id]);
 
   // 根据当前项目加载已有图像
   useEffect(() => {
@@ -751,6 +877,14 @@ const AnnotationPage: React.FC = () => {
       if (!file) return;
 
       try {
+        // 进度条：导入开始
+        setImportExportProgress({
+          active: true,
+          mode: 'import',
+          total: 0,
+          completed: 0,
+          current: `读取文件: ${file.name}`,
+        });
         dispatch(setLoading(true));
         const text = await file.text();
         const importData = JSON.parse(text);
@@ -771,10 +905,19 @@ const AnnotationPage: React.FC = () => {
           return;
         }
 
+        const importTotal = isSingleLabelme ? 1 : (Array.isArray(importData.images) ? importData.images.length : 0);
+        setImportExportProgress((prev) => ({
+          ...prev,
+          total: importTotal,
+          completed: 0,
+          current: `开始导入（共 ${importTotal} 项）`,
+        }));
+
         let successCount = 0;
         let failCount = 0;
         let notFoundCount = 0;
         const collectedLabelColor = new Map<string, string>();
+        let processedCount = 0;
 
         const projectId = currentProject.id;
         const updateProjectLabelColorMap = (pairs: Array<{ label: string; color: string }>) => {
@@ -828,10 +971,21 @@ const AnnotationPage: React.FC = () => {
           targetName: string;
           internal: { masks: Mask[]; boundingBoxes: BoundingBox[]; polygons: Polygon[] };
         }) => {
+          // 进度条：更新当前处理项（即使找不到也算处理过）
+          setImportExportProgress((prev) => ({
+            ...prev,
+            current: `导入: ${args.targetName}`,
+          }));
+
           const matchedImage = matchImageByAnyName(args.targetName);
           if (!matchedImage) {
             notFoundCount++;
             console.warn(`[Import] 未找到匹配图片: ${args.targetName}`);
+            processedCount += 1;
+            setImportExportProgress((prev) => ({
+              ...prev,
+              completed: Math.min(prev.total, processedCount),
+            }));
             return;
           }
 
@@ -852,6 +1006,12 @@ const AnnotationPage: React.FC = () => {
           } catch (error: any) {
             console.error(`[Import] 导入图片 ${matchedImage.originalName} 标注失败:`, error);
             failCount++;
+          } finally {
+            processedCount += 1;
+            setImportExportProgress((prev) => ({
+              ...prev,
+              completed: Math.min(prev.total, processedCount),
+            }));
           }
         };
 
@@ -913,6 +1073,10 @@ const AnnotationPage: React.FC = () => {
         }
       } finally {
         dispatch(setLoading(false));
+        // 进度条：导入结束（稍后自动隐藏）
+        setTimeout(() => {
+          setImportExportProgress((prev) => ({ ...prev, active: false, mode: null, current: '' }));
+        }, 1200);
       }
     };
 
@@ -932,6 +1096,14 @@ const AnnotationPage: React.FC = () => {
     }
 
     try {
+      // 进度条：导出开始
+      setImportExportProgress({
+        active: true,
+        mode: 'export',
+        total: images.length,
+        completed: 0,
+        current: `开始导出（共 ${images.length} 张）`,
+      });
       dispatch(setLoading(true));
 
       if (exportFormat === 'labelme-zip') {
@@ -940,6 +1112,11 @@ const AnnotationPage: React.FC = () => {
 
         for (let i = 0; i < images.length; i++) {
           const image = images[i];
+          setImportExportProgress((prev) => ({
+            ...prev,
+            current: `导出: ${image.originalName || image.filename || `image_${image.id}`}`,
+            completed: Math.max(prev.completed, i),
+          }));
           try {
             const resp = await annotationApi.getAnnotation(image.id);
             const anno = resp?.annotation;
@@ -970,6 +1147,10 @@ const AnnotationPage: React.FC = () => {
             const fileName = `${baseName || `image_${image.id}`}.json`;
             zip.file(fileName, JSON.stringify(labelme, null, 2));
           }
+          setImportExportProgress((prev) => ({
+            ...prev,
+            completed: Math.max(prev.completed, i + 1),
+          }));
         }
 
         const zipBlob = await zip.generateAsync({ type: 'blob' });
@@ -1008,6 +1189,11 @@ const AnnotationPage: React.FC = () => {
 
         for (let i = 0; i < images.length; i++) {
           const image = images[i];
+          setImportExportProgress((prev) => ({
+            ...prev,
+            current: `导出: ${image.originalName || image.filename || `image_${image.id}`}`,
+            completed: Math.max(prev.completed, i),
+          }));
           try {
             const resp = await annotationApi.getAnnotation(image.id);
             const anno = resp?.annotation;
@@ -1037,6 +1223,10 @@ const AnnotationPage: React.FC = () => {
               polygons: [],
             });
           }
+          setImportExportProgress((prev) => ({
+            ...prev,
+            completed: Math.max(prev.completed, i + 1),
+          }));
         }
 
         const jsonStr = JSON.stringify(exportData, null, 2);
@@ -1057,6 +1247,10 @@ const AnnotationPage: React.FC = () => {
       alert(`导出失败: ${error.message || '未知错误'}`);
     } finally {
       dispatch(setLoading(false));
+      // 进度条：导出结束（稍后自动隐藏）
+      setTimeout(() => {
+        setImportExportProgress((prev) => ({ ...prev, active: false, mode: null, current: '' }));
+      }, 1200);
     }
   };
 
@@ -1232,13 +1426,27 @@ const AnnotationPage: React.FC = () => {
     if (!window.confirm(confirmMsg)) return;
 
     setLabelMappingLoading(true);
+    setDeleteByColorProgress({
+      active: true,
+      total: images.length,
+      completed: 0,
+      current: '开始删除...',
+      color: targetColor,
+      label,
+    });
     let affectedImages = 0;
     let deletedMasks = 0;
     let deletedBBoxes = 0;
     let failCount = 0;
+    let processed = 0;
 
     try {
       for (const image of images) {
+        setDeleteByColorProgress((prev) => ({
+          ...prev,
+          current: `处理中: ${image.originalName || image.filename || `image_${image.id}`}`,
+          completed: processed,
+        }));
         try {
           const resp = await annotationApi.getAnnotation(image.id);
           const anno = resp?.annotation;
@@ -1266,6 +1474,12 @@ const AnnotationPage: React.FC = () => {
         } catch (e) {
           console.error(`[deleteAnnotationsByColor] 更新图片 ${image.id} 失败:`, e);
           failCount++;
+        } finally {
+          processed += 1;
+          setDeleteByColorProgress((prev) => ({
+            ...prev,
+            completed: processed,
+          }));
         }
       }
 
@@ -1309,6 +1523,13 @@ const AnnotationPage: React.FC = () => {
       alert('批量删除失败: ' + (e as Error).message);
     } finally {
       setLabelMappingLoading(false);
+      setTimeout(() => {
+        setDeleteByColorProgress((prev) => ({
+          ...prev,
+          active: false,
+          current: '',
+        }));
+      }, 1200);
     }
   };
 
@@ -1412,22 +1633,30 @@ const AnnotationPage: React.FC = () => {
 
     try {
       setBatchAnnotating(true);
-      setBatchProgress({
+      const initialProgress = {
         total: images.length,
         completed: 0,
         current: '',
         results: []
-      });
+      };
+      setBatchProgress(initialProgress);
+      saveBatchProgressToStorage(initialProgress, true, 0);
 
       const results: Array<{ image: Image; success: boolean; annotations?: any; error?: string }> = [];
 
       // 逐个处理每张图片
       for (let i = 0; i < images.length; i++) {
         const image = images[i];
-        setBatchProgress(prev => ({
-          ...prev,
-          current: `正在处理: ${image.originalName} (${i + 1}/${images.length})`
-        }));
+        const updatedProgress = {
+          total: images.length,
+          completed: results.length,
+          current: `正在处理: ${image.originalName} (${i + 1}/${images.length})`,
+          results: [...results]
+        };
+        setBatchProgress(updatedProgress);
+        const progressPercent = Math.round((results.length / images.length) * 100);
+        setAiProgress(progressPercent);
+        saveBatchProgressToStorage(updatedProgress, true, progressPercent);
 
         try {
           // 调用后端AI标注API（携带当前项目的模型参数）
@@ -1449,11 +1678,16 @@ const AnnotationPage: React.FC = () => {
             annotations: colored
           });
 
-          setBatchProgress(prev => ({
-            ...prev,
-            completed: prev.completed + 1,
+          const progressAfterSuccess = {
+            total: images.length,
+            completed: results.length,
+            current: `正在处理: ${image.originalName} (${i + 1}/${images.length})`,
             results: [...results]
-          }));
+          };
+          setBatchProgress(progressAfterSuccess);
+          const progressPercentAfterSuccess = Math.round((results.length / images.length) * 100);
+          setAiProgress(progressPercentAfterSuccess);
+          saveBatchProgressToStorage(progressAfterSuccess, true, progressPercentAfterSuccess);
         } catch (error: any) {
           console.error(`图片 ${image.originalName} 标注失败:`, error);
           results.push({
@@ -1462,25 +1696,29 @@ const AnnotationPage: React.FC = () => {
             error: error.message || '未知错误'
           });
 
-          setBatchProgress(prev => ({
-            ...prev,
-            completed: prev.completed + 1,
+          const progressAfterError = {
+            total: images.length,
+            completed: results.length,
+            current: `正在处理: ${image.originalName} (${i + 1}/${images.length})`,
             results: [...results]
-          }));
+          };
+          setBatchProgress(progressAfterError);
+          const progressPercentAfterError = Math.round((results.length / images.length) * 100);
+          setAiProgress(progressPercentAfterError);
+          saveBatchProgressToStorage(progressAfterError, true, progressPercentAfterError);
         }
-
-        // 更新总进度
-        const progress = Math.round(((i + 1) / images.length) * 100);
-        setAiProgress(progress);
       }
 
       // 批量标注完成（仅更新进度 & 统计，不自动跳转预览）
-      setBatchProgress(prev => ({
-        ...prev,
+      const finalProgress = {
+        total: images.length,
+        completed: results.length,
         current: '批量标注完成！',
         results: [...results]
-      }));
+      };
+      setBatchProgress(finalProgress);
       setAiProgress(100);
+      saveBatchProgressToStorage(finalProgress, false, 100);
       await refreshAnnotationSummary();
 
       // 显示汇总结果
@@ -1491,7 +1729,8 @@ const AnnotationPage: React.FC = () => {
         alert(`批量标注完成！\n\n成功: ${successCount} 张\n失败: ${failCount} 张`);
         setBatchAnnotating(false);
         setAiProgress(0);
-        // 保留批量结果，方便后续查看；如需清空可在页面刷新时重置
+        // 清除 localStorage 中的进度（但保留结果供查看）
+        clearBatchProgressFromStorage();
       }, 1000);
 
     } catch (error: any) {
@@ -1499,12 +1738,14 @@ const AnnotationPage: React.FC = () => {
       alert(`批量标注失败: ${error.message || '未知错误'}`);
       setBatchAnnotating(false);
       setAiProgress(0);
-      setBatchProgress({
+      const errorProgress = {
         total: 0,
         completed: 0,
         current: '',
         results: []
-      });
+      };
+      setBatchProgress(errorProgress);
+      clearBatchProgressFromStorage();
     }
   };
 
@@ -1615,9 +1856,9 @@ const AnnotationPage: React.FC = () => {
                       className="ai-annotation-btn"
                       onClick={handleBatchAIAutoAnnotation}
                       disabled={images.length === 0 || batchAnnotating}
-                  >
-                      {batchAnnotating ? '批量标注中...' : `🤖 批量AI标注 (${images.length}张)`}
-                  </button>
+                    >
+                      {batchAnnotating ? '批量标注中...' : '🤖 批量AI标注'}
+                    </button>
                     <div className="import-export-buttons">
                       <button 
                         className="ai-annotation-btn import-btn"
@@ -1643,17 +1884,57 @@ const AnnotationPage: React.FC = () => {
                           📥 导出标注数据
                         </button>
                       </div>
+
+                      {/* 导入/导出进度条 */}
+                      {importExportProgress.active && importExportProgress.total > 0 && (
+                        <div className="ai-progress-container" style={{ marginTop: '0.75rem' }}>
+                          <div className="batch-progress-info">
+                            <div className="batch-progress-stats">
+                              <span>
+                                {importExportProgress.mode === 'import' ? '导入进度' : '导出进度'}:
+                                {' '}
+                                {importExportProgress.completed}/{importExportProgress.total}
+                              </span>
+                              <span>
+                                {Math.round(
+                                  (importExportProgress.completed / Math.max(1, importExportProgress.total)) * 100
+                                )}%
+                              </span>
+                            </div>
+                            {importExportProgress.current && (
+                              <div className="batch-progress-current">
+                                {importExportProgress.current}
+                              </div>
+                            )}
+                          </div>
+                          <div className="ai-progress-bar">
+                            <div
+                              className="ai-progress-fill"
+                              style={{
+                                width: `${Math.round(
+                                  (importExportProgress.completed / Math.max(1, importExportProgress.total)) * 100
+                                )}%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                   
                   
                   {/* 批量标注进度 */}
-                  {batchAnnotating && (
+                  {(batchAnnotating || (batchProgress.total > 0 && batchProgress.completed > 0)) && (
                     <div className="ai-progress-container">
                       <div className="batch-progress-info">
                         <div className="batch-progress-stats">
                           <span>进度: {batchProgress.completed}/{batchProgress.total}</span>
                           <span>{Math.round((batchProgress.completed / batchProgress.total) * 100)}%</span>
+                          {!batchAnnotating && batchProgress.completed < batchProgress.total && (
+                            <span style={{ fontSize: '0.8rem', color: '#999', marginLeft: '0.5rem' }}>
+                              (已中断)
+                            </span>
+                          )}
                         </div>
                         {batchProgress.current && (
                           <div className="batch-progress-current">
@@ -1672,6 +1953,11 @@ const AnnotationPage: React.FC = () => {
                           <div className="batch-results-summary">
                             成功: {batchProgress.results.filter(r => r.success).length} | 
                             失败: {batchProgress.results.filter(r => !r.success).length}
+                            {!batchAnnotating && batchProgress.completed < batchProgress.total && (
+                              <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: '#999' }}>
+                                (任务已中断，可重新开始批量标注)
+                              </span>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1890,7 +2176,7 @@ const AnnotationPage: React.FC = () => {
                     className="thumbnails-grid thumbnails-virtual-scroll"
                     ref={(el) => {
                       thumbnailsScrollRef.current = el;
-                      if (thumbScrollEl !== el) setThumbScrollEl(el);
+                      thumbScrollElRef.current = el;
                     }}
                     onScroll={(e) => {
                       const top = (e.currentTarget as HTMLDivElement).scrollTop;
@@ -1906,7 +2192,7 @@ const AnnotationPage: React.FC = () => {
                       className="thumbnails-virtual-measure"
                       ref={(el) => {
                         thumbnailsMeasureRef.current = el;
-                        if (thumbMeasureEl !== el) setThumbMeasureEl(el);
+                        thumbMeasureElRef.current = el;
                       }}
                     >
                       <div className="thumbnails-virtual-inner" style={{ height: thumbTotalHeight }}>
@@ -1940,13 +2226,20 @@ const AnnotationPage: React.FC = () => {
                           }}
                             onLoad={(e) => {
                               const imgEl = e.currentTarget;
-                              setThumbnailSizes(prev => ({
-                                ...prev,
-                                [image.id]: {
-                                  width: imgEl.naturalWidth,
-                                  height: imgEl.naturalHeight,
-                                },
-                              }));
+                              // 只在尺寸确实需要更新时才更新状态，避免不必要的重新渲染
+                              setThumbnailSizes(prev => {
+                                const existing = prev[image.id];
+                                if (existing && existing.width === imgEl.naturalWidth && existing.height === imgEl.naturalHeight) {
+                                  return prev; // 尺寸未变化，不更新
+                                }
+                                return {
+                                  ...prev,
+                                  [image.id]: {
+                                    width: imgEl.naturalWidth,
+                                    height: imgEl.naturalHeight,
+                                  },
+                                };
+                              });
                           }}
                         />
 
@@ -2090,9 +2383,9 @@ const AnnotationPage: React.FC = () => {
                     }))
                   }
                 >
-                  <option value="maskrcnn">Mask R-CNN（当前默认）</option>
-                  <option value="yolo_seg">YOLO-Seg（全自动实例分割）</option>
-                  <option value="sam2_amg">SAM2（AMG 全自动分割）</option>
+                  <option value="maskrcnn">Mask R-CNN</option>
+                  <option value="yolo_seg">YOLO-Seg</option>
+                  <option value="sam2_amg">SAM2</option>
                 </select>
                 <div className="model-param-hint">
                   切换后端后，下面仅显示该后端相关参数；未显示的参数会被忽略。
@@ -2470,7 +2763,7 @@ const AnnotationPage: React.FC = () => {
                 onClick={() => {
                   // 恢复默认参数但不立即保存
                   setModelParams({
-                    modelBackend: 'maskrcnn',
+                    modelBackend: 'sam2_amg',
                     baseScoreThresh: 0.5,
                     lowerScoreThresh: 0.3,
                     maxDetections: 50,
@@ -2519,6 +2812,43 @@ const AnnotationPage: React.FC = () => {
             <p className="ai-prompt-modal-desc">
               左侧显示颜色，右侧可编辑对应的 label。保存后将应用到整个项目的所有图片标注。
             </p>
+            {/* 删除进度条 */}
+            {deleteByColorProgress.active && deleteByColorProgress.total > 0 && (
+              <div className="ai-progress-container" style={{ marginBottom: '0.75rem' }}>
+                <div className="batch-progress-info">
+                  <div className="batch-progress-stats">
+                    <span>
+                      删除进度: {deleteByColorProgress.completed}/{deleteByColorProgress.total}
+                    </span>
+                    <span>
+                      {Math.round(
+                        (deleteByColorProgress.completed / Math.max(1, deleteByColorProgress.total)) * 100
+                      )}%
+                    </span>
+                  </div>
+                  {deleteByColorProgress.current && (
+                    <div className="batch-progress-current">
+                      {deleteByColorProgress.label
+                        ? `Label: ${deleteByColorProgress.label} | `
+                        : ''}
+                      颜色: {deleteByColorProgress.color}
+                      <br />
+                      {deleteByColorProgress.current}
+                    </div>
+                  )}
+                </div>
+                <div className="ai-progress-bar">
+                  <div
+                    className="ai-progress-fill"
+                    style={{
+                      width: `${Math.round(
+                        (deleteByColorProgress.completed / Math.max(1, deleteByColorProgress.total)) * 100
+                      )}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
             {labelMappingLoading && colorLabelMapping.size === 0 ? (
               <div className="label-mapping-loading">加载中...</div>
             ) : colorLabelMapping.size === 0 ? (

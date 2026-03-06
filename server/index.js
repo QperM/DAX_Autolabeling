@@ -34,10 +34,13 @@ const storage = multer.diskStorage({
   }
 });
 
+// 上传中间件：
+// - 单个文件（图片或 ZIP）最大 3GB（主要限制 ZIP 体积，避免一次性塞入过多数据）
+// - 单次上传文件数量在具体路由中通过 upload.array('images', MAX_FILES_PER_UPLOAD) 控制
 const upload = multer({ 
   storage: storage,
   limits: {
-    fileSize: 200 * 1024 * 1024 // 200MB限制
+    fileSize: 3 * 1024 * 1024 * 1024, // 单个文件最大 3GB
   }
 });
 
@@ -93,9 +96,9 @@ async function runZipExtractJob({ jobId, zipPath, zipOriginalName, projectId }) 
     const zip = new AdmZip(zipPath);
     const entries = zip.getEntries().filter((e) => !e.isDirectory);
 
-    // 安全限制：最多处理 500 个文件，最多 600MB 解压后体积（防 zip bomb）
-    const MAX_FILES = 500;
-    const MAX_TOTAL_UNCOMPRESSED = 600 * 1024 * 1024;
+    // 安全限制：最多处理 2000 个文件，最多 3GB 解压后体积（防 zip bomb）
+    const MAX_FILES = 2000;
+    const MAX_TOTAL_UNCOMPRESSED = 3 * 1024 * 1024 * 1024; // 3GB
 
     const imageEntries = entries.filter((e) => getIsImageFile(e.entryName)).slice(0, MAX_FILES);
     let totalBytes = 0;
@@ -259,12 +262,24 @@ app.get('/api/projects/:id/annotation-summary', (req, res) => {
 });
 
 // 文件上传接口
-app.post('/api/upload', upload.array('images', 500), (req, res) => {
+// 单次上传最多 2000 个文件（图片 + ZIP），前端也会做同样的数量校验
+app.post('/api/upload', upload.array('images', 2000), (req, res) => {
   try {
     const files = req.files;
     const uploadedFiles = [];
     const { projectId } = req.body;
     const zipJobs = [];
+
+    // 额外的防御性校验：避免恶意请求一次传太多文件
+    const MAX_FILES_PER_UPLOAD = 2000;
+    const totalIncoming = Array.isArray(files) ? files.length : 0;
+
+    if (totalIncoming > MAX_FILES_PER_UPLOAD) {
+      return res.status(400).json({
+        success: false,
+        message: `一次性上传的文件过多：当前 ${totalIncoming} 个，单次最多 ${MAX_FILES_PER_UPLOAD} 个`,
+      });
+    }
 
     if (!projectId) {
       console.warn('⚠️ /api/upload 调用时未提供 projectId，本次上传的图片不会关联到任何项目');
@@ -274,7 +289,6 @@ app.post('/api/upload', upload.array('images', 500), (req, res) => {
     // - 图片：直接入库并返回
     // - ZIP：创建 job，后台解压入库，前端通过 jobId 查询进度与结果
     let completed = 0;
-    const totalIncoming = files?.length || 0;
 
     if (totalIncoming === 0) {
       return res.json({ success: true, files: [], zipJobs: [], message: '未选择任何文件' });
@@ -375,10 +389,27 @@ app.post('/api/upload', upload.array('images', 500), (req, res) => {
       });
     });
   } catch (error) {
+    console.error('❌ /api/upload 处理失败:', error);
+
+    // 针对 Multer 错误给出更友好的提示（例如文件过大）
+    if (error && error.name === 'MulterError') {
+      if (error.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          success: false,
+          message: '上传失败：单个文件过大。当前单个 ZIP 或图片最大支持 3GB，请拆分后再上传。',
+        });
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: `上传失败：${error.message || 'Multer 处理文件时出错'}`,
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: '文件上传失败',
-      error: error.message
+      error: error.message,
     });
   }
 });

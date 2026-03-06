@@ -91,6 +91,12 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
         return;
       }
 
+      const MAX_FILES_PER_UPLOAD = 2000;
+      if (acceptedFiles.length > MAX_FILES_PER_UPLOAD) {
+        alert(`一次性上传的图片数量过多：当前选择了 ${acceptedFiles.length} 个文件，单次最多支持 ${MAX_FILES_PER_UPLOAD} 个。\n\n请分批上传，每次不超过 ${MAX_FILES_PER_UPLOAD} 张图片。`);
+        return;
+      }
+
       console.log('📁 接收到文件:', acceptedFiles.map(f => f.name));
       dispatch(setLoading(true));
       dispatch(setError(null));
@@ -122,7 +128,12 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
       console.log(`${response.files.length}个文件上传成功`);
     } catch (error: any) {
       console.error('❌ 上传失败:', error);
-      dispatch(setError(error.message || '文件上传失败'));
+      const serverMessage =
+        error?.response?.data?.message ||
+        error.message ||
+        '文件上传失败';
+      dispatch(setError(serverMessage));
+      alert(serverMessage);
     } finally {
       setTimeout(() => setUploadProgress(null), 800);
       dispatch(setLoading(false));
