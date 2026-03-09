@@ -33,6 +33,22 @@ const db = new sqlite3.Database(dbPath, (err) => {
   }
 });
 
+// 删除项目文件夹的辅助函数
+function deleteProjectFolder(projectId) {
+  if (!projectId) return;
+  
+  const projectDir = path.join(__dirname, 'uploads', `project_${projectId}`);
+  if (fs.existsSync(projectDir)) {
+    try {
+      // 递归删除文件夹及其所有内容
+      fs.rmSync(projectDir, { recursive: true, force: true });
+      console.log(`✅ 已删除项目文件夹: ${projectDir}`);
+    } catch (err) {
+      console.error(`❌ 删除项目文件夹失败: ${projectDir}`, err);
+    }
+  }
+}
+
 // 初始化数据库表
 function initializeDatabase() {
   // 创建projects表
@@ -41,10 +57,61 @@ function initializeDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
       description TEXT,
+      access_code TEXT UNIQUE,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  
+  // 为已有的projects表添加access_code列（如果不存在）
+  // 注意：SQLite 不支持 ALTER TABLE ADD COLUMN ... UNIQUE，所以先添加普通列，再建唯一索引
+  db.run('ALTER TABLE projects ADD COLUMN access_code TEXT', (alterErr) => {
+    if (alterErr && !alterErr.message.includes('duplicate column name')) {
+      // 真正的错误（不是"列已存在"）才打印
+      console.warn('为projects表添加access_code列:', alterErr.message);
+    }
+    // 无论 ALTER 是否成功（可能列已存在），都尝试建唯一索引
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_access_code ON projects(access_code)', (idxErr) => {
+      if (idxErr) {
+        console.warn('创建access_code唯一索引:', idxErr.message);
+      }
+    });
+  });
+  
+  // 创建users表（管理员）
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT DEFAULT 'admin',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `, (err) => {
+    if (err) {
+      console.error('创建users表失败:', err.message);
+    } else {
+      console.log('✅ users表创建成功');
+    }
+  });
+  
+  // 创建project_access表（记录session访问权限）
+  db.run(`
+    CREATE TABLE IF NOT EXISTS project_access (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      project_id INTEGER NOT NULL,
+      accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+      UNIQUE(session_id, project_id)
+    )
+  `, (err) => {
+    if (err) {
+      console.error('创建project_access表失败:', err.message);
+    } else {
+      console.log('✅ project_access表创建成功');
+    }
+  });
   
   // 创建images表
   db.run(`
@@ -199,6 +266,20 @@ const database = {
       WHERE id = ?
     `;
     db.get(sql, [id], callback);
+  },
+
+  // 获取图片关联的所有项目ID
+  getProjectIdsByImageId: (imageId) => {
+    return new Promise((resolve, reject) => {
+      db.all(
+        'SELECT project_id FROM project_images WHERE image_id = ?',
+        [imageId],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve((rows || []).map((row) => row.project_id));
+        }
+      );
+    });
   },
 
   // 删除图片
@@ -384,22 +465,46 @@ const database = {
     });
   },
   
-  createProject: (name, description = '') => {
+  createProject: (name, description = '', accessCode = null) => {
     return new Promise((resolve, reject) => {
-      const stmt = db.prepare('INSERT INTO projects (name, description) VALUES (?, ?)');
-      stmt.run([name, description], function(err) {
+      const stmt = db.prepare('INSERT INTO projects (name, description, access_code) VALUES (?, ?, ?)');
+      stmt.run([name, description, accessCode], function(err) {
         if (err) reject(err);
         else {
-          resolve({
-            id: this.lastID,
-            name,
-            description,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
+          // 获取创建的项目信息
+          db.get('SELECT * FROM projects WHERE id = ?', [this.lastID], (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
           });
         }
       });
       stmt.finalize();
+    });
+  },
+  
+  // 根据验证码查找项目
+  getProjectByAccessCode: (accessCode) => {
+    return new Promise((resolve, reject) => {
+      db.get('SELECT * FROM projects WHERE access_code = ?', [accessCode], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+  
+  // 更新项目验证码
+  updateProjectAccessCode: (projectId, accessCode) => {
+    return new Promise((resolve, reject) => {
+      db.run('UPDATE projects SET access_code = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', 
+        [accessCode, projectId], function(err) {
+        if (err) reject(err);
+        else {
+          db.get('SELECT * FROM projects WHERE id = ?', [projectId], (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
+          });
+        }
+      });
     });
   },
   
@@ -462,6 +567,8 @@ const database = {
               console.error('删除项目失败:', delErr);
               return callback(delErr);
             }
+            // 删除项目文件夹
+            deleteProjectFolder(projectId);
             callback(null, this.changes);
           });
           return;
@@ -502,6 +609,8 @@ const database = {
                     console.error('删除项目失败:', delErr2);
                     return callback(delErr2);
                   }
+                  // 删除项目文件夹
+                  deleteProjectFolder(projectId);
                   callback(null, this.changes);
                 });
                 return;
@@ -528,6 +637,8 @@ const database = {
                         console.error('删除项目失败:', delErr3);
                         return callback(delErr3);
                       }
+                      // 删除项目文件夹
+                      deleteProjectFolder(projectId);
                       callback(null, this.changes);
                     });
                   }
@@ -536,6 +647,102 @@ const database = {
             }
           });
         });
+      });
+    });
+  },
+  
+  // ========== 用户管理方法 ==========
+  // 创建用户（管理员）
+  createUser: (username, passwordHash) => {
+    return new Promise((resolve, reject) => {
+      const stmt = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)');
+      stmt.run([username, passwordHash], function(err) {
+        if (err) reject(err);
+        else {
+          db.get('SELECT id, username, role, created_at FROM users WHERE id = ?', [this.lastID], (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
+          });
+        }
+      });
+      stmt.finalize();
+    });
+  },
+  
+  // 根据用户名查找用户
+  getUserByUsername: (username) => {
+    return new Promise((resolve, reject) => {
+      db.get('SELECT * FROM users WHERE username = ?', [username], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+  
+  // 根据ID查找用户
+  getUserById: (id) => {
+    return new Promise((resolve, reject) => {
+      db.get('SELECT id, username, role, created_at FROM users WHERE id = ?', [id], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+  
+  // 获取所有用户
+  getAllUsers: () => {
+    return new Promise((resolve, reject) => {
+      db.all('SELECT id, username, role, created_at FROM users ORDER BY created_at DESC', (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+  },
+  
+  // ========== 项目访问权限管理方法 ==========
+  // 记录session访问项目权限
+  grantProjectAccess: (sessionId, projectId) => {
+    return new Promise((resolve, reject) => {
+      db.run('INSERT OR IGNORE INTO project_access (session_id, project_id) VALUES (?, ?)', 
+        [sessionId, projectId], function(err) {
+        if (err) reject(err);
+        else resolve(this.changes > 0);
+      });
+    });
+  },
+  
+  // 检查session是否有项目访问权限
+  hasProjectAccess: (sessionId, projectId) => {
+    return new Promise((resolve, reject) => {
+      db.get('SELECT COUNT(*) as cnt FROM project_access WHERE session_id = ? AND project_id = ?', 
+        [sessionId, projectId], (err, row) => {
+        if (err) reject(err);
+        else resolve(row && row.cnt > 0);
+      });
+    });
+  },
+  
+  // 获取session可访问的所有项目
+  getAccessibleProjects: (sessionId) => {
+    return new Promise((resolve, reject) => {
+      db.all(`
+        SELECT p.* FROM projects p
+        INNER JOIN project_access pa ON pa.project_id = p.id
+        WHERE pa.session_id = ?
+        ORDER BY p.created_at DESC
+      `, [sessionId], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+  },
+  
+  // 清除session的所有访问权限（登出时）
+  clearSessionAccess: (sessionId) => {
+    return new Promise((resolve, reject) => {
+      db.run('DELETE FROM project_access WHERE session_id = ?', [sessionId], function(err) {
+        if (err) reject(err);
+        else resolve(this.changes);
       });
     });
   }

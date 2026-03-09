@@ -207,13 +207,30 @@ def load_sam2_amg():
 
     ckpt = os.environ.get("SAM2_CHECKPOINT", "").strip()
     if not ckpt or not os.path.exists(ckpt):
-        raise RuntimeError(
-            "未配置 SAM2_CHECKPOINT 或文件不存在。请设置环境变量 SAM2_CHECKPOINT 指向 checkpoint 文件。"
-        )
+        # 兼容：项目路径改名/移动时，start_sam2.bat 里硬编码的绝对路径可能失效
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        fallback_ckpt = os.path.join(base_dir, "grounded-sam2", "checkpoints", "sam2_hiera_large.pt")
+        if os.path.exists(fallback_ckpt):
+            ckpt = fallback_ckpt
+            os.environ["SAM2_CHECKPOINT"] = ckpt
+            print(f"[SAM2服务] ⚠️ 未正确配置 SAM2_CHECKPOINT，已自动使用本地 checkpoint: {ckpt}")
+        else:
+            raise RuntimeError(
+                "未配置 SAM2_CHECKPOINT 或文件不存在。请设置环境变量 SAM2_CHECKPOINT 指向 checkpoint 文件。"
+                f"\n- 已尝试 fallback: {fallback_ckpt}"
+            )
 
     # 注意：SAM2 使用 Hydra 的 config_module="sam2"，这里的 config_name 需要是包内路径
     # Grounded-SAM-2 仓库默认提供的配置在：sam2/configs/sam2/sam2_hiera_l.yaml
     cfg = os.environ.get("SAM2_MODEL_CFG", "configs/sam2/sam2_hiera_l.yaml").strip()
+    # 如果 cfg 是文件路径但不存在，尝试使用 grounded-sam2 目录下的默认配置文件
+    if cfg and not os.path.exists(cfg):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        fallback_cfg = os.path.join(base_dir, "grounded-sam2", "sam2", "configs", "sam2", "sam2_hiera_l.yaml")
+        if os.path.exists(fallback_cfg):
+            print(f"[SAM2服务] ⚠️ SAM2_MODEL_CFG 路径不存在，已自动使用: {fallback_cfg}")
+            cfg = fallback_cfg
+            os.environ["SAM2_MODEL_CFG"] = cfg
     print(f"[SAM2服务] 正在加载 SAM2 模型: cfg={cfg}, ckpt={ckpt}, device={device}")
     # build_sam2 的具体签名依赖安装的 SAM2 版本；此处按常见实现调用
     sam2_model = build_sam2(cfg, ckpt, device=device)

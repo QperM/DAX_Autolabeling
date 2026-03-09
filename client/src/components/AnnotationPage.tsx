@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { setImages, setLoading, setError, setCurrentImage } from '../store/annotationSlice';
-import { imageApi, annotationApi, projectApi } from '../services/api';
+import { imageApi, annotationApi, projectApi, authApi } from '../services/api';
 import type { Image, Mask, BoundingBox, Polygon } from '../types';
 import ImageUploader from './ImageUploader';
 import './AnnotationPage.css';
@@ -32,6 +32,7 @@ const AnnotationPage: React.FC = () => {
   const [thumbScrollTop, setThumbScrollTop] = useState(0);
   const [thumbViewport, setThumbViewport] = useState({ width: 0, height: 0 });
   const [currentProject, setCurrentProject] = useState<any>(null);  // 当前项目
+  const [isAdmin, setIsAdmin] = useState(false); // 当前是否为管理员
   const [aiProgress, setAiProgress] = useState(0);  // AI标注进度 0-100
   const [batchAnnotating, setBatchAnnotating] = useState(false);  // 批量标注进行中
   const [batchProgress, setBatchProgress] = useState<{
@@ -574,6 +575,63 @@ const AnnotationPage: React.FC = () => {
     }
   }, [currentProject?.id]);
 
+  // 权限检查：确保用户已通过验证码或登录
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const authStatus = await authApi.checkAuth();
+        // 记录是否为管理员
+        setIsAdmin(!!authStatus.isAdmin);
+
+        if (!authStatus.authenticated) {
+          // 未登录也没有验证码session，重定向到首页
+          navigate('/');
+          return;
+        }
+        
+        // 检查是否有当前项目
+        const savedProject = localStorage.getItem('currentProject');
+        if (!savedProject) {
+          navigate('/');
+          return;
+        }
+        
+        try {
+          const project = JSON.parse(savedProject);
+          // 管理员有全部权限，跳过项目访问检查
+          if (authStatus.isAdmin) return;
+          
+          // 普通用户：优先用 session 中的 accessibleProjectIds 快速判断
+          const accessibleIds = (authStatus as any).accessibleProjectIds;
+          if (accessibleIds && Array.isArray(accessibleIds)) {
+            if (accessibleIds.includes(project.id)) return;
+          }
+          
+          // 兜底：从后端查一次可访问项目
+          try {
+            const accessibleProjects = await authApi.getAccessibleProjects();
+            const hasAccess = accessibleProjects.some(p => p.id === project.id);
+            if (hasAccess) return;
+          } catch {
+            // 查询失败也不阻塞
+          }
+          
+          alert('您没有访问该项目的权限，请重新输入验证码');
+          navigate('/');
+        } catch (e) {
+          console.error('解析项目失败', e);
+          navigate('/');
+        }
+      } catch (error) {
+        console.error('权限检查失败', error);
+        // 网络错误时不强制跳转，避免后端临时不可用导致丢失工作
+        console.warn('权限检查网络错误，暂不跳转');
+      }
+    };
+    
+    checkAuth();
+  }, [navigate]);
+
   // 根据当前项目加载已有图像
   useEffect(() => {
     if (currentProject) {
@@ -588,7 +646,13 @@ const AnnotationPage: React.FC = () => {
           const summary = await projectApi.getAnnotationSummary(currentProject.id);
           setAnnotationSummary(summary);
         } catch (err: any) {
-          dispatch(setError(err.message || '加载图像失败'));
+          // 如果是权限错误，重定向到首页
+          if (err.response?.status === 403) {
+            alert('您没有访问该项目的权限，请重新输入验证码');
+            navigate('/');
+          } else {
+            dispatch(setError(err.message || '加载图像失败'));
+          }
         } finally {
           dispatch(setLoading(false));
         }
@@ -596,7 +660,7 @@ const AnnotationPage: React.FC = () => {
 
       loadImages();
     }
-  }, [dispatch, currentProject]);
+  }, [dispatch, currentProject, navigate]);
 
   const refreshAnnotationSummary = async () => {
     if (!currentProject) return;
@@ -863,6 +927,11 @@ const AnnotationPage: React.FC = () => {
 
   // 导入标注数据从 JSON
   const handleImportAnnotations = async () => {
+    if (!isAdmin) {
+      alert('当前账号无权限导入标注数据，请联系管理员操作');
+      return;
+    }
+
     if (!currentProject) {
       alert('请先选择项目');
       return;
@@ -1085,6 +1154,11 @@ const AnnotationPage: React.FC = () => {
 
   // 导出标注数据（支持两种格式：项目 JSON / Labelme ZIP）
   const handleExportAnnotations = async () => {
+    if (!isAdmin) {
+      alert('当前账号无权限导出标注数据，请联系管理员操作');
+      return;
+    }
+
     if (!currentProject) {
       alert('请先选择项目');
       return;
@@ -1614,6 +1688,11 @@ const AnnotationPage: React.FC = () => {
 
   // 处理批量AI自动标注
   const handleBatchAIAutoAnnotation = async () => {
+    if (!isAdmin) {
+      alert('当前账号无权限执行批量AI标注，请联系管理员操作');
+      return;
+    }
+
     if (images.length === 0) {
       alert('当前没有可标注的图片');
       return;
@@ -1797,10 +1876,21 @@ const AnnotationPage: React.FC = () => {
             {/* 左上区域 - 欢迎内容 */}
             <div className="welcome-left-top">
               <div className="welcome-content">
-                <ImageUploader 
-                  onUploadComplete={handleUploadComplete} 
-                  projectId={currentProject?.id}
-                />
+                {isAdmin ? (
+                  <ImageUploader 
+                    onUploadComplete={handleUploadComplete} 
+                    projectId={currentProject?.id}
+                  />
+                ) : (
+                  <div className="image-uploader">
+                    <div className="dropzone disabled-dropzone">
+                      <div className="upload-prompt">
+                        <p>当前账号为标注用户，不能上传新图片。</p>
+                        <p className="hint">如需新增图片，请联系管理员在后台上传。</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 
                 {/* AI标注功能区域 */}
                 <div className="ai-section">
@@ -1855,7 +1945,8 @@ const AnnotationPage: React.FC = () => {
                     <button 
                       className="ai-annotation-btn"
                       onClick={handleBatchAIAutoAnnotation}
-                      disabled={images.length === 0 || batchAnnotating}
+                      disabled={!isAdmin || images.length === 0 || batchAnnotating}
+                      title={!isAdmin ? '普通用户已禁用：批量AI标注可能导致服务器过载，请联系管理员' : ''}
                     >
                       {batchAnnotating ? '批量标注中...' : '🤖 批量AI标注'}
                     </button>
@@ -1863,7 +1954,8 @@ const AnnotationPage: React.FC = () => {
                       <button 
                         className="ai-annotation-btn import-btn"
                         onClick={handleImportAnnotations}
-                        disabled={!currentProject || loading}
+                        disabled={!isAdmin || !currentProject || loading}
+                        title={!isAdmin ? '普通用户已禁用：请联系管理员导入/导出' : ''}
                       >
                         📤 导入标注 (JSON)
                       </button>
@@ -1872,6 +1964,8 @@ const AnnotationPage: React.FC = () => {
                           className="export-format-select"
                           value={exportFormat}
                           onChange={(e) => setExportFormat(e.target.value as 'project' | 'labelme-zip')}
+                          disabled={!isAdmin}
+                          title={!isAdmin ? '普通用户已禁用：请联系管理员导入/导出' : ''}
                         >
                           <option value="project">项目默认 JSON</option>
                           <option value="labelme-zip">Labelme ZIP</option>
@@ -1879,7 +1973,8 @@ const AnnotationPage: React.FC = () => {
                         <button 
                           className="ai-annotation-btn export-btn"
                           onClick={handleExportAnnotations}
-                          disabled={images.length === 0 || loading}
+                          disabled={!isAdmin || images.length === 0 || loading}
+                          title={!isAdmin ? '普通用户已禁用：请联系管理员导入/导出' : ''}
                         >
                           📥 导出标注数据
                         </button>

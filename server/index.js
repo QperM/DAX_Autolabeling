@@ -5,6 +5,8 @@ const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
 const FormData = require('form-data');
+const session = require('express-session');
+const bcrypt = require('bcrypt');
 const db = require('./database');
 const AdmZip = require('adm-zip');
 
@@ -12,14 +14,62 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // 中间件配置
-app.use(cors());
+app.use(cors({
+  origin: true,
+  credentials: true
+}));
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
+// Session 配置
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'dax-autolabeling-secret-key-change-in-production',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production', // 生产环境使用 HTTPS
+    httpOnly: true,
+    maxAge: 7 * 24 * 60 * 60 * 1000 // 7天
+  }
+}));
 
 // 静态文件服务
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// 获取项目文件夹路径的辅助函数
+function getProjectUploadDir(projectId) {
+  if (!projectId) {
+    // 如果没有项目ID，使用根目录（向后兼容）
+    return path.join(__dirname, 'uploads');
+  }
+  // 使用项目ID作为文件夹名，避免中文乱码
+  const projectDir = path.join(__dirname, 'uploads', `project_${projectId}`);
+  if (!fs.existsSync(projectDir)) {
+    fs.mkdirSync(projectDir, { recursive: true });
+  }
+  return projectDir;
+}
+
+// 根据 file_path 构建 URL 的辅助函数
+function buildImageUrl(filePath, filename) {
+  if (!filePath) {
+    return `/uploads/${encodeURIComponent(filename)}`;
+  }
+  
+  // 检查是否在项目文件夹中
+  const projectMatch = filePath.match(/[\\/]project_(\d+)[\\/]/);
+  if (projectMatch) {
+    const projectId = projectMatch[1];
+    return `/uploads/project_${projectId}/${encodeURIComponent(filename)}`;
+  }
+  
+  // 默认情况：在根目录
+  return `/uploads/${encodeURIComponent(filename)}`;
+}
+
 // 文件上传配置
+// 注意：multer 的 destination 在文件解析前执行，req.body 可能还没有值
+// 所以我们先保存到临时位置，然后在处理中移动到项目文件夹
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadDir = path.join(__dirname, 'uploads');
@@ -91,7 +141,8 @@ async function runZipExtractJob({ jobId, zipPath, zipOriginalName, projectId }) 
   job.status = 'extracting';
   job.message = '正在解压...';
 
-  const uploadDir = path.join(__dirname, 'uploads');
+  // 使用项目文件夹
+  const uploadDir = getProjectUploadDir(projectId);
   try {
     const zip = new AdmZip(zipPath);
     const entries = zip.getEntries().filter((e) => !e.isDirectory);
@@ -131,11 +182,16 @@ async function runZipExtractJob({ jobId, zipPath, zipOriginalName, projectId }) 
       const data = entry.getData();
       fs.writeFileSync(outPath, data);
 
+      // 构建相对路径的URL（如果是在项目文件夹中，需要包含项目文件夹路径）
+      const relativePath = projectId 
+        ? `project_${projectId}/${filename}`
+        : filename;
+      
       const fileInfo = {
         filename,
         originalName: orig,
         path: outPath,
-        url: `/uploads/${encodeURIComponent(filename)}`,
+        url: `/uploads/${encodeURIComponent(relativePath)}`,
         size: data.length,
         uploadTime: new Date().toISOString(),
       };
@@ -164,13 +220,230 @@ async function runZipExtractJob({ jobId, zipPath, zipOriginalName, projectId }) 
   }
 }
 
-// 路由
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: '智能标注系统后端服务运行中' });
+// ========== 工具函数 ==========
+// 生成验证码（6位大写字母+数字）
+function generateAccessCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去掉容易混淆的字符
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+}
+
+// ========== 权限检查中间件 ==========
+// 检查是否为管理员
+const requireAdmin = (req, res, next) => {
+  if (req.session && req.session.userId && req.session.isAdmin) {
+    next();
+  } else {
+    res.status(401).json({ error: '需要管理员权限' });
+  }
+};
+
+// 检查是否有项目访问权限
+const requireProjectAccess = async (req, res, next) => {
+  const projectId = req.params.id || req.body.projectId || req.query.projectId;
+  if (!projectId) {
+    return res.status(400).json({ error: '缺少项目ID' });
+  }
+  
+  const sessionId = req.sessionID;
+  const hasAccess = await db.hasProjectAccess(sessionId, projectId);
+  
+  if (hasAccess || (req.session && req.session.isAdmin)) {
+    next();
+  } else {
+    res.status(403).json({ error: '没有访问该项目的权限，请先输入验证码' });
+  }
+};
+
+// 检查图片所属项目的访问权限
+const requireImageProjectAccess = async (req, res, next) => {
+  const imageId = req.params.imageId || req.params.id;
+  if (!imageId) {
+    return res.status(400).json({ error: '缺少图片ID' });
+  }
+  
+  // 如果是管理员，直接通过
+  if (req.session && req.session.isAdmin) {
+    return next();
+  }
+  
+  try {
+    // 查找图片所属的项目
+    const image = await new Promise((resolve, reject) => {
+      db.getImageById(imageId, (err, img) => {
+        if (err) reject(err);
+        else resolve(img);
+      });
+    });
+    
+    if (!image) {
+      return res.status(404).json({ error: '图片不存在' });
+    }
+    
+    // 查找图片关联的项目
+    const projectIds = await db.getProjectIdsByImageId(imageId);
+    
+    if (projectIds.length === 0) {
+      // 图片未关联到任何项目，管理员可以访问，普通用户不能
+      return res.status(403).json({ error: '该图片未关联到项目，无法访问' });
+    }
+    
+    // 检查是否有任一项目的访问权限
+    const sessionId = req.sessionID;
+    let hasAccess = false;
+    for (const projectId of projectIds) {
+      const access = await db.hasProjectAccess(sessionId, projectId);
+      if (access) {
+        hasAccess = true;
+        break;
+      }
+    }
+    
+    if (hasAccess) {
+      next();
+    } else {
+      res.status(403).json({ error: '没有访问该图片所属项目的权限，请先输入验证码' });
+    }
+  } catch (error) {
+    console.error('[检查图片项目权限] 错误:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ========== 认证相关路由 ==========
+// 验证码验证
+app.post('/api/auth/verify-code', async (req, res) => {
+  try {
+    const { accessCode } = req.body;
+    if (!accessCode || typeof accessCode !== 'string') {
+      return res.status(400).json({ error: '验证码不能为空' });
+    }
+    
+    const project = await db.getProjectByAccessCode(accessCode.trim().toUpperCase());
+    if (!project) {
+      return res.status(404).json({ error: '验证码无效' });
+    }
+    
+    // 记录session访问权限
+    const sessionId = req.sessionID;
+    await db.grantProjectAccess(sessionId, project.id);
+    
+    // 标记 session 已初始化，确保 cookie 被发送（saveUninitialized: false 需要 session 被修改才会保存）
+    if (!req.session.accessibleProjectIds) {
+      req.session.accessibleProjectIds = [];
+    }
+    if (!req.session.accessibleProjectIds.includes(project.id)) {
+      req.session.accessibleProjectIds.push(project.id);
+    }
+    
+    res.json({
+      success: true,
+      project: {
+        id: project.id,
+        name: project.name,
+        description: project.description
+      }
+    });
+  } catch (error) {
+    console.error('[验证码验证] 错误:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// 项目管理接口
-app.get('/api/projects', async (req, res) => {
+// 管理员登录
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: '用户名和密码不能为空' });
+    }
+    
+    const user = await db.getUserByUsername(username);
+    if (!user) {
+      return res.status(401).json({ error: '用户名或密码错误' });
+    }
+    
+    const passwordMatch = await bcrypt.compare(password, user.password_hash);
+    if (!passwordMatch) {
+      return res.status(401).json({ error: '用户名或密码错误' });
+    }
+    
+    // 设置session
+    req.session.userId = user.id;
+    req.session.username = user.username;
+    req.session.isAdmin = true;
+    
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error('[管理员登录] 错误:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 登出
+app.post('/api/auth/logout', (req, res) => {
+  const sessionId = req.sessionID;
+  req.session.destroy(async (err) => {
+    if (err) {
+      console.error('[登出] 销毁session失败:', err);
+      return res.status(500).json({ error: '登出失败' });
+    }
+    
+    // 清除项目访问权限
+    await db.clearSessionAccess(sessionId);
+    res.json({ success: true });
+  });
+});
+
+// 检查当前登录状态
+app.get('/api/auth/check', (req, res) => {
+  if (req.session && req.session.userId) {
+    // 管理员登录
+    res.json({
+      authenticated: true,
+      isAdmin: req.session.isAdmin || false,
+      user: {
+        id: req.session.userId,
+        username: req.session.username
+      }
+    });
+  } else if (req.session && req.session.accessibleProjectIds && req.session.accessibleProjectIds.length > 0) {
+    // 普通用户通过验证码进入
+    res.json({
+      authenticated: true,
+      isAdmin: false,
+      accessibleProjectIds: req.session.accessibleProjectIds
+    });
+  } else {
+    res.json({ authenticated: false });
+  }
+});
+
+// 获取当前session可访问的项目列表
+app.get('/api/auth/accessible-projects', async (req, res) => {
+  try {
+    const sessionId = req.sessionID;
+    const projects = await db.getAccessibleProjects(sessionId);
+    res.json(projects);
+  } catch (error) {
+    console.error('[获取可访问项目] 错误:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== 管理员专用路由 ==========
+// 获取所有项目（管理员）
+app.get('/api/admin/projects', requireAdmin, async (req, res) => {
   try {
     const projects = await db.getAllProjects();
     res.json(projects);
@@ -179,20 +452,101 @@ app.get('/api/projects', async (req, res) => {
   }
 });
 
-app.post('/api/projects', async (req, res) => {
+// 创建项目（管理员，自动生成验证码）
+app.post('/api/admin/projects', requireAdmin, async (req, res) => {
   try {
     const { name, description } = req.body;
-    const project = await db.createProject(name, description);
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: '项目名称不能为空' });
+    }
+    
+    // 生成唯一验证码
+    let accessCode;
+    let attempts = 0;
+    do {
+      accessCode = generateAccessCode();
+      const existing = await db.getProjectByAccessCode(accessCode);
+      if (!existing) break;
+      attempts++;
+      if (attempts > 10) {
+        return res.status(500).json({ error: '生成验证码失败，请重试' });
+      }
+    } while (true);
+    
+    const project = await db.createProject(name.trim(), description || '', accessCode);
     res.json(project);
+  } catch (error) {
+    console.error('[创建项目] 错误:', error);
+    if (error.message && error.message.includes('UNIQUE constraint')) {
+      res.status(400).json({ error: '项目名称已存在' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// 重新生成项目验证码（管理员）
+app.post('/api/admin/projects/:id/regenerate-code', requireAdmin, async (req, res) => {
+  try {
+    const projectId = req.params.id;
+    
+    // 生成唯一验证码
+    let accessCode;
+    let attempts = 0;
+    do {
+      accessCode = generateAccessCode();
+      const existing = await db.getProjectByAccessCode(accessCode);
+      if (!existing || existing.id === parseInt(projectId)) break;
+      attempts++;
+      if (attempts > 10) {
+        return res.status(500).json({ error: '生成验证码失败，请重试' });
+      }
+    } while (true);
+    
+    const project = await db.updateProjectAccessCode(projectId, accessCode);
+    if (!project) {
+      return res.status(404).json({ error: '项目不存在' });
+    }
+    
+    res.json(project);
+  } catch (error) {
+    console.error('[重新生成验证码] 错误:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 路由
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', message: '智能标注系统后端服务运行中' });
+});
+
+// 项目管理接口（需要权限检查）
+// 获取当前session可访问的项目列表
+app.get('/api/projects', async (req, res) => {
+  try {
+    // 如果是管理员，返回所有项目；否则只返回可访问的项目
+    if (req.session && req.session.isAdmin) {
+      const projects = await db.getAllProjects();
+      res.json(projects);
+    } else {
+      const sessionId = req.sessionID;
+      const projects = await db.getAccessibleProjects(sessionId);
+      res.json(projects);
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get('/api/projects/:id', async (req, res) => {
+// 获取单个项目（需要权限检查）
+app.get('/api/projects/:id', requireProjectAccess, async (req, res) => {
   try {
     const project = await db.getProjectById(req.params.id);
     if (project) {
+      // 非管理员不返回验证码
+      if (!req.session || !req.session.isAdmin) {
+        delete project.access_code;
+      }
       res.json(project);
     } else {
       res.status(404).json({ error: '项目不存在' });
@@ -202,17 +556,30 @@ app.get('/api/projects/:id', async (req, res) => {
   }
 });
 
-app.put('/api/projects/:id', async (req, res) => {
+// 更新项目（需要权限检查，但普通用户只能更新description）
+app.put('/api/projects/:id', requireProjectAccess, async (req, res) => {
   try {
     const { name, description } = req.body;
-    const project = await db.updateProject(req.params.id, name, description);
-    res.json(project);
+    // 非管理员不能修改项目名称
+    if (!req.session || !req.session.isAdmin) {
+      const project = await db.getProjectById(req.params.id);
+      if (project) {
+        const updated = await db.updateProject(req.params.id, project.name, description || project.description);
+        res.json(updated);
+      } else {
+        res.status(404).json({ error: '项目不存在' });
+      }
+    } else {
+      const project = await db.updateProject(req.params.id, name, description);
+      res.json(project);
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.delete('/api/projects/:id', async (req, res) => {
+// 删除项目（仅管理员）
+app.delete('/api/projects/:id', requireAdmin, async (req, res) => {
   try {
     const projectId = req.params.id;
     db.deleteProjectWithRelated(projectId, (err, changes) => {
@@ -261,13 +628,25 @@ app.get('/api/projects/:id/annotation-summary', (req, res) => {
   }
 });
 
-// 文件上传接口
+// 文件上传接口（需要项目访问权限）
 // 单次上传最多 2000 个文件（图片 + ZIP），前端也会做同样的数量校验
-app.post('/api/upload', upload.array('images', 2000), (req, res) => {
+app.post('/api/upload', upload.array('images', 2000), async (req, res) => {
   try {
     const files = req.files;
     const uploadedFiles = [];
     const { projectId } = req.body;
+    
+    // 权限检查：如果有 projectId，需要检查访问权限
+    if (projectId) {
+      const sessionId = req.sessionID;
+      const hasAccess = await db.hasProjectAccess(sessionId, projectId);
+      if (!hasAccess && (!req.session || !req.session.isAdmin)) {
+        return res.status(403).json({
+          success: false,
+          error: '没有访问该项目的权限，请先输入验证码'
+        });
+      }
+    }
     const zipJobs = [];
 
     // 额外的防御性校验：避免恶意请求一次传太多文件
@@ -314,11 +693,26 @@ app.post('/api/upload', upload.array('images', 2000), (req, res) => {
           originalName: file.originalname,
         });
 
+        // 如果有项目ID，将ZIP文件移动到项目文件夹
+        let finalZipPath = file.path;
+        if (projectId) {
+          const projectDir = getProjectUploadDir(projectId);
+          const zipFilename = path.basename(file.path);
+          finalZipPath = path.join(projectDir, zipFilename);
+          try {
+            fs.renameSync(file.path, finalZipPath);
+          } catch (err) {
+            console.error('移动ZIP文件到项目文件夹失败:', err);
+            // 如果移动失败，使用原路径
+            finalZipPath = file.path;
+          }
+        }
+
         // 异步解压，不阻塞当前响应
         setTimeout(() => {
           runZipExtractJob({
             jobId,
-            zipPath: file.path,
+            zipPath: finalZipPath,
             zipOriginalName: file.originalname,
             projectId,
           });
@@ -336,11 +730,29 @@ app.post('/api/upload', upload.array('images', 2000), (req, res) => {
         return;
       }
 
+      // 处理普通图片文件：移动到项目文件夹
+      let finalPath = file.path;
+      let finalUrl = `/uploads/${encodeURIComponent(file.filename)}`;
+      
+      if (projectId) {
+        const projectDir = getProjectUploadDir(projectId);
+        const finalFilename = path.basename(file.path);
+        finalPath = path.join(projectDir, finalFilename);
+        try {
+          fs.renameSync(file.path, finalPath);
+          finalUrl = `/uploads/project_${projectId}/${encodeURIComponent(finalFilename)}`;
+        } catch (err) {
+          console.error('移动文件到项目文件夹失败:', err);
+          // 如果移动失败，使用原路径
+          finalPath = file.path;
+        }
+      }
+
       const fileInfo = {
-        filename: file.filename,
+        filename: path.basename(finalPath),
         originalName: file.originalname,
-        path: file.path,
-        url: `/uploads/${encodeURIComponent(file.filename)}`,
+        path: finalPath,
+        url: finalUrl,
         size: file.size,
         uploadTime: new Date().toISOString()
       };
@@ -497,7 +909,8 @@ app.post('/api/annotate/auto', async (req, res) => {
     }
     
     let imagePath = image.file_path;
-    const imageUrl = `http://localhost:3001/uploads/${encodeURIComponent(image.filename)}`;
+    const imageUrlPath = buildImageUrl(image.file_path, image.filename);
+    const imageUrl = `http://localhost:3001${imageUrlPath}`;
     
     console.log(`[AI标注] 图片路径: ${imagePath}, URL: ${imageUrl}`);
     console.log(`[AI标注] 检查文件是否存在...`);
@@ -815,8 +1228,8 @@ app.post('/api/annotate/auto', async (req, res) => {
   }
 });
 
-// 保存标注数据
-app.post('/api/annotations/:imageId', (req, res) => {
+// 保存标注数据（需要图片所属项目的访问权限）
+app.post('/api/annotations/:imageId', requireImageProjectAccess, (req, res) => {
   try {
     const { imageId } = req.params;
     const annotationData = {
@@ -884,9 +1297,29 @@ app.put('/api/annotations/:imageId', (req, res) => {
 });
 
 // 获取图像列表
-app.get('/api/images', (req, res) => {
+app.get('/api/images', async (req, res) => {
   try {
     const { projectId } = req.query;
+    
+    // 权限检查：如果有 projectId，需要检查访问权限
+    if (projectId) {
+      const sessionId = req.sessionID;
+      const hasAccess = await db.hasProjectAccess(sessionId, projectId);
+      if (!hasAccess && (!req.session || !req.session.isAdmin)) {
+        return res.status(403).json({
+          success: false,
+          error: '没有访问该项目的权限，请先输入验证码'
+        });
+      }
+    } else {
+      // 没有 projectId，只允许管理员查看所有图片
+      if (!req.session || !req.session.isAdmin) {
+        return res.status(403).json({
+          success: false,
+          error: '需要指定项目ID或管理员权限'
+        });
+      }
+    }
 
     const handleResult = (err, images) => {
       if (err) {
@@ -903,7 +1336,7 @@ app.get('/api/images', (req, res) => {
         id: img.id,
         filename: img.filename,
         originalName: img.original_name,
-        url: `/uploads/${encodeURIComponent(img.filename)}`,
+        url: buildImageUrl(img.file_path, img.filename),
         size: img.file_size,
         width: img.width,
         height: img.height,
@@ -1022,7 +1455,7 @@ app.delete('/api/images/:id', (req, res) => {
 });
 
 // 获取标注数据
-app.get('/api/annotations/:imageId', (req, res) => {
+app.get('/api/annotations/:imageId', requireImageProjectAccess, (req, res) => {
   try {
     const { imageId } = req.params;
     
@@ -1101,9 +1534,32 @@ app.use((err, req, res, next) => {
   });
 });
 
+// 初始化默认管理员账号（如果不存在）
+async function initializeDefaultAdmin() {
+  try {
+    const adminUser = await db.getUserByUsername('admin');
+    if (!adminUser) {
+      // 默认密码：admin123（生产环境请修改！）
+      const defaultPassword = process.env.ADMIN_PASSWORD || 'admin123';
+      const passwordHash = await bcrypt.hash(defaultPassword, 10);
+      await db.createUser('admin', passwordHash);
+      console.log('✅ 已创建默认管理员账号: admin');
+      console.log('⚠️  默认密码: admin123（请在生产环境中修改！）');
+      console.log('⚠️  可通过环境变量 ADMIN_PASSWORD 设置密码');
+    } else {
+      console.log('✅ 管理员账号已存在');
+    }
+  } catch (error) {
+    console.error('❌ 初始化管理员账号失败:', error);
+  }
+}
+
 // 启动服务器
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🚀 服务器运行在端口 ${PORT}`);
   console.log(`📊 健康检查: http://localhost:${PORT}/api/health`);
   console.log(`📝 自动标注接口: http://localhost:${PORT}/api/annotate/auto`);
+  
+  // 初始化默认管理员
+  await initializeDefaultAdmin();
 });

@@ -565,9 +565,17 @@
   margin-bottom: 1rem;
 }
 
-.ai-annotation-btn:hover {
+.ai-annotation-btn:hover:not(:disabled) {
   transform: translateY(-2px);
   box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+}
+
+.ai-annotation-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  filter: grayscale(0.2);
 }
 
 .import-export-buttons {
@@ -623,7 +631,7 @@
   background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
 }
 
-.ai-annotation-btn.import-btn:hover {
+.ai-annotation-btn.import-btn:hover:not(:disabled) {
   box-shadow: 0 4px 15px rgba(245, 158, 11, 0.4);
 }
 
@@ -637,7 +645,7 @@
   background: linear-gradient(135deg, #10b981 0%, #059669 100%);
 }
 
-.ai-annotation-btn.export-btn:hover {
+.ai-annotation-btn.export-btn:hover:not(:disabled) {
   box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
 }
 
@@ -645,6 +653,14 @@
   opacity: 0.6;
   cursor: not-allowed;
   transform: none;
+}
+
+.export-format-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background: #f3f4f6;
+  color: #9ca3af;
+  box-shadow: none;
 }
 
 .label-mapping-btn {

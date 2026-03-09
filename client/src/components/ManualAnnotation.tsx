@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { setCurrentImage } from '../store/annotationSlice';
 import type { Image, Mask, BoundingBox, Polygon } from '../types';
-import { annotationApi } from '../services/api';
+import { annotationApi, authApi } from '../services/api';
 import AnnotationCanvas from './AnnotationCanvas';
 import './ManualAnnotation.css';
 
@@ -27,9 +27,42 @@ const ManualAnnotation: React.FC = () => {
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(true); // 默认开启自动保存
   const lastKeyNavigateAtRef = useRef<number | null>(null); // 记录上一次键盘切图时间，用于限速
 
-  // 检查是否有选中的图片
+  // 权限检查和图片检查
   useEffect(() => {
-    // 添加延迟检查，避免初始渲染时的误判
+    const checkAuthAndImage = async () => {
+      // 检查权限
+      try {
+        const authStatus = await authApi.checkAuth();
+        if (!authStatus.authenticated) {
+          navigate('/');
+          return;
+        }
+        
+        // 检查项目访问权限
+        const savedProject = localStorage.getItem('currentProject');
+        if (savedProject) {
+          try {
+            const project = JSON.parse(savedProject);
+            if (!authStatus.isAdmin) {
+              const accessibleProjects = await authApi.getAccessibleProjects();
+              const hasAccess = accessibleProjects.some(p => p.id === project.id);
+              if (!hasAccess) {
+                alert('您没有访问该项目的权限，请重新输入验证码');
+                navigate('/');
+                return;
+              }
+            }
+          } catch (e) {
+            console.error('解析项目失败', e);
+          }
+        }
+      } catch (error) {
+        console.error('权限检查失败', error);
+        navigate('/');
+        return;
+      }
+      
+      // 检查是否有选中的图片
     const timer = setTimeout(() => {
       if (!currentImage) {
         // 如果没有选中图片，返回主页
@@ -38,6 +71,9 @@ const ManualAnnotation: React.FC = () => {
     }, 200);
     
     return () => clearTimeout(timer);
+    };
+    
+    checkAuthAndImage();
   }, [currentImage, navigate]);
 
   // 加载当前图片的标注（mask / bbox 等）

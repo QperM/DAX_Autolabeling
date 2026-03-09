@@ -27,6 +27,7 @@ const API_BASE_URL = 'http://localhost:3001/api';
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
   timeout: 30000,
+  withCredentials: true,  // 发送 session cookie，确保登录状态保持
 });
 
 // 图像相关API
@@ -180,6 +181,65 @@ export const projectApi = {
 export const healthCheck = async (): Promise<{ status: string; message: string }> => {
   const response = await apiClient.get('/health');
   return response.data;
+};
+
+// 认证相关API
+export const authApi = {
+  // 验证码验证
+  verifyCode: async (accessCode: string): Promise<{ success: boolean; project: Project }> => {
+    const response = await apiClient.post<{ success: boolean; project: Project }>('/auth/verify-code', {
+      accessCode
+    });
+    return response.data;
+  },
+  
+  // 管理员登录
+  login: async (username: string, password: string): Promise<{ success: boolean; user: { id: number; username: string; role: string } }> => {
+    const response = await apiClient.post<{ success: boolean; user: { id: number; username: string; role: string } }>('/auth/login', {
+      username,
+      password
+    });
+    return response.data;
+  },
+  
+  // 登出
+  logout: async (): Promise<{ success: boolean }> => {
+    const response = await apiClient.post<{ success: boolean }>('/auth/logout');
+    return response.data;
+  },
+  
+  // 检查登录状态
+  checkAuth: async (): Promise<{ authenticated: boolean; isAdmin?: boolean; user?: { id: number; username: string } }> => {
+    const response = await apiClient.get<{ authenticated: boolean; isAdmin?: boolean; user?: { id: number; username: string } }>('/auth/check');
+    return response.data;
+  },
+  
+  // 获取可访问的项目列表
+  getAccessibleProjects: async (): Promise<Project[]> => {
+    const response = await apiClient.get<Project[]>('/auth/accessible-projects');
+    return response.data;
+  }
+};
+
+// 管理员API
+export const adminApi = {
+  // 获取所有项目（管理员）
+  getAllProjects: async (): Promise<Project[]> => {
+    const response = await apiClient.get<Project[]>('/admin/projects');
+    return response.data;
+  },
+  
+  // 创建项目（管理员，自动生成验证码）
+  createProject: async (projectData: CreateProjectRequest): Promise<Project> => {
+    const response = await apiClient.post<Project>('/admin/projects', projectData);
+    return response.data;
+  },
+  
+  // 重新生成项目验证码
+  regenerateAccessCode: async (projectId: number): Promise<Project> => {
+    const response = await apiClient.post<Project>(`/admin/projects/${projectId}/regenerate-code`);
+    return response.data;
+  }
 };
 
 export default apiClient;

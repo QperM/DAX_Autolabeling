@@ -1,9 +1,29 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { projectApi } from '../services/api';
+import { projectApi, authApi, adminApi } from '../services/api';
 import './LandingPage.css';
 
 const LandingPage: React.FC = () => {
+  // 认证状态
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [currentUser, setCurrentUser] = useState<{ id: number; username: string } | null>(null);
+  
+  // 验证码输入
+  const [showAccessCodeModal, setShowAccessCodeModal] = useState(true);
+  const [accessCode, setAccessCode] = useState('');
+  const [verifyingCode, setVerifyingCode] = useState(false);
+  const [codeError, setCodeError] = useState('');
+  
+  // 管理员登录
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
+  const [adminUsername, setAdminUsername] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState('');
+  
+  // 管理员面板
+  
   // 选中的功能模块
   const [selectedModules, setSelectedModules] = useState<string[]>([]);
   // 当前选择的项目
@@ -27,34 +47,145 @@ const LandingPage: React.FC = () => {
   const [deletingProjectId, setDeletingProjectId] = useState<number | null>(null);
   const navigate = useNavigate();
 
-  // 初始化：加载当前项目和项目列表
+  // 初始化：检查登录状态和加载项目
   useEffect(() => {
     const initialize = async () => {
-      // 尝试从 localStorage 恢复当前项目
-      const savedProject = localStorage.getItem('currentProject');
-      if (savedProject) {
-        try {
-          const project = JSON.parse(savedProject);
-          setCurrentProject(project);
-          console.log('自动加载保存的项目:', project.name);
-        } catch (e) {
-          console.error('解析保存的项目失败', e);
-          localStorage.removeItem('currentProject');
-        }
-      }
-
-      // 加载项目列表（用于“选择项目”弹窗）
+      // 检查登录状态
       try {
-        const projectsList = await projectApi.getProjects();
-        setProjects(projectsList);
+        const authStatus = await authApi.checkAuth();
+        const userIsAdmin = authStatus.isAdmin || false;
+        setIsAuthenticated(authStatus.authenticated);
+        setIsAdmin(userIsAdmin);
+        if (authStatus.user) {
+          setCurrentUser(authStatus.user);
+        }
+        
+        // 如果已登录（管理员或通过验证码），加载项目列表
+        if (authStatus.authenticated) {
+          setShowAccessCodeModal(false);
+          
+          // 加载项目列表（使用从API返回的isAdmin状态，而不是state中的isAdmin）
+          try {
+            const projectsList = userIsAdmin 
+              ? await adminApi.getAllProjects()
+              : await authApi.getAccessibleProjects();
+            setProjects(projectsList);
+            
+            // 尝试从 localStorage 恢复当前项目
+            const savedProject = localStorage.getItem('currentProject');
+            if (savedProject) {
+              try {
+                const project = JSON.parse(savedProject);
+                // 验证项目是否在可访问列表中
+                if (projectsList.some(p => p.id === project.id)) {
+                  setCurrentProject(project);
+                  console.log('自动加载保存的项目:', project.name);
+                } else {
+                  localStorage.removeItem('currentProject');
+                }
+              } catch (e) {
+                console.error('解析保存的项目失败', e);
+                localStorage.removeItem('currentProject');
+              }
+            }
+          } catch (error: any) {
+            console.error('加载项目列表失败', error);
+            if (error.response?.status === 403) {
+              // 权限不足，需要重新输入验证码
+              setIsAuthenticated(false);
+              setShowAccessCodeModal(true);
+            }
+            setProjects([]);
+          }
+        } else {
+          // 未登录，显示验证码输入界面
+          setShowAccessCodeModal(true);
+        }
       } catch (error) {
-        console.error('加载项目列表失败', error);
-        setProjects([]);
+        console.error('检查登录状态失败', error);
+        setShowAccessCodeModal(true);
       }
     };
 
     initialize();
   }, []);
+  
+  // 验证码验证
+  const handleVerifyCode = async () => {
+    if (!accessCode.trim()) {
+      setCodeError('请输入验证码');
+      return;
+    }
+    
+    try {
+      setVerifyingCode(true);
+      setCodeError('');
+      const result = await authApi.verifyCode(accessCode.trim().toUpperCase());
+      
+      if (result.success) {
+        setCurrentProject(result.project);
+        localStorage.setItem('currentProject', JSON.stringify(result.project));
+        setShowAccessCodeModal(false);
+        setIsAuthenticated(true);
+        
+        // 重新加载项目列表
+        const projectsList = await authApi.getAccessibleProjects();
+        setProjects(projectsList);
+      }
+    } catch (error: any) {
+      console.error('验证码验证失败', error);
+      setCodeError(error.response?.data?.error || '验证码无效，请重试');
+    } finally {
+      setVerifyingCode(false);
+    }
+  };
+  
+  // 管理员登录
+  const handleAdminLogin = async () => {
+    if (!adminUsername.trim() || !adminPassword.trim()) {
+      setLoginError('请输入用户名和密码');
+      return;
+    }
+    
+    try {
+      setLoggingIn(true);
+      setLoginError('');
+      const result = await authApi.login(adminUsername.trim(), adminPassword);
+      
+      if (result.success) {
+        setIsAuthenticated(true);
+        setIsAdmin(true);
+        setCurrentUser(result.user);
+        setShowAdminLogin(false);
+        setShowAccessCodeModal(false);
+        
+        // 加载所有项目（管理员）
+        const projectsList = await adminApi.getAllProjects();
+        setProjects(projectsList);
+      }
+    } catch (error: any) {
+      console.error('管理员登录失败', error);
+      setLoginError(error.response?.data?.error || '登录失败，请检查用户名和密码');
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+  
+  // 登出
+  const handleLogout = async () => {
+    try {
+      await authApi.logout();
+      setIsAuthenticated(false);
+      setIsAdmin(false);
+      setCurrentUser(null);
+      setCurrentProject(null);
+      setProjects([]);
+      localStorage.removeItem('currentProject');
+      setShowAccessCodeModal(true);
+    } catch (error) {
+      console.error('登出失败', error);
+    }
+  };
 
   const availableModules = [
     { id: '2d-bbox-mask', name: '2D Bbox/Mask 标注', description: '基础的2D边界框和Mask标注功能' },
@@ -86,10 +217,15 @@ const LandingPage: React.FC = () => {
     setShowCreateProjectModal(false);
   };
 
-  // 确认创建项目
+  // 确认创建项目（仅管理员）
   const handleConfirmCreateProject = async () => {
     if (!newProjectName.trim()) {
       alert('项目名称不能为空');
+      return;
+    }
+    
+    if (!isAdmin) {
+      alert('只有管理员可以创建项目');
       return;
     }
 
@@ -101,7 +237,7 @@ const LandingPage: React.FC = () => {
     try {
       setIsCreatingProject(true);
       console.log('提交新建项目:', projectData);
-      const createdProject = await projectApi.createProject(projectData);
+      const createdProject = await adminApi.createProject(projectData);
       console.log('创建项目成功:', createdProject);
 
       // 保存到状态和 localStorage
@@ -111,10 +247,15 @@ const LandingPage: React.FC = () => {
       setShowCreateProjectModal(false);
       // 新项目默认清空已选模块
       setSelectedModules([]);
-      alert(`项目 "${createdProject.name}" 创建成功！`);
-    } catch (error) {
+      
+      // 重新加载项目列表
+      const projectsList = await adminApi.getAllProjects();
+      setProjects(projectsList);
+      
+      alert(`项目 "${createdProject.name}" 创建成功！\n验证码: ${createdProject.access_code}`);
+    } catch (error: any) {
       console.error('创建项目失败:', error);
-      alert('创建项目失败，请检查后端服务是否正常运行');
+      alert(error.response?.data?.error || '创建项目失败，请检查后端服务是否正常运行');
     } finally {
       setIsCreatingProject(false);
     }
@@ -192,44 +333,218 @@ const LandingPage: React.FC = () => {
       return;
     }
     
+    if (!isAuthenticated) {
+      alert('请先输入验证码或登录');
+      return;
+    }
+    
     // 存储选择的模块到localStorage
     localStorage.setItem('selectedModules', JSON.stringify(selectedModules));
     console.log('导航到标注页面');
     navigate('/annotate');
+  };
+  
+  // 重新生成项目验证码（管理员）
+  const handleRegenerateCode = async (projectId: number) => {
+    if (!isAdmin) return;
+    
+    const confirmed = window.confirm('确定要重新生成验证码吗？旧的验证码将失效！');
+    if (!confirmed) return;
+    
+    try {
+      const updatedProject = await adminApi.regenerateAccessCode(projectId);
+      // 更新项目列表
+      const projectsList = await adminApi.getAllProjects();
+      setProjects(projectsList);
+      
+      // 如果当前项目被更新，更新当前项目
+      if (currentProject && currentProject.id === projectId) {
+        setCurrentProject(updatedProject);
+        localStorage.setItem('currentProject', JSON.stringify(updatedProject));
+      }
+      
+      alert(`验证码已重新生成: ${updatedProject.access_code}`);
+    } catch (error: any) {
+      console.error('重新生成验证码失败', error);
+      alert(error.response?.data?.error || '重新生成验证码失败');
+    }
   };
 
   const hasProject = !!currentProject;
 
   return (
     <div className="landing-page">
+      {/* 验证码输入弹窗 */}
+      {showAccessCodeModal && !isAuthenticated && (
+        <div className="access-code-overlay">
+          <div className="access-code-modal">
+            <div className="access-code-header">
+              <h2>项目访问验证</h2>
+              <p className="access-code-hint">请输入项目验证码以访问标注系统</p>
+            </div>
+            <div className="access-code-body">
+              <input
+                type="text"
+                className="access-code-input code-input"
+                placeholder="请输入6位验证码"
+                value={accessCode}
+                onChange={(e) => {
+                  setAccessCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''));
+                  setCodeError('');
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !verifyingCode) {
+                    handleVerifyCode();
+                  }
+                }}
+                maxLength={6}
+                disabled={verifyingCode}
+                autoFocus
+              />
+              {codeError && <div className="access-code-error">{codeError}</div>}
+            </div>
+            <div className="access-code-actions">
+              <button
+                className="access-code-btn primary"
+                onClick={handleVerifyCode}
+                disabled={verifyingCode || !accessCode.trim()}
+              >
+                {verifyingCode ? '验证中...' : '确认'}
+              </button>
+              <button
+                className="access-code-btn secondary"
+                onClick={() => setShowAdminLogin(true)}
+                disabled={verifyingCode}
+              >
+                管理员登录
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* 管理员登录弹窗 */}
+      {showAdminLogin && (
+        <div className="access-code-overlay">
+          <div className="access-code-modal">
+            <div className="access-code-header">
+              <h2>管理员登录</h2>
+            </div>
+            <div className="access-code-body">
+              <div className="form-group">
+                <label>用户名</label>
+                <input
+                  type="text"
+                  className="access-code-input"
+                  placeholder="请输入用户名"
+                  value={adminUsername}
+                  onChange={(e) => {
+                    setAdminUsername(e.target.value);
+                    setLoginError('');
+                  }}
+                  disabled={loggingIn}
+                  autoFocus
+                />
+              </div>
+              <div className="form-group">
+                <label>密码</label>
+                <input
+                  type="password"
+                  className="access-code-input"
+                  placeholder="请输入密码"
+                  value={adminPassword}
+                  onChange={(e) => {
+                    setAdminPassword(e.target.value);
+                    setLoginError('');
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !loggingIn) {
+                      handleAdminLogin();
+                    }
+                  }}
+                  disabled={loggingIn}
+                />
+              </div>
+              {loginError && <div className="access-code-error">{loginError}</div>}
+            </div>
+            <div className="access-code-actions">
+              <button
+                className="access-code-btn primary"
+                onClick={handleAdminLogin}
+                disabled={loggingIn || !adminUsername.trim() || !adminPassword.trim()}
+              >
+                {loggingIn ? '登录中...' : '登录'}
+              </button>
+              <button
+                className="access-code-btn secondary"
+                onClick={() => {
+                  setShowAdminLogin(false);
+                  setLoginError('');
+                }}
+                disabled={loggingIn}
+              >
+                返回
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
       <div className="landing-content">
         <header className="landing-header">
           <h1>智能图像标注系统</h1>
           <p className="subtitle">V1.0</p>
-
         </header>
 
         {/* 顶部：项目管理区域（始终展示） */}
         <div className="project-selection">
-          <h2>项目管理</h2>
+          <div className="project-selection-header">
+            <h2>项目管理</h2>
+            {isAuthenticated && (
+              <div className="project-selection-header-right">
+                <div className="user-info">
+                  {isAdmin && <span className="admin-badge">管理员</span>}
+                  {currentUser && <span className="username">{currentUser.username}</span>}
+                </div>
+                <button className="logout-btn" onClick={handleLogout}>
+                  登出
+                </button>
+              </div>
+            )}
+          </div>
           <p className="hint">
             请先选择或创建一个项目来开始标注工作
           </p>
 
           <div className="project-actions">
             <div className="project-actions-left">
-              <button 
-                className="project-action-btn primary"
-                onClick={handleCreateProject}
-              >
-                ➕ 新建项目
-              </button>
-              <button 
-                className="project-action-btn secondary"
-                onClick={handleShowProjectList}
-              >
-                📁 选择项目
-              </button>
+              {isAdmin && (
+                <>
+                  <button 
+                    className="project-action-btn primary"
+                    onClick={handleCreateProject}
+                  >
+                    ➕ 新建项目
+                  </button>
+                  <button 
+                    className="project-action-btn secondary"
+                    onClick={handleShowProjectList}
+                  >
+                    📁 选择项目
+                  </button>
+                </>
+              )}
+              {!isAdmin && (
+                <div className="project-description-input-container">
+                  <label className="project-description-label">项目描述</label>
+                  <textarea
+                    className="project-description-textarea"
+                    value={currentProject?.description || ''}
+                    readOnly
+                    placeholder="暂无项目描述"
+                  />
+                </div>
+              )}
             </div>
 
             <div className="current-project-card">
@@ -281,10 +596,11 @@ const LandingPage: React.FC = () => {
                 ) : (
                   <>
                     {/* 列表表头 */}
-                    <div className="project-list-header-row">
+                    <div className={`project-list-header-row ${isAdmin ? 'with-code' : ''}`}>
+                      <div className="project-column id">ID</div>
                       <div className="project-column name">项目名称</div>
                       <div className="project-column description">描述</div>
-                      <div className="project-column id">ID</div>
+                      {isAdmin && <div className="project-column access-code">验证码</div>}
                       <div className="project-column created">创建时间</div>
                       <div className="project-column updated">更新时间</div>
                       <div className="project-column actions">操作</div>
@@ -293,9 +609,10 @@ const LandingPage: React.FC = () => {
                     {projects.map(project => (
                       <div 
                         key={project.id}
-                        className="project-list-row"
+                        className={`project-list-row ${isAdmin ? 'with-code' : ''}`}
                         onClick={() => handleSelectProject(project)}
                       >
+                        <div className="project-column id">{project.id}</div>
                         <div className="project-column name">
                           <div className="project-icon">📁</div>
                           <span>{project.name}</span>
@@ -308,17 +625,51 @@ const LandingPage: React.FC = () => {
                             查看描述
                           </button>
                         </div>
-                        <div className="project-column id">{project.id}</div>
+                        {isAdmin && (
+                          <div className="project-column access-code">
+                            <code className="access-code-display">{project.access_code || '未生成'}</code>
+                            {project.access_code && (
+                              <>
+                                <button
+                                  className="copy-code-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(project.access_code).then(() => {
+                                      const btn = e.currentTarget;
+                                      btn.textContent = '✅';
+                                      setTimeout(() => { btn.textContent = '📋'; }, 1500);
+                                    });
+                                  }}
+                                  title="复制验证码"
+                                >
+                                  📋
+                                </button>
+                                <button
+                                  className="regenerate-code-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRegenerateCode(project.id);
+                                  }}
+                                  title="重新生成验证码"
+                                >
+                                  🔄
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
                         <div className="project-column created">{new Date(project.created_at).toLocaleString()}</div>
                         <div className="project-column updated">{new Date(project.updated_at).toLocaleString()}</div>
                         <div className="project-column actions">
-                          <button
-                            className="project-delete-btn"
-                            onClick={(e) => handleDeleteProject(project, e)}
-                            disabled={deletingProjectId === project.id}
-                          >
-                            {deletingProjectId === project.id ? '删除中...' : '删除'}
-                          </button>
+                          {isAdmin && (
+                            <button
+                              className="project-delete-btn"
+                              onClick={(e) => handleDeleteProject(project, e)}
+                              disabled={deletingProjectId === project.id}
+                            >
+                              {deletingProjectId === project.id ? '删除中...' : '删除'}
+                            </button>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -472,6 +823,7 @@ const LandingPage: React.FC = () => {
           </div>
         </div>
       )}
+      
     </div>
   );
 };
