@@ -5,6 +5,7 @@ import { setCurrentImage } from '../store/annotationSlice';
 import type { Image, Mask, BoundingBox, Polygon } from '../types';
 import { annotationApi, authApi } from '../services/api';
 import AnnotationCanvas from './AnnotationCanvas';
+import { getStoredCurrentProject } from '../tabStorage';
 import './ManualAnnotation.css';
 
 const ManualAnnotation: React.FC = () => {
@@ -39,10 +40,10 @@ const ManualAnnotation: React.FC = () => {
         }
         
         // 检查项目访问权限
-        const savedProject = localStorage.getItem('currentProject');
+        const savedProject = getStoredCurrentProject<any>();
         if (savedProject) {
           try {
-            const project = JSON.parse(savedProject);
+            const project = savedProject;
             if (!authStatus.isAdmin) {
               const accessibleProjects = await authApi.getAccessibleProjects();
               const hasAccess = accessibleProjects.some(p => p.id === project.id);
@@ -65,8 +66,8 @@ const ManualAnnotation: React.FC = () => {
       // 检查是否有选中的图片
     const timer = setTimeout(() => {
       if (!currentImage) {
-        // 如果没有选中图片，返回主页
-        navigate('/');
+        // 如果没有选中图片，回到上一级标注页，而不是直接退回首页
+        navigate('/annotate', { replace: true });
       }
     }, 200);
     
@@ -171,7 +172,7 @@ const ManualAnnotation: React.FC = () => {
 
   const handleBack = () => {
     dispatch(setCurrentImage(null));
-    navigate('/annotate');
+    navigate('/annotate', { replace: true });
   };
 
   const handleNavigateImage = async (direction: 'prev' | 'next') => {
@@ -273,9 +274,9 @@ const ManualAnnotation: React.FC = () => {
    */
   const persistProjectLabelMapsFromCurrentImage = () => {
     try {
-      const savedProject = localStorage.getItem('currentProject');
+      const savedProject = getStoredCurrentProject<any>();
       if (!savedProject) return;
-      const p = JSON.parse(savedProject);
+      const p = savedProject;
       const projectId = p && typeof p.id === 'number' ? p.id : null;
       if (!projectId) return;
 

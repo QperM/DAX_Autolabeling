@@ -884,10 +884,10 @@ async function checkGroundedSAM2Health(apiUrl) {
 // 自动标注接口 - 集成Grounded SAM2
 app.post('/api/annotate/auto', async (req, res) => {
   try {
-    const { imageId, prompt, modelParams } = req.body;
+    const { imageId, modelParams } = req.body;
     
     console.log(
-      `[AI标注] 开始处理图片ID: ${imageId}, prompt: ${prompt || '无'}, modelParams: ${
+      `[AI标注] 开始处理图片ID: ${imageId}, modelParams: ${
         modelParams ? JSON.stringify(modelParams) : '默认'
       }`
     );
@@ -958,7 +958,7 @@ app.post('/api/annotate/auto', async (req, res) => {
     try {
       console.log(`[AI标注] 调用Grounded SAM2 API: ${GROUNDED_SAM2_API_URL}`);
       console.log(
-        `[AI标注] 请求参数: imageId=${imageId}, prompt=${prompt || '无'}, modelParams=${
+        `[AI标注] 请求参数: imageId=${imageId}, modelParams=${
           modelParams ? JSON.stringify(modelParams) : '默认'
         }`
       );
@@ -974,50 +974,11 @@ app.post('/api/annotate/auto', async (req, res) => {
       // const fileStream = fs.createReadStream(imagePath);
       // formData.append('file', fileStream, path.basename(imagePath));
       
-      if (prompt) {
-        formData.append('text_prompt', prompt);
-        // 某些 API 可能使用 prompt 字段
-        // formData.append('prompt', prompt);
-      }
-
       // 模型参数（可选，透传给 Python SAM2 服务）
       if (modelParams && typeof modelParams === 'object') {
-        // 选择后端（maskrcnn / yolo_seg / sam2_amg）
-        if (typeof modelParams.modelBackend === 'string' && modelParams.modelBackend.trim().length > 0) {
-          formData.append('model_backend', String(modelParams.modelBackend));
-        }
-
-        if (typeof modelParams.baseScoreThresh === 'number') {
-          formData.append('base_score_thresh', String(modelParams.baseScoreThresh));
-        }
-        if (typeof modelParams.lowerScoreThresh === 'number') {
-          formData.append('lower_score_thresh', String(modelParams.lowerScoreThresh));
-        }
-        if (typeof modelParams.maxDetections === 'number') {
-          formData.append('max_detections', String(modelParams.maxDetections));
-        }
-        if (typeof modelParams.maskThreshold === 'number') {
-          formData.append('mask_threshold', String(modelParams.maskThreshold));
-        }
         if (typeof modelParams.maxPolygonPoints === 'number') {
           formData.append('max_polygon_points', String(modelParams.maxPolygonPoints));
         }
-
-        // YOLO-Seg 参数
-        if (typeof modelParams.yoloConf === 'number') {
-          formData.append('yolo_conf', String(modelParams.yoloConf));
-        }
-        if (typeof modelParams.yoloIou === 'number') {
-          formData.append('yolo_iou', String(modelParams.yoloIou));
-        }
-        if (typeof modelParams.yoloImgSize === 'number') {
-          formData.append('yolo_imgsz', String(modelParams.yoloImgSize));
-        }
-        if (typeof modelParams.yoloMaxDet === 'number') {
-          formData.append('yolo_max_det', String(modelParams.yoloMaxDet));
-        }
-
-        // SAM2 AMG 参数
         if (typeof modelParams.sam2PointsPerSide === 'number') {
           formData.append('sam2_points_per_side', String(modelParams.sam2PointsPerSide));
         }
@@ -1039,24 +1000,10 @@ app.post('/api/annotate/auto', async (req, res) => {
       // formData.append('image_url', imageUrl);
       
       if (modelParams && typeof modelParams === 'object') {
-        console.log('[AI标注] FormData 已附加的模型参数字段:');
-        console.log(`  - model_backend = ${modelParams.modelBackend || '默认(maskrcnn)'}`);
+        console.log('[AI标注] FormData 已附加的 SAM2 参数字段:');
         console.log(
-          `  - 通用参数: base_score_thresh=${modelParams.baseScoreThresh ?? '默认'}, ` +
-          `lower_score_thresh=${modelParams.lowerScoreThresh ?? '默认'}, ` +
-          `max_detections=${modelParams.maxDetections ?? '默认'}, ` +
-          `mask_threshold=${modelParams.maskThreshold ?? '默认'}, ` +
-          `max_polygon_points=${modelParams.maxPolygonPoints ?? '默认'}`
-        );
-        console.log(
-          '  - YOLO-Seg 参数: ' +
-          `yolo_conf=${modelParams.yoloConf ?? '默认'}, ` +
-          `yolo_iou=${modelParams.yoloIou ?? '默认'}, ` +
-          `yolo_imgsz=${modelParams.yoloImgSize ?? '默认'}, ` +
-          `yolo_max_det=${modelParams.yoloMaxDet ?? '默认'}`
-        );
-        console.log(
-          '  - SAM2 AMG 参数: ' +
+          '  - 参数: ' +
+          `max_polygon_points=${modelParams.maxPolygonPoints ?? '默认'}, ` +
           `sam2_points_per_side=${modelParams.sam2PointsPerSide ?? '默认'}, ` +
           `sam2_pred_iou_thresh=${modelParams.sam2PredIouThresh ?? '默认'}, ` +
           `sam2_stability_score_thresh=${modelParams.sam2StabilityScoreThresh ?? '默认'}, ` +
@@ -1064,7 +1011,7 @@ app.post('/api/annotate/auto', async (req, res) => {
           `sam2_min_mask_region_area=${modelParams.sam2MinMaskRegionArea ?? '默认'}`
         );
       } else {
-        console.log('[AI标注] FormData字段: image' + (prompt ? ', text_prompt' : '') + '（使用后端默认参数）');
+        console.log('[AI标注] FormData字段: image（使用默认 SAM2 参数）');
       }
       
       // 调用Grounded SAM2 API

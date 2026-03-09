@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Stage, Layer, Image, Line, Rect, Circle } from 'react-konva';
 import useImage from 'use-image';
 import type { Mask, BoundingBox, Polygon } from '../types';
+import { getStoredCurrentProject } from '../tabStorage';
 
 interface AnnotationCanvasProps {
   imageUrl: string;
@@ -257,12 +258,12 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       '#393B79', // 深蓝
     ];
 
-    // 1. 读取当前项目（从 AnnotationPage 存在 localStorage 里的 currentProject）
+    // 1. 读取当前标签页的当前项目
     let projectId: number | null = null;
     try {
-      const savedProject = localStorage.getItem('currentProject');
+      const savedProject = getStoredCurrentProject<any>();
       if (savedProject) {
-        const p = JSON.parse(savedProject);
+        const p = savedProject;
         if (p && typeof p.id === 'number') {
           projectId = p.id;
         }
@@ -1220,9 +1221,9 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     let existingLabels: Array<{ label: string; color: string }> = [];
     let currentColor: string | undefined;
     try {
-      const savedProject = localStorage.getItem('currentProject');
+      const savedProject = getStoredCurrentProject<any>();
       if (savedProject) {
-        const p = JSON.parse(savedProject);
+        const p = savedProject;
         const projectId = p && typeof p.id === 'number' ? p.id : null;
         const map = new Map<string, string>();
 
@@ -1347,9 +1348,9 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
                     setRenameInputValue(val);
                     // 更新最近使用的标签顺序（从下拉框选择时也记录）
                     try {
-                      const savedProject = localStorage.getItem('currentProject');
+                      const savedProject = getStoredCurrentProject<any>();
                       if (savedProject) {
-                        const p = JSON.parse(savedProject);
+                        const p = savedProject;
                         const projectId = p && typeof p.id === 'number' ? p.id : null;
                         if (projectId) {
                           const usageKey = `labelUsageOrder:${projectId}`;

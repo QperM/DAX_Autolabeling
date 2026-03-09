@@ -1,6 +1,6 @@
-# Grounded SAM2 API Service
+# SAM2 API Service
 
-基于 FastAPI 的 Grounded SAM2 自动图像标注服务，集成在 Node.js 后端项目中。
+基于 FastAPI 的 **SAM2 Automatic Mask Generator（AMG）** 自动图像标注服务，集成在 Node.js 后端项目中。
 
 ## 位置
 
@@ -103,19 +103,12 @@ python app.py
 - Content-Type: `multipart/form-data`
 - 参数：
   - `image`: 图片文件（必需）
-  - `text_prompt` (可选): 文本提示词，例如 "person", "car", "dog"
-  - `prompt` (可选): 提示词别名，与 text_prompt 功能相同
-  - `model_backend` (可选): 推理后端选择（默认 `maskrcnn`）
-    - `maskrcnn`: torchvision Mask R-CNN（当前默认）
-    - `yolo_seg`: YOLOv8/YOLO11 Seg（全自动实例分割）
-    - `sam2_amg`: SAM2 Automatic Mask Generator（全自动分割）
-  - `base_score_thresh` (可选): 初始置信度阈值（默认 0.5）
-  - `lower_score_thresh` (可选): 兜底置信度下限（默认 0.3）
-  - `max_detections` (可选): 最多检测目标数（默认 50）
-  - `mask_threshold` (可选): Mask 二值化阈值（影响轮廓紧/松，默认 0.5）
   - `max_polygon_points` (可选): 轮廓最大点数（影响轮廓精细度，默认 80）
-  - `yolo_conf` / `yolo_iou` / `yolo_imgsz` / `yolo_max_det` (可选): 仅 `model_backend=yolo_seg` 生效
-  - `sam2_points_per_side` / `sam2_pred_iou_thresh` / `sam2_stability_score_thresh` / `sam2_box_nms_thresh` / `sam2_min_mask_region_area` (可选): 仅 `model_backend=sam2_amg` 生效
+  - `sam2_points_per_side` (可选): points_per_side（默认 32）
+  - `sam2_pred_iou_thresh` (可选): pred_iou_thresh（默认 0.88）
+  - `sam2_stability_score_thresh` (可选): stability_score_thresh（默认 0.95）
+  - `sam2_box_nms_thresh` (可选): box_nms_thresh（默认 0.7）
+  - `sam2_min_mask_region_area` (可选): min_mask_region_area（默认 0）
 
 **响应格式：**
 ```json
@@ -151,60 +144,16 @@ Node.js 后端（`server/index.js`）已配置为连接此服务：
 
 - 默认地址：`http://localhost:7860/api/auto-label`
 - 可通过环境变量 `GROUNDED_SAM2_API_URL` 修改
-- 如果服务不可用，后端会自动回退到模拟数据
+- 服务不可用时，Node 后端会直接返回错误（不再回退到模拟数据，避免“乱画”）
 
 ## 当前状态
 
-✅ **当前已接入 torchvision 的 Mask R-CNN（COCO 预训练）**，用于检测与实例分割，并将 mask 轮廓转为多边形点返回给前端。
+✅ **当前服务仅支持 SAM2（AMG）**：需要你在 `sam2` conda 环境中安装 SAM2 并配置权重路径。
 
-✅ **已支持可切换后端（同一接口）**
-- `maskrcnn`: 现有实现（默认）
-- `yolo_seg`: YOLO-Seg（需要额外安装 `ultralytics`）
-- `sam2_amg`: 真实 SAM2（需要你本地安装 SAM2 并配置权重路径）
+### 必需环境变量
 
-提示：
-- 该服务目前不是“原版 Grounded SAM2 权重”，而是以 Mask R-CNN 作为可用的检测/分割后端，保持接口一致，便于后续替换为真正的 Grounded SAM2。
-- `mask_threshold` 与 `max_polygon_points` 会直接影响返回轮廓的贴边程度与点数密度，可用于“更保守/更激进”的描边调参。
-
-## 下一步：集成 Grounded SAM2 模型
-
-1. **选择合适的 Grounded SAM2 实现**
-   - 推荐：https://github.com/IDEA-Research/Grounded-Segment-Anything-2
-   - 或其他社区实现
-
-2. **下载模型权重**
-   - SAM2 检查点文件
-   - Grounding DINO 检查点文件（如果需要）
-
-3. **在 `app.py` 中实现：**
-   - `load_model()` 函数：加载模型权重
-   - `auto_label()` 函数中的真实推理逻辑
-   - 删除模拟数据代码
-
-## 可选：启用 YOLO-Seg（推荐先试）
-
-1. 安装依赖：
-
-```bash
-conda activate sam2
-cd server/sam2-service
-pip install -r requirements-yolo.txt
-```
-
-2. （可选）指定权重：
-
-- 默认会尝试加载 `yolov8n-seg.pt`（ultralytics 可能会自动下载）
-- 你也可以设置环境变量 `YOLO_SEG_WEIGHTS` 指向本地权重文件
-
-## 可选：启用真实 SAM2（AMG）
-
-由于不同 SAM2 实现的安装方式不同，本项目采用“按需可选集成”。
-
-- 安装完成后请设置：
-  - `SAM2_CHECKPOINT`: checkpoint 文件路径
-  - `SAM2_MODEL_CFG`: cfg 名称/路径（默认 `sam2_hiera_l.yaml`，按你安装的 SAM2 实现为准）
-
-4. **测试真实标注效果**
+- `SAM2_CHECKPOINT`: checkpoint 文件路径
+- `SAM2_MODEL_CFG`: cfg 名称/路径（默认 `configs/sam2/sam2_hiera_l.yaml`；如果你使用本项目自带的 `grounded-sam2` 目录，脚本会自动指向对应文件）
 
 ## 注意事项
 

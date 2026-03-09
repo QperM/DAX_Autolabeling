@@ -129,9 +129,6 @@ echo.
 echo 下一步:
 echo 1. 运行 start.bat 启动所有服务
 echo 2. 或单独运行 start_sam2.bat 启动 SAM2 服务
-echo 3. （可选）启用 YOLO-Seg:
-echo    conda activate sam2
-echo    cd server\sam2-service
-echo    pip install -r requirements-yolo.txt
+echo 3. 如需 GPU 加速，请确保安装了支持 CUDA 的 PyTorch，并配置好 SAM2 权重路径
 echo.
 pause

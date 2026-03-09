@@ -112,7 +112,7 @@
 - **文件处理**: Multer + adm-zip（ZIP 解压）
 - **跨域支持**: CORS
 - **图片处理**: image-size
-- **AI 标注服务**: Python FastAPI + Grounded SAM2 服务框架，支持多后端分割模型（Mask R-CNN / YOLO-Seg / SAM2 AMG），集成在 `server/sam2-service/`，并通过 Node 转发统一为 `/api/annotate/auto`
+- **AI 标注服务**: Python FastAPI + **SAM2 AMG** 自动分割服务（仅保留 SAM2），集成在 `server/sam2-service/`，并通过 Node 转发统一为 `/api/annotate/auto`
 
 ## 项目结构
 
@@ -443,7 +443,7 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 - [x] 状态管理和数据持久化
 
 ### 待完善功能
-- [ ] 进一步优化 Grounded SAM2 / YOLO-Seg 推理性能（大图显存控制、多图批处理能力）
+- [ ] 进一步优化 SAM2 推理性能（大图显存控制、多图批处理能力）
 - [ ] 9D Pose标注模块开发
 - [ ] 标注数据导出格式扩展（COCO、YOLO、Pascal VOC 等格式）
 - [ ] 更丰富的标注工具

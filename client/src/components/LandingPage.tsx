@@ -1,6 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { projectApi, authApi, adminApi } from '../services/api';
+import {
+  clearStoredCurrentProject,
+  clearStoredSelectedModules,
+  getStoredCurrentProject,
+  getStoredSelectedModules,
+  setStoredCurrentProject,
+  setStoredSelectedModules,
+} from '../tabStorage';
 import './LandingPage.css';
 
 const LandingPage: React.FC = () => {
@@ -70,32 +78,37 @@ const LandingPage: React.FC = () => {
               ? await adminApi.getAllProjects()
               : await authApi.getAccessibleProjects();
             setProjects(projectsList);
+
+            const savedModules = getStoredSelectedModules();
+            if (savedModules.length > 0) {
+              setSelectedModules(savedModules);
+            }
             
-            // 尝试从 localStorage 恢复当前项目
-            const savedProject = localStorage.getItem('currentProject');
-            if (savedProject) {
-              try {
-                const project = JSON.parse(savedProject);
+            // 尝试从当前标签页的 sessionStorage 恢复当前项目
+            const savedProject = getStoredCurrentProject<any>();
+      if (savedProject) {
+        try {
+                const project = savedProject;
                 // 验证项目是否在可访问列表中
                 if (projectsList.some(p => p.id === project.id)) {
-                  setCurrentProject(project);
-                  console.log('自动加载保存的项目:', project.name);
+          setCurrentProject(project);
+          console.log('自动加载保存的项目:', project.name);
                 } else {
-                  localStorage.removeItem('currentProject');
+                  clearStoredCurrentProject();
                 }
-              } catch (e) {
-                console.error('解析保存的项目失败', e);
-                localStorage.removeItem('currentProject');
-              }
-            }
+        } catch (e) {
+          console.error('解析保存的项目失败', e);
+                clearStoredCurrentProject();
+        }
+      }
           } catch (error: any) {
-            console.error('加载项目列表失败', error);
+        console.error('加载项目列表失败', error);
             if (error.response?.status === 403) {
               // 权限不足，需要重新输入验证码
               setIsAuthenticated(false);
               setShowAccessCodeModal(true);
             }
-            setProjects([]);
+        setProjects([]);
           }
         } else {
           // 未登录，显示验证码输入界面
@@ -124,7 +137,7 @@ const LandingPage: React.FC = () => {
       
       if (result.success) {
         setCurrentProject(result.project);
-        localStorage.setItem('currentProject', JSON.stringify(result.project));
+        setStoredCurrentProject(result.project);
         setShowAccessCodeModal(false);
         setIsAuthenticated(true);
         
@@ -180,7 +193,8 @@ const LandingPage: React.FC = () => {
       setCurrentUser(null);
       setCurrentProject(null);
       setProjects([]);
-      localStorage.removeItem('currentProject');
+      clearStoredCurrentProject();
+      clearStoredSelectedModules();
       setShowAccessCodeModal(true);
     } catch (error) {
       console.error('登出失败', error);
@@ -242,11 +256,12 @@ const LandingPage: React.FC = () => {
 
       // 保存到状态和 localStorage
       setCurrentProject(createdProject);
-      localStorage.setItem('currentProject', JSON.stringify(createdProject));
+      setStoredCurrentProject(createdProject);
       setShowProjectList(false);
       setShowCreateProjectModal(false);
       // 新项目默认清空已选模块
       setSelectedModules([]);
+      clearStoredSelectedModules();
       
       // 重新加载项目列表
       const projectsList = await adminApi.getAllProjects();
@@ -276,10 +291,11 @@ const LandingPage: React.FC = () => {
     console.log('选择项目:', project);
     // 选择项目后更新当前项目并关闭弹窗
     setCurrentProject(project);
-    localStorage.setItem('currentProject', JSON.stringify(project));
+    setStoredCurrentProject(project);
     setShowProjectList(false);
     // 切换项目时可以清空已选模块，避免误操作
     setSelectedModules([]);
+    clearStoredSelectedModules();
     console.log('状态更新: 选择项目并保持在主页');
   };
 
@@ -309,8 +325,9 @@ const LandingPage: React.FC = () => {
       // 如果当前项目被删除，清空当前项目和模块选择
       if (currentProject && currentProject.id === project.id) {
         setCurrentProject(null);
-        localStorage.removeItem('currentProject');
+        clearStoredCurrentProject();
         setSelectedModules([]);
+        clearStoredSelectedModules();
       }
 
       alert(`项目 "${project.name}" 已删除`);
@@ -338,8 +355,8 @@ const LandingPage: React.FC = () => {
       return;
     }
     
-    // 存储选择的模块到localStorage
-    localStorage.setItem('selectedModules', JSON.stringify(selectedModules));
+    // 存储选择的模块到当前标签页
+    setStoredSelectedModules(selectedModules);
     console.log('导航到标注页面');
     navigate('/annotate');
   };
@@ -360,7 +377,7 @@ const LandingPage: React.FC = () => {
       // 如果当前项目被更新，更新当前项目
       if (currentProject && currentProject.id === projectId) {
         setCurrentProject(updatedProject);
-        localStorage.setItem('currentProject', JSON.stringify(updatedProject));
+        setStoredCurrentProject(updatedProject);
       }
       
       alert(`验证码已重新生成: ${updatedProject.access_code}`);
@@ -499,7 +516,7 @@ const LandingPage: React.FC = () => {
         {/* 顶部：项目管理区域（始终展示） */}
         <div className="project-selection">
           <div className="project-selection-header">
-            <h2>项目管理</h2>
+          <h2>项目管理</h2>
             {isAuthenticated && (
               <div className="project-selection-header-right">
                 <div className="user-info">
@@ -520,18 +537,18 @@ const LandingPage: React.FC = () => {
             <div className="project-actions-left">
               {isAdmin && (
                 <>
-                  <button 
-                    className="project-action-btn primary"
-                    onClick={handleCreateProject}
-                  >
-                    ➕ 新建项目
-                  </button>
-                  <button 
-                    className="project-action-btn secondary"
-                    onClick={handleShowProjectList}
-                  >
-                    📁 选择项目
-                  </button>
+              <button 
+                className="project-action-btn primary"
+                onClick={handleCreateProject}
+              >
+                ➕ 新建项目
+              </button>
+              <button 
+                className="project-action-btn secondary"
+                onClick={handleShowProjectList}
+              >
+                📁 选择项目
+              </button>
                 </>
               )}
               {!isAdmin && (
@@ -662,13 +679,13 @@ const LandingPage: React.FC = () => {
                         <div className="project-column updated">{new Date(project.updated_at).toLocaleString()}</div>
                         <div className="project-column actions">
                           {isAdmin && (
-                            <button
-                              className="project-delete-btn"
-                              onClick={(e) => handleDeleteProject(project, e)}
-                              disabled={deletingProjectId === project.id}
-                            >
-                              {deletingProjectId === project.id ? '删除中...' : '删除'}
-                            </button>
+                          <button
+                            className="project-delete-btn"
+                            onClick={(e) => handleDeleteProject(project, e)}
+                            disabled={deletingProjectId === project.id}
+                          >
+                            {deletingProjectId === project.id ? '删除中...' : '删除'}
+                          </button>
                           )}
                         </div>
                       </div>
