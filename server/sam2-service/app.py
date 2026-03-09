@@ -37,12 +37,67 @@ except Exception:
     YOLO = None
 
 # SAM2（可选依赖）：按需加载。不同实现的 import 路径可能不同，这里做最常见的一种尝试
-try:
-    from sam2.build_sam import build_sam2  # type: ignore
-    from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator  # type: ignore
-except Exception:
-    build_sam2 = None
-    SAM2AutomaticMaskGenerator = None
+build_sam2 = None
+SAM2AutomaticMaskGenerator = None
+
+# 尝试多种可能的导入路径
+import_paths = [
+    ("sam2.build_sam", "build_sam2"),
+    ("sam2.automatic_mask_generator", "SAM2AutomaticMaskGenerator"),
+]
+
+for module_name, attr_name in import_paths:
+    try:
+        module = __import__(module_name, fromlist=[attr_name])
+        attr = getattr(module, attr_name)
+        if attr_name == "build_sam2":
+            build_sam2 = attr
+        elif attr_name == "SAM2AutomaticMaskGenerator":
+            SAM2AutomaticMaskGenerator = attr
+        print(f"[SAM2服务] ✅ 成功导入 {module_name}.{attr_name}")
+    except ImportError as e:
+        print(f"[SAM2服务] ⚠️  无法导入 {module_name}.{attr_name}: {e}")
+    except Exception as e:
+        print(f"[SAM2服务] ⚠️  导入 {module_name}.{attr_name} 时出错: {type(e).__name__}: {e}")
+
+# 如果标准导入失败，尝试其他可能的路径
+if build_sam2 is None or SAM2AutomaticMaskGenerator is None:
+    print("[SAM2服务] ⚠️  SAM2 标准导入路径失败，尝试其他路径...")
+    try:
+        # 尝试直接从 sam2 导入
+        import sam2
+        print(f"[SAM2服务] ✅ 成功导入 sam2 模块，位置: {sam2.__file__}")
+        print(f"[SAM2服务] sam2 模块内容: {dir(sam2)}")
+        
+        # 尝试查找 build_sam2
+        if hasattr(sam2, 'build_sam'):
+            build_sam_module = sam2.build_sam
+            if hasattr(build_sam_module, 'build_sam2'):
+                build_sam2 = build_sam_module.build_sam2
+                print("[SAM2服务] ✅ 找到 build_sam2")
+        
+        # 尝试查找 SAM2AutomaticMaskGenerator
+        if hasattr(sam2, 'automatic_mask_generator'):
+            amg_module = sam2.automatic_mask_generator
+            if hasattr(amg_module, 'SAM2AutomaticMaskGenerator'):
+                SAM2AutomaticMaskGenerator = amg_module.SAM2AutomaticMaskGenerator
+                print("[SAM2服务] ✅ 找到 SAM2AutomaticMaskGenerator")
+    except ImportError as e:
+        print(f"[SAM2服务] ❌ 无法导入 sam2 模块: {e}")
+        print(f"[SAM2服务] 提示: 请确保在 conda 环境 sam2 中安装了 SAM2")
+        print(f"[SAM2服务] 安装方法:")
+        print(f"[SAM2服务]   1. conda activate sam2")
+        print(f"[SAM2服务]   2. pip install git+https://github.com/facebookresearch/segment-anything-2.git")
+        print(f"[SAM2服务]   或按照 SAM2 官方文档安装")
+    except Exception as e:
+        print(f"[SAM2服务] ❌ 检查 sam2 模块时出错: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+
+if build_sam2 is not None and SAM2AutomaticMaskGenerator is not None:
+    print("[SAM2服务] ✅ SAM2 模块导入成功，可以使用 sam2_amg 后端")
+else:
+    print("[SAM2服务] ⚠️  SAM2 模块未完全导入，sam2_amg 后端将不可用")
 
 app = FastAPI(
     title="Grounded SAM2 API Service",

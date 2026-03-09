@@ -496,18 +496,37 @@ app.post('/api/annotate/auto', async (req, res) => {
       });
     }
     
-    const imagePath = image.file_path;
+    let imagePath = image.file_path;
     const imageUrl = `http://localhost:3001/uploads/${encodeURIComponent(image.filename)}`;
     
     console.log(`[AI标注] 图片路径: ${imagePath}, URL: ${imageUrl}`);
+    console.log(`[AI标注] 检查文件是否存在...`);
     
-    // 检查文件是否存在
+    // 检查文件是否存在，如果不存在则尝试备用路径
     if (!fs.existsSync(imagePath)) {
-      return res.status(404).json({
-        success: false,
-        message: '图片文件不存在',
-        error: `图片文件路径不存在: ${imagePath}`
-      });
+      console.warn(`[AI标注] ⚠️ 数据库中的路径不存在: ${imagePath}`);
+      // 尝试使用相对路径或修正路径
+      const uploadDir = path.join(__dirname, 'uploads');
+      const alternativePath = path.join(uploadDir, image.filename);
+      console.log(`[AI标注] 尝试备用路径: ${alternativePath}`);
+      
+      if (fs.existsSync(alternativePath)) {
+        console.log(`[AI标注] ✅ 备用路径存在，使用备用路径`);
+        imagePath = alternativePath;
+        // 可选：更新数据库中的路径
+        // db.run('UPDATE images SET file_path = ? WHERE id = ?', [alternativePath, imageId]);
+      } else {
+        console.error(`[AI标注] ❌ 备用路径也不存在`);
+        return res.status(404).json({
+          success: false,
+          message: '图片文件不存在',
+          error: `图片文件路径不存在: ${image.file_path}`,
+          alternativePath: alternativePath,
+          alternativeExists: false
+        });
+      }
+    } else {
+      console.log(`[AI标注] ✅ 文件存在，继续处理...`);
     }
     
     // 调用Grounded SAM2 API
@@ -1061,8 +1080,30 @@ app.get('/api/test-file/:filename', (req, res) => {
   }
 });
 
+// 404 处理（放在所有路由之后）
+app.use((req, res) => {
+  console.log(`[404] 未找到路由: ${req.method} ${req.path}`);
+  res.status(404).json({
+    success: false,
+    message: '路由未找到',
+    method: req.method,
+    path: req.path
+  });
+});
+
+// 错误处理中间件
+app.use((err, req, res, next) => {
+  console.error('[服务器错误]', err);
+  res.status(500).json({
+    success: false,
+    message: '服务器内部错误',
+    error: process.env.NODE_ENV === 'development' ? err.message : '内部服务器错误'
+  });
+});
+
 // 启动服务器
 app.listen(PORT, () => {
   console.log(`🚀 服务器运行在端口 ${PORT}`);
   console.log(`📊 健康检查: http://localhost:${PORT}/api/health`);
+  console.log(`📝 自动标注接口: http://localhost:${PORT}/api/annotate/auto`);
 });

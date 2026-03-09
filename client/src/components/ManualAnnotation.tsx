@@ -231,6 +231,80 @@ const ManualAnnotation: React.FC = () => {
     polygons,
   ]);
 
+  /**
+   * 将当前图片中实际使用到的「标签-颜色」写入项目级的 labelColorMap / labelUsageOrder。
+   * 只在“保存标注（JSON）”成功后调用，保证未保存的改名不会影响其他图片的下拉选项。
+   */
+  const persistProjectLabelMapsFromCurrentImage = () => {
+    try {
+      const savedProject = localStorage.getItem('currentProject');
+      if (!savedProject) return;
+      const p = JSON.parse(savedProject);
+      const projectId = p && typeof p.id === 'number' ? p.id : null;
+      if (!projectId) return;
+
+      const mapKey = `labelColorMap:${projectId}`;
+      const usageKey = `labelUsageOrder:${projectId}`;
+
+      // 读取已有的映射
+      const labelMap = new Map<string, string>();
+      const rawMap = localStorage.getItem(mapKey);
+      if (rawMap) {
+        const obj = JSON.parse(rawMap) as Record<string, string>;
+        Object.entries(obj).forEach(([label, color]) => {
+          if (label && color) {
+            labelMap.set(label, color);
+          }
+        });
+      }
+
+      // 收集当前图片中实际使用到的标签及颜色
+      const usedLabels: string[] = [];
+
+      masks.forEach((mask) => {
+        const label = (mask.label || '').trim();
+        const color = mask.color;
+        if (!label || !color) return;
+        if (!labelMap.has(label)) {
+          labelMap.set(label, color);
+        }
+        usedLabels.push(label);
+      });
+
+      boundingBoxes.forEach((bbox) => {
+        const label = (bbox.label || '').trim();
+        const color = bbox.color;
+        if (!label || !color) return;
+        if (!labelMap.has(label)) {
+          labelMap.set(label, color);
+        }
+        usedLabels.push(label);
+      });
+
+      // 写回 labelColorMap
+      const objToSave: Record<string, string> = {};
+      labelMap.forEach((value, keyLabel) => {
+        objToSave[keyLabel] = value;
+      });
+      localStorage.setItem(mapKey, JSON.stringify(objToSave));
+
+      // 更新最近使用标签顺序（将本次保存中出现的标签移到前面）
+      const rawUsage = localStorage.getItem(usageKey);
+      let usageOrder: string[] = rawUsage ? JSON.parse(rawUsage) : [];
+      const uniqueUsedLabels = Array.from(new Set(usedLabels));
+      uniqueUsedLabels.forEach((label) => {
+        usageOrder = usageOrder.filter((l) => l !== label);
+        usageOrder.unshift(label);
+      });
+      if (usageOrder.length > 50) {
+        usageOrder = usageOrder.slice(0, 50);
+      }
+      localStorage.setItem(usageKey, JSON.stringify(usageOrder));
+    } catch (err) {
+      console.warn('[ManualAnnotation] 持久化项目级标签映射失败', err);
+    }
+  };
+
   const handleSaveAnnotation = async (options?: { silent?: boolean }): Promise<boolean> => {
     if (!currentImage) return false;
     const silent = options?.silent ?? false;
@@ -241,6 +315,9 @@ const ManualAnnotation: React.FC = () => {
         boundingBoxes,
         polygons,
       });
+      // 标注保存成功后，再把当前图片中实际使用到的“标签-颜色”写入项目级映射，
+      // 这样新标签只会在保存之后才出现在其他图片的下拉框中。
+      persistProjectLabelMapsFromCurrentImage();
       if (!silent) {
         alert('标注已保存');
       }

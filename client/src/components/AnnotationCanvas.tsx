@@ -271,8 +271,10 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       console.warn('[AnnotationCanvas] 解析 currentProject 失败，用默认颜色逻辑', err);
     }
 
-    // label -> color 映射按项目级持久化在 localStorage，
-    // 同时在首次使用时，会自动从当前图像已有的 Mask / BBox 中补全映射，避免忽略“object”等已有标签。
+    // label -> color 映射按项目级存储在 localStorage。
+    // 注意：这里仅从 localStorage 读取映射，用于决定颜色；
+    // 真正的持久化写入放在「保存标注（JSON）」时统一处理，
+    // 这样 R 改名产生的“新标签”在未保存前不会污染整个项目的下拉列表。
     const loadProjectLabelColorMap = (pid: number | null): Map<string, string> => {
       const map = new Map<string, string>();
       if (pid) {
@@ -292,7 +294,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         }
       }
 
-      // 额外：从当前图像中已有的 Mask / BBox 补全 label -> color（仅在尚未有映射时才写入）
+      // 额外：从当前图像中已有的 Mask / BBox 补全 label -> color 到内存 map（不回写到 localStorage）
       masks.forEach((mask) => {
         const label = (mask.label || '').trim();
         const color = mask.color;
@@ -312,20 +314,6 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       });
 
       return map;
-    };
-
-    const saveProjectLabelColorMap = (pid: number | null, map: Map<string, string>) => {
-      if (!pid) return;
-      const key = `labelColorMap:${pid}`;
-      const obj: Record<string, string> = {};
-      map.forEach((value, keyLabel) => {
-        obj[keyLabel] = value;
-      });
-      try {
-        localStorage.setItem(key, JSON.stringify(obj));
-      } catch (err) {
-        console.warn('[AnnotationCanvas] 保存 labelColorMap 失败', err);
-      }
     };
 
     const labelColorMap = loadProjectLabelColorMap(projectId);
@@ -349,7 +337,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         // 调色板都用完了就循环使用
         targetColor = assigned || COLOR_PALETTE[usedColors.size % COLOR_PALETTE.length];
 
-        // 记录新 label 的颜色
+        // 记录新 label 的颜色（仅在当前内存映射中，用于本次会话的颜色分配）
         labelColorMap.set(trimmed, targetColor);
       }
     } else {
@@ -375,31 +363,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       };
     });
 
-    // 4. 写回映射
-    saveProjectLabelColorMap(projectId, labelColorMap);
-
-    // 5. 更新最近使用的标签顺序（仅在成功重命名时）
-    if (trimmed.length > 0 && projectId) {
-      try {
-        const usageKey = `labelUsageOrder:${projectId}`;
-        const raw = localStorage.getItem(usageKey);
-        let usageOrder: string[] = raw ? JSON.parse(raw) : [];
-        
-        // 将当前使用的 label 移到最前面
-        usageOrder = usageOrder.filter(l => l !== trimmed);
-        usageOrder.unshift(trimmed);
-        
-        // 限制最多保存50个最近使用的标签
-        if (usageOrder.length > 50) {
-          usageOrder = usageOrder.slice(0, 50);
-        }
-        
-        localStorage.setItem(usageKey, JSON.stringify(usageOrder));
-      } catch (err) {
-        console.warn('[AnnotationCanvas] 更新标签使用顺序失败', err);
-      }
-    }
-
+    // 4. 仅更新画布当前状态（不在这里做项目级 label 映射持久化）
     onMaskUpdate(updatedMasks);
     setShowRenameModal(false);
     setRenameModalPosition(null);
