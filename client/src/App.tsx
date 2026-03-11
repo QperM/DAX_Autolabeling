@@ -5,6 +5,8 @@ import { store } from './store';
 import LandingPage from './components/LandingPage';
 import AnnotationPage from './components/AnnotationPage';
 import ManualAnnotation from './components/ManualAnnotation';
+import PoseAnnotationPage from './components/PoseAnnotationPage';
+import PoseManualAnnotation from './components/PoseManualAnnotation';
 import './App.css';
 
 const AppContent: React.FC = () => {
@@ -14,6 +16,8 @@ const AppContent: React.FC = () => {
         <Route path="/" element={<LandingPage />} />
         <Route path="/annotate" element={<AnnotationPage />} />
         <Route path="/annotate/manual-annotation" element={<ManualAnnotation />} />
+        <Route path="/pose/manual-annotation" element={<PoseManualAnnotation />} />
+        <Route path="/pose" element={<PoseAnnotationPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Router>

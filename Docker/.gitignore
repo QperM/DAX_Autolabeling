@@ -1,0 +1,13 @@
+# local test artifacts (do not commit)
+data/
+sam2-assets/
+
+# Large local artifacts / images (do not commit)
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tar.xz
+
+# Known large local backup
+dax-full-backup.tar

@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dax-sam2
+  namespace: dax-autolabeling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dax-sam2
+  template:
+    metadata:
+      labels:
+        app: dax-sam2
+    spec:
+      containers:
+        - name: sam2
+          image: <registry>/<repo>/dax-sam2:<tag>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 7860
+          env:
+            - name: SAM2_CHECKPOINT
+              value: /sam2-assets/checkpoints/sam2_hiera_large.pt
+            # SAM2_MODEL_CFG 使用 Hydra 配置名（例如 configs/sam2/sam2_hiera_l.yaml），
+            # 默认不设置时，服务内部会回落到该默认值。
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 7860
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 7860
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+            limits:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dax-sam2
+  namespace: dax-autolabeling
+spec:
+  selector:
+    app: dax-sam2
+  ports:
+    - name: http
+      port: 7860
+      targetPort: 7860
+

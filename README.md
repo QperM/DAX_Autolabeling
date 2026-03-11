@@ -1,7 +1,7 @@
 # 智能图像标注系统
 
-**版本：V1.9**  
-**最后更新：2026年3月9日**
+**版本：V2.0**  
+**最后更新：2026年3月11日**
 
 ## 项目概述
 
@@ -39,9 +39,16 @@
 
 #### 2. 模块化首页设计
 - ✅ 2D Bbox/Mask标注模块选择
-- ✅ 9D Pose标注模块预留
+- ✅ 9D Pose标注模块入口（已开始开发）
 - ✅ 项目选择和管理入口
 - ✅ 当前项目信息展示
+
+#### 2.1 9D Pose（开发中）
+- ✅ Mesh（OBJ）导入与管理：支持按项目上传/列表展示
+- ✅ Mesh 资源包兼容：解析 OBJ 内 `mtllib`，并加载同目录 MTL/贴图资源
+- ✅ 3D 预览：基于 Three.js 的交互预览（OrbitControls、光照/网格、自动居中与缩放）
+- ✅ Mesh 缩略图：列表中静态截图预览（自动取景 + 可调视角偏移/拉远）
+- ✅ 点云显示：已具备点云显示的前端能力（用于 9D Pose 工作流可视化基础）
 
 #### 3. 标注工作界面
 - ✅ 实时图像预览窗口
@@ -123,10 +130,14 @@ DAXautolabeling/
 │   │   ├── components/    # 组件目录
 │   │   │   ├── AnnotationCanvas.tsx  # 标注画布组件
 │   │   │   ├── AnnotationPage.tsx     # 标注页面组件
+│   │   │   ├── PoseAnnotationPage.tsx # 9D Pose 标注页面（Mesh/点云等）
 │   │   │   ├── ImageList.tsx         # 图像列表组件
 │   │   │   ├── ImageUploader.tsx     # 图像上传组件
 │   │   │   ├── LandingPage.tsx       # 首页导览组件
 │   │   │   ├── ManualAnnotation.tsx  # 手动标注组件
+│   │   │   ├── MeshUploader.tsx      # Mesh 上传组件（OBJ/资源）
+│   │   │   ├── MeshPreview3D.tsx     # 3D Mesh 预览组件（Three.js）
+│   │   │   ├── MeshThumbnail.tsx     # Mesh 缩略图组件（静态截图）
 │   │   │   └── *.css                 # 样式文件
 │   │   ├── services/      # API服务
 │   │   │   └── api.ts                # 后端API接口
@@ -370,6 +381,14 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 
 ## 开发进展
 
+### V2.0 最新进展（2026年3月11日）
+- [x] **9D Pose 模块启动开发**：
+  - 新增 9D Pose 标注页面与底部 Mesh 列表视图
+  - 支持按项目上传/管理 OBJ Mesh，并返回同目录资源文件列表（MTL/贴图等）
+  - Three.js 3D 预览：OrbitControls、光照/网格、自动居中缩放
+  - Mesh 缩略图：自动取景，并支持视角偏移/拉远以获得更完整的模型展示
+  - 贴图加载链路增强：兼容大小写差异与同目录资源加载（开发环境下 `/uploads` 资源指向后端）
+
 ### V1.9 最新功能（2026年3月9日）
 - [x] **管理员系统**：
   - 增加管理员登录入口与会话管理（基于 `express-session`）
@@ -444,7 +463,8 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 
 ### 待完善功能
 - [ ] 进一步优化 SAM2 推理性能（大图显存控制、多图批处理能力）
-- [ ] 9D Pose标注模块开发
+- [ ] 9D Pose 标注工作流完善：标注交互（姿态/关键点/坐标系）、与 2D/深度/点云对齐、数据落库与导出格式
+- [ ] 9D Pose：点云/深度数据的导入规范化（文件命名绑定、坐标系约定）与可视化增强
 - [ ] 标注数据导出格式扩展（COCO、YOLO、Pascal VOC 等格式）
 - [ ] 更丰富的标注工具
 - [ ] 批量操作功能

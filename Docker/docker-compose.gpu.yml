@@ -1,0 +1,49 @@
+name: dax-autolabeling
+
+services:
+  sam2:
+    image: ${SAM2_IMAGE:-dax-sam2:local}
+    ports:
+      - "7860:7860"
+    environment:
+      SAM2_CHECKPOINT: ${SAM2_CHECKPOINT:-/sam2-assets/checkpoints/sam2_hiera_large.pt}
+      # SAM2_MODEL_CFG 使用 Hydra 配置名（不是磁盘路径）
+      SAM2_MODEL_CFG: ${SAM2_MODEL_CFG:-configs/sam2/sam2_hiera_l.yaml}
+      # NVIDIA runtime hints (works when NVIDIA Container Toolkit is installed)
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  api:
+    image: ${API_IMAGE:-dax-api:local}
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      SESSION_SECRET: ${SESSION_SECRET:-CHANGE_ME}
+      GROUNDED_SAM2_API_URL: ${GROUNDED_SAM2_API_URL:-http://sam2:7860/api/auto-label}
+    depends_on:
+      - sam2
+    volumes:
+      - ./data/uploads:/app/server/uploads:rw
+      - ./data/database:/app/database:rw
+    networks:
+      default:
+        aliases:
+          - dax-api
+
+  web:
+    image: ${WEB_IMAGE:-dax-web:local}
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
+

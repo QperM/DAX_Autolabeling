@@ -39,13 +39,14 @@ function deleteProjectFolder(projectId) {
   
   const projectDir = path.join(__dirname, 'uploads', `project_${projectId}`);
   if (fs.existsSync(projectDir)) {
-    try {
-      // 递归删除文件夹及其所有内容
-      fs.rmSync(projectDir, { recursive: true, force: true });
-      console.log(`✅ 已删除项目文件夹: ${projectDir}`);
-    } catch (err) {
+    // ⚠️ 这里不要用 rmSync：项目较大（例如含大量 depth/mesh 文件）会阻塞事件循环，导致前端请求超时
+    fs.rm(projectDir, { recursive: true, force: true }, (err) => {
+      if (err) {
       console.error(`❌ 删除项目文件夹失败: ${projectDir}`, err);
+      } else {
+        console.log(`✅ 已删除项目文件夹: ${projectDir}`);
     }
+    });
   }
 }
 
@@ -76,6 +77,13 @@ function initializeDatabase() {
         console.warn('创建access_code唯一索引:', idxErr.message);
       }
     });
+  });
+  
+  // 为已有的projects表添加locked列（如果不存在）
+  db.run('ALTER TABLE projects ADD COLUMN locked INTEGER DEFAULT 0', (alterErr) => {
+    if (alterErr && !alterErr.message.includes('duplicate column name')) {
+      console.warn('为projects表添加locked列:', alterErr.message);
+    }
   });
   
   // 创建users表（管理员）
@@ -166,6 +174,63 @@ function initializeDatabase() {
       console.log('✅ annotations表创建成功');
     }
   });
+
+  // 创建 meshes 表（用于存储 OBJ / Mesh 相关元信息）
+  db.run(`
+    CREATE TABLE IF NOT EXISTS meshes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      file_size INTEGER,
+      upload_time TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE
+    )
+  `, (err) => {
+    if (err) {
+      console.error('创建 meshes 表失败:', err.message);
+    } else {
+      console.log('✅ meshes 表创建成功');
+    }
+  });
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_meshes_project_id ON meshes(project_id)', (err) => {
+    if (err) console.error('为 meshes.project_id 创建索引失败:', err.message);
+  });
+
+  // 创建 depth_maps 表（用于存储深度图 / 深度原始数据）
+  db.run(`
+    CREATE TABLE IF NOT EXISTS depth_maps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      image_id INTEGER,
+      role TEXT,          -- 例如 left / right / head
+      modality TEXT,      -- depth_png / depth_raw 等
+      filename TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      file_size INTEGER,
+      upload_time TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+      FOREIGN KEY (image_id) REFERENCES images (id) ON DELETE SET NULL
+    )
+  `, (err) => {
+    if (err) {
+      console.error('创建 depth_maps 表失败:', err.message);
+    } else {
+      console.log('✅ depth_maps 表创建成功');
+    }
+  });
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_depth_project_id ON depth_maps(project_id)', (err) => {
+    if (err) console.error('为 depth_maps.project_id 创建索引失败:', err.message);
+  });
+  db.run('ALTER TABLE depth_maps ADD COLUMN image_id INTEGER', (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.warn('为 depth_maps 添加 image_id 列失败:', err.message);
+    }
+  });
   
   // 创建项目-图片关联表
   db.run(`
@@ -233,6 +298,106 @@ const database = {
       // 确保正确获取 lastID
       const lastID = this.lastID;
       callback(null, lastID);
+    });
+  },
+
+  // 插入 Mesh 信息（OBJ 等）
+  insertMesh: (meshData, callback) => {
+    const sql = `
+      INSERT INTO meshes (project_id, filename, original_name, file_path, file_size, upload_time)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `;
+    const params = [
+      meshData.projectId,
+      meshData.filename,
+      meshData.originalName,
+      meshData.path,
+      meshData.size,
+      meshData.uploadTime,
+    ];
+
+    db.run(sql, params, function (err) {
+      if (err) {
+        return callback(err, null);
+      }
+      callback(null, this.lastID);
+    });
+  },
+
+  // 根据项目 ID 获取 Mesh 列表
+  getMeshesByProjectId: (projectId, callback) => {
+    const sql = `
+      SELECT id, project_id, filename, original_name, file_path, file_size, upload_time
+      FROM meshes
+      WHERE project_id = ?
+      ORDER BY upload_time DESC
+    `;
+    db.all(sql, [projectId], callback);
+  },
+
+  // 插入深度图 / 深度原始文件
+  insertDepthMap: (depthData, callback) => {
+    const sql = `
+      INSERT INTO depth_maps (project_id, image_id, role, modality, filename, original_name, file_path, file_size, upload_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    const params = [
+      depthData.projectId,
+      depthData.imageId || null,
+      depthData.role || null,
+      depthData.modality || null,
+      depthData.filename,
+      depthData.originalName,
+      depthData.path,
+      depthData.size,
+      depthData.uploadTime,
+    ];
+
+    db.run(sql, params, function (err) {
+      if (err) {
+        return callback(err, null);
+      }
+      callback(null, this.lastID);
+    });
+  },
+
+  // 根据项目 ID 获取深度数据列表
+  getDepthMapsByProjectId: (projectId, callback) => {
+    const sql = `
+      SELECT id, project_id, image_id, role, modality, filename, original_name, file_path, file_size, upload_time
+      FROM depth_maps
+      WHERE project_id = ?
+      ORDER BY upload_time DESC
+    `;
+    db.all(sql, [projectId], callback);
+  },
+
+  // 根据项目 ID + 图片 ID 获取深度数据列表
+  getDepthMapsByImageId: (projectId, imageId, callback) => {
+    const sql = `
+      SELECT id, project_id, image_id, role, modality, filename, original_name, file_path, file_size, upload_time
+      FROM depth_maps
+      WHERE project_id = ? AND image_id = ?
+      ORDER BY upload_time DESC
+    `;
+    db.all(sql, [projectId, imageId], callback);
+  },
+
+  // 批量将 depth_maps 绑定到某张图片（image_id）
+  bindDepthMapsToImage: (projectId, depthIds, imageId, callback) => {
+    if (!Array.isArray(depthIds) || depthIds.length === 0) {
+      if (callback) callback(null, 0);
+      return;
+    }
+    const placeholders = depthIds.map(() => '?').join(',');
+    const sql = `
+      UPDATE depth_maps
+      SET image_id = ?
+      WHERE project_id = ? AND id IN (${placeholders})
+    `;
+    const params = [imageId, projectId, ...depthIds];
+    db.run(sql, params, function (err) {
+      if (callback) callback(err, this.changes);
     });
   },
 
@@ -517,6 +682,22 @@ const database = {
     });
   },
   
+  // 锁定/解锁项目
+  toggleProjectLock: (projectId, locked) => {
+    return new Promise((resolve, reject) => {
+      db.run('UPDATE projects SET locked = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', 
+        [locked ? 1 : 0, projectId], function(err) {
+        if (err) reject(err);
+        else {
+          db.get('SELECT * FROM projects WHERE id = ?', [projectId], (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
+          });
+        }
+      });
+    });
+  },
+  
   updateProject: (id, name, description) => {
     return new Promise((resolve, reject) => {
       const stmt = db.prepare('UPDATE projects SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
@@ -676,6 +857,20 @@ const database = {
         if (err) reject(err);
         else resolve(row);
       });
+    });
+  },
+
+  // 更新用户密码（管理员）
+  updateUserPassword: (userId, passwordHash) => {
+    return new Promise((resolve, reject) => {
+      db.run(
+        'UPDATE users SET password_hash = ? WHERE id = ?',
+        [passwordHash, userId],
+        function (err) {
+          if (err) return reject(err);
+          resolve(this.changes || 0);
+        },
+      );
     });
   },
   

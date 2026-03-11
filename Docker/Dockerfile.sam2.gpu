@@ -1,0 +1,98 @@
+# SAM2 FastAPI service (GPU)
+# - Base image: NVIDIA CUDA runtime (Ubuntu)
+# - Installs PyTorch CUDA wheels + segment-anything-2
+# - Exposes 7860
+#
+# Build:
+#   docker build -f Docker/Dockerfile.sam2.gpu -t <registry>/<repo>/dax-sam2:<tag> .
+#
+# Runtime env (recommend via K8s env + PVC mounts):
+#   - SAM2_CHECKPOINT=/sam2-assets/checkpoints/xxx.pt
+#   - SAM2_MODEL_CFG=/sam2-assets/configs/sam2/xxx.yaml
+#
+
+ARG CUDA_IMAGE=nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM ${CUDA_IMAGE} AS runner
+
+WORKDIR /app
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# System deps
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    ca-certificates \
+    git \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install -U pip
+
+# Optional: local wheelhouse to avoid repeated downloads.
+# Put wheels under `Docker/wheels/` (you can generate it with `Docker/prefetch_sam2_wheels.ps1`).
+COPY Docker/wheels /wheels
+
+# ------------------------------------------------------------
+# Layering for fast rebuilds:
+# - Put the slow, rarely-changing dependency installs first.
+# - Copy app code last so editing app.py doesn't invalidate torch installs.
+# ------------------------------------------------------------
+
+# 1) Python deps (fastapi, pillow, etc.) - cacheable
+COPY server/sam2-service/requirements.txt /app/requirements.txt
+
+# Bake model assets into the image (checkpoint + cfg).
+# Put files under `Docker/sam2-assets/`:
+# - Docker/sam2-assets/checkpoints/sam2_hiera_large.pt
+# - Docker/sam2-assets/configs/sam2/sam2_hiera_l.yaml
+COPY Docker/sam2-assets /sam2-assets
+
+# Install baseline deps
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install -r /app/requirements.txt
+
+# Install PyTorch (CUDA). Prefer local wheels if present; otherwise download.
+# Default: cu121 (CUDA 12.1)
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+ENV PIP_DEFAULT_TIMEOUT=120
+ENV PIP_RETRIES=10
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if ls /wheels/torch-*.whl >/dev/null 2>&1; then \
+      echo "[build] Using local wheelhouse /wheels for torch install"; \
+      pip3 install --no-index --find-links=/wheels torch torchvision torchaudio; \
+    else \
+      echo "[build] No local torch wheels found; downloading from ${TORCH_INDEX_URL} (and PyPI for deps)"; \
+      pip3 install torch torchvision torchaudio --index-url ${TORCH_INDEX_URL} --extra-index-url https://pypi.org/simple; \
+    fi
+
+# Install SAM2 from vendored grounded-sam2 (no GitHub access needed)
+# We disable CUDA extension build here to avoid requiring full CUDA toolkit/nvcc;
+# inference will still run using PyTorch CUDA.
+ENV SAM2_BUILD_CUDA=0
+WORKDIR /app/grounded-sam2
+COPY server/sam2-service/grounded-sam2 /app/grounded-sam2
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install -e .
+
+# Ensure NumPy / scikit-image ABI compatibility
+# - SAM2 requires numpy>=1.24.4
+# - Some skimage wheels are not yet compatible with numpy>=2
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install "numpy>=1.24.4,<2.0.0" "scikit-image>=0.24.0"
+
+# 2) App code (changes frequently) - copy last
+WORKDIR /app
+COPY server/sam2-service/app.py /app/app.py
+
+# Default model checkpoint path (config name stays as SAM2 default: configs/sam2/sam2_hiera_l.yaml)
+ENV SAM2_CHECKPOINT=/sam2-assets/checkpoints/sam2_hiera_large.pt
+
+EXPOSE 7860
+
+WORKDIR /app
+CMD ["python3", "/app/app.py"]
+

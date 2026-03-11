@@ -29,6 +29,14 @@ const LandingPage: React.FC = () => {
   const [adminPassword, setAdminPassword] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState('');
+
+  // 管理员：重设密码
+  const [showResetPasswordModal, setShowResetPasswordModal] = useState(false);
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
+  const [resettingPassword, setResettingPassword] = useState(false);
+  const [resetPasswordError, setResetPasswordError] = useState('');
   
   // 管理员面板
   
@@ -42,8 +50,10 @@ const LandingPage: React.FC = () => {
   const [showProjectList, setShowProjectList] = useState(false);
   // 是否显示项目描述弹窗
   const [showDescriptionModal, setShowDescriptionModal] = useState(false);
+  const [descriptionModalProjectId, setDescriptionModalProjectId] = useState<number | null>(null);
   const [descriptionModalTitle, setDescriptionModalTitle] = useState('');
   const [descriptionModalContent, setDescriptionModalContent] = useState('');
+  const [savingDescription, setSavingDescription] = useState(false);
   // 是否显示“新建项目”弹窗
   const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
   // 新建项目表单
@@ -53,6 +63,8 @@ const LandingPage: React.FC = () => {
 
   // 删除项目时的加载状态
   const [deletingProjectId, setDeletingProjectId] = useState<number | null>(null);
+  // 锁定/解锁项目时的加载状态
+  const [togglingLockProjectId, setTogglingLockProjectId] = useState<number | null>(null);
   const navigate = useNavigate();
 
   // 初始化：检查登录状态和加载项目
@@ -130,9 +142,10 @@ const LandingPage: React.FC = () => {
       return;
     }
     
+    setVerifyingCode(true);
+    setCodeError('');
+    
     try {
-      setVerifyingCode(true);
-      setCodeError('');
       const result = await authApi.verifyCode(accessCode.trim().toUpperCase());
       
       if (result.success) {
@@ -147,7 +160,12 @@ const LandingPage: React.FC = () => {
       }
     } catch (error: any) {
       console.error('验证码验证失败', error);
-      setCodeError(error.response?.data?.error || '验证码无效，请重试');
+      // 检查是否是项目锁定错误
+      if (error.response?.status === 403 && error.response?.data?.error?.includes('锁定')) {
+        setCodeError('项目已锁定，请联系管理员');
+      } else {
+        setCodeError(error.response?.data?.error || '验证码无效，请重试');
+      }
     } finally {
       setVerifyingCode(false);
     }
@@ -201,18 +219,54 @@ const LandingPage: React.FC = () => {
     }
   };
 
+  const handleOpenResetPassword = () => {
+    setCurrentPasswordInput('');
+    setNewPasswordInput('');
+    setConfirmPasswordInput('');
+    setResetPasswordError('');
+    setShowResetPasswordModal(true);
+  };
+
+  const handleChangePassword = async () => {
+    if (!currentPasswordInput || !newPasswordInput || !confirmPasswordInput) {
+      setResetPasswordError('请填写当前密码、新密码与确认密码');
+      return;
+    }
+    if (newPasswordInput !== confirmPasswordInput) {
+      setResetPasswordError('两次输入的新密码不一致');
+      return;
+    }
+    if (newPasswordInput.length < 8) {
+      setResetPasswordError('新密码至少 8 位');
+      return;
+    }
+
+    try {
+      setResettingPassword(true);
+      setResetPasswordError('');
+      await authApi.changePassword(currentPasswordInput, newPasswordInput, confirmPasswordInput);
+      setShowResetPasswordModal(false);
+      alert('密码已更新');
+    } catch (error: any) {
+      console.error('修改密码失败', error);
+      setResetPasswordError(error.response?.data?.error || '修改密码失败，请稍后重试');
+    } finally {
+      setResettingPassword(false);
+    }
+  };
+
   const availableModules = [
-    { id: '2d-bbox-mask', name: '2D Bbox/Mask 标注', description: '基础的2D边界框和Mask标注功能' },
-    { id: '9d-pose', name: '9D Pose 标注', description: '3D姿态标注（待开发）', disabled: true },
+    { id: '2d-bbox-mask', name: '2D Bbox/Mask 标注', description: '基础的2D边界框和Mask标注功能', disabled: false },
+    // 9D Pose 当前版本不开放：首次打包只保留 2D 功能
+    { id: '9d-pose', name: '9D Pose 标注', description: '3D姿态标注（开发中）', disabled: true },
   ];
 
   const handleModuleToggle = (moduleId: string) => {
     console.log('切换模块:', moduleId);
-    setSelectedModules(prev => {
-      const newSelected = prev.includes(moduleId) 
-        ? prev.filter(id => id !== moduleId)
-        : [...prev, moduleId];
-      console.log('新的选中模块:', newSelected);
+    // 单选：同一时间只能选中一个模块，避免组合模块导致流程/路由混乱
+    setSelectedModules((prev) => {
+      const newSelected = prev.includes(moduleId) ? [] : [moduleId];
+      console.log('新的选中模块(单选):', newSelected);
       return newSelected;
     });
   };
@@ -302,9 +356,83 @@ const LandingPage: React.FC = () => {
   // 查看项目描述
   const handleShowProjectDescription = (project: any, e: React.MouseEvent) => {
     e.stopPropagation();
+    setDescriptionModalProjectId(project.id);
     setDescriptionModalTitle(project.name || `项目 ${project.id}`);
     setDescriptionModalContent(project.description || '暂无描述');
     setShowDescriptionModal(true);
+  };
+
+  // 保存项目描述（管理员）
+  const handleSaveProjectDescription = async () => {
+    if (!isAdmin || descriptionModalProjectId == null) return;
+
+    try {
+      setSavingDescription(true);
+      // 找到当前要更新的项目，确保同时携带 name，避免后端 name 变为 null/undefined
+      const targetProject =
+        projects.find(p => p.id === descriptionModalProjectId) ||
+        (currentProject && currentProject.id === descriptionModalProjectId ? currentProject : null);
+
+      const updatedProject = await projectApi.updateProject(descriptionModalProjectId, {
+        name: targetProject?.name,
+        description: descriptionModalContent,
+      });
+
+      // 更新项目列表
+      setProjects(prev =>
+        prev.map(p => (p.id === updatedProject.id ? { ...p, ...updatedProject } : p)),
+      );
+
+      // 如果当前项目是这个项目，同步更新
+      if (currentProject && currentProject.id === updatedProject.id) {
+        setCurrentProject({ ...currentProject, ...updatedProject });
+        setStoredCurrentProject({ ...currentProject, ...updatedProject });
+      }
+
+      alert('项目描述已更新');
+    } catch (error) {
+      console.error('更新项目描述失败:', error);
+      alert('更新项目描述失败，请稍后重试或检查后端服务');
+    } finally {
+      setSavingDescription(false);
+    }
+  };
+
+  // 锁定/解锁项目
+  const handleToggleProjectLock = async (project: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (togglingLockProjectId !== null) return;
+
+    const action = project.locked ? '解锁' : '锁定';
+    const confirmed = window.confirm(`确定要${action}项目 "${project.name}" 吗？${project.locked ? '解锁后，用户可以通过验证码访问该项目。' : '锁定后，只有管理员可以访问该项目，普通用户输入验证码后将无法访问。'}`);
+    if (!confirmed) return;
+
+    try {
+      setTogglingLockProjectId(project.id);
+      const updatedProject = await adminApi.toggleProjectLock(project.id);
+
+      // 更新项目列表中的项目状态，保留原有项目的所有字段，只更新 locked 字段
+      setProjects(prev => prev.map(p => {
+        if (p.id === project.id) {
+          // 保留原有项目的所有字段，只更新返回的字段
+          return { ...p, ...updatedProject };
+        }
+        return p;
+      }));
+
+      // 如果当前项目被锁定/解锁，更新当前项目状态
+      if (currentProject && currentProject.id === project.id) {
+        setCurrentProject({ ...currentProject, ...updatedProject });
+        setStoredCurrentProject({ ...currentProject, ...updatedProject });
+      }
+
+      alert(`项目 "${project.name}" 已${action}`);
+    } catch (error) {
+      console.error(`${action}项目失败:`, error);
+      alert(`${action}项目失败，请检查后端服务是否正常运行`);
+    } finally {
+      setTogglingLockProjectId(null);
+    }
   };
 
   // 删除项目
@@ -358,7 +486,11 @@ const LandingPage: React.FC = () => {
     // 存储选择的模块到当前标签页
     setStoredSelectedModules(selectedModules);
     console.log('导航到标注页面');
-    navigate('/annotate');
+    // 模块路由分发：
+    // - 仅选 9D Pose：进入 pose 页面
+    // - 其他情况：默认进入 2D 标注页面（后续可扩展为模块组合工作流）
+    const onlyPose = selectedModules.length === 1 && selectedModules[0] === '9d-pose';
+    navigate(onlyPose ? '/pose' : '/annotate');
   };
   
   // 重新生成项目验证码（管理员）
@@ -506,6 +638,94 @@ const LandingPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* 管理员重设密码弹窗 */}
+      {showResetPasswordModal && (
+        <div className="access-code-overlay">
+          <div className="access-code-modal">
+            <div className="access-code-header">
+              <h2>重设密码</h2>
+              <p className="access-code-hint">请输入当前密码并设置新密码（需两次确认）</p>
+            </div>
+            <div className="access-code-body">
+              <div className="form-group">
+                <label>当前密码</label>
+                <input
+                  type="password"
+                  className="access-code-input"
+                  placeholder="请输入当前密码"
+                  value={currentPasswordInput}
+                  onChange={(e) => {
+                    setCurrentPasswordInput(e.target.value);
+                    setResetPasswordError('');
+                  }}
+                  disabled={resettingPassword}
+                  autoFocus
+                />
+              </div>
+              <div className="form-group">
+                <label>新密码</label>
+                <input
+                  type="password"
+                  className="access-code-input"
+                  placeholder="至少8位"
+                  value={newPasswordInput}
+                  onChange={(e) => {
+                    setNewPasswordInput(e.target.value);
+                    setResetPasswordError('');
+                  }}
+                  disabled={resettingPassword}
+                />
+              </div>
+              <div className="form-group">
+                <label>确认新密码</label>
+                <input
+                  type="password"
+                  className="access-code-input"
+                  placeholder="请再次输入新密码"
+                  value={confirmPasswordInput}
+                  onChange={(e) => {
+                    setConfirmPasswordInput(e.target.value);
+                    setResetPasswordError('');
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !resettingPassword) {
+                      handleChangePassword();
+                    }
+                  }}
+                  disabled={resettingPassword}
+                />
+              </div>
+              {resetPasswordError && <div className="access-code-error">{resetPasswordError}</div>}
+            </div>
+            <div className="access-code-actions">
+              <button
+                className="access-code-btn primary"
+                onClick={handleChangePassword}
+                disabled={
+                  resettingPassword ||
+                  !currentPasswordInput ||
+                  !newPasswordInput ||
+                  !confirmPasswordInput
+                }
+              >
+                {resettingPassword ? '提交中...' : '确认修改'}
+              </button>
+              <button
+                className="access-code-btn secondary"
+                onClick={() => {
+                  if (resettingPassword) return;
+                  setShowResetPasswordModal(false);
+                  setResetPasswordError('');
+                }}
+                disabled={resettingPassword}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       
       <div className="landing-content">
         <header className="landing-header">
@@ -520,7 +740,16 @@ const LandingPage: React.FC = () => {
             {isAuthenticated && (
               <div className="project-selection-header-right">
                 <div className="user-info">
-                  {isAdmin && <span className="admin-badge">管理员</span>}
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      className="admin-badge admin-badge-btn"
+                      onClick={handleOpenResetPassword}
+                      title="重设管理员密码"
+                    >
+                      管理员
+                    </button>
+                  )}
                   {currentUser && <span className="username">{currentUser.username}</span>}
                 </div>
                 <button className="logout-btn" onClick={handleLogout}>
@@ -651,8 +880,8 @@ const LandingPage: React.FC = () => {
                                   className="copy-code-btn"
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    const btn = e.currentTarget as HTMLButtonElement;
                                     navigator.clipboard.writeText(project.access_code).then(() => {
-                                      const btn = e.currentTarget;
                                       btn.textContent = '✅';
                                       setTimeout(() => { btn.textContent = '📋'; }, 1500);
                                     });
@@ -679,13 +908,25 @@ const LandingPage: React.FC = () => {
                         <div className="project-column updated">{new Date(project.updated_at).toLocaleString()}</div>
                         <div className="project-column actions">
                           {isAdmin && (
-                          <button
-                            className="project-delete-btn"
-                            onClick={(e) => handleDeleteProject(project, e)}
-                            disabled={deletingProjectId === project.id}
-                          >
-                            {deletingProjectId === project.id ? '删除中...' : '删除'}
-                          </button>
+                            <>
+                              <button
+                                className="project-lock-btn"
+                                onClick={(e) => handleToggleProjectLock(project, e)}
+                                disabled={togglingLockProjectId === project.id}
+                                title={project.locked ? '解锁项目' : '锁定项目'}
+                              >
+                                {togglingLockProjectId === project.id 
+                                  ? (project.locked ? '解锁中...' : '锁定中...')
+                                  : (project.locked ? '🔒' : '🔓')}
+                              </button>
+                              <button
+                                className="project-delete-btn"
+                                onClick={(e) => handleDeleteProject(project, e)}
+                                disabled={deletingProjectId === project.id}
+                              >
+                                {deletingProjectId === project.id ? '删除中...' : '删除'}
+                              </button>
+                            </>
                           )}
                         </div>
                       </div>
@@ -783,20 +1024,6 @@ const LandingPage: React.FC = () => {
           </div>
         </div>
 
-        {/* 9D Pose 提示 */}
-        {selectedModules.includes('9d-pose') && (
-          <div className="warning-box">
-            <h3>⚠️ 9D Pose 模块注意事项</h3>
-            <p>9D Pose标注需要相机参数和深度图等额外信息，请确保这批数据包含：</p>
-            <ul>
-              <li>相机内参矩阵</li>
-              <li>深度图像数据</li>
-              <li>对应的RGB图像</li>
-            </ul>
-            <p>缺少这些信息可能导致标注结果不准确。</p>
-          </div>
-        )}
-
         {/* 底部操作按钮 */}
         <div className="actions">
           <button 
@@ -825,17 +1052,21 @@ const LandingPage: React.FC = () => {
             <div className="description-modal-body">
               <textarea
                 className="description-textarea"
-                readOnly
+                readOnly={!isAdmin}
                 value={descriptionModalContent}
+                onChange={isAdmin ? (e) => setDescriptionModalContent(e.target.value) : undefined}
               />
             </div>
             <div className="description-modal-footer">
-              <button
-                className="description-close-btn"
-                onClick={() => setShowDescriptionModal(false)}
-              >
-                知道了
-              </button>
+              {isAdmin && (
+                <button
+                  className="description-save-btn"
+                  onClick={handleSaveProjectDescription}
+                  disabled={savingDescription}
+                >
+                  {savingDescription ? '保存中...' : '保存'}
+                </button>
+              )}
             </div>
           </div>
         </div>

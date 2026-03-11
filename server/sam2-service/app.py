@@ -19,8 +19,8 @@ try:
 except ImportError:
     torch = None
 
-build_sam2 = None
-SAM2AutomaticMaskGenerator = None
+    build_sam2 = None
+    SAM2AutomaticMaskGenerator = None
 
 for module_name, attr_name in [
     ("sam2.build_sam", "build_sam2"),
@@ -111,14 +111,18 @@ def load_sam2_model():
                 f"\n- 已尝试 fallback: {fallback_ckpt}"
             )
 
-    cfg = os.environ.get("SAM2_MODEL_CFG", "configs/sam2/sam2_hiera_l.yaml").strip()
-    if cfg and not os.path.exists(cfg):
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        fallback_cfg = os.path.join(base_dir, "grounded-sam2", "sam2", "configs", "sam2", "sam2_hiera_l.yaml")
-        if os.path.exists(fallback_cfg):
-            cfg = fallback_cfg
-            os.environ["SAM2_MODEL_CFG"] = cfg
-            print(f"[SAM2服务] ⚠️ SAM2_MODEL_CFG 路径不存在，已自动使用: {cfg}")
+    # SAM2_MODEL_CFG 使用 Hydra 的“配置名”，例如 "configs/sam2/sam2_hiera_l.yaml"。
+    # 注意：这不是文件路径，不应该用 os.path.exists 去判断；build_sam2 内部会通过 Hydra 搜索路径加载。
+    #
+    # 如果用户错误地传入了绝对路径（以 "/" 开头），我们将其转换为相对配置名：
+    #   "/xxx/sam2_hiera_l.yaml" -> "configs/sam2/sam2_hiera_l.yaml"
+    raw_cfg = os.environ.get("SAM2_MODEL_CFG", "configs/sam2/sam2_hiera_l.yaml").strip()
+    if raw_cfg.startswith("/"):
+        base = os.path.splitext(os.path.basename(raw_cfg))[0]
+        cfg = f"configs/sam2/{base}.yaml"
+        print(f"[SAM2服务] ⚠️ SAM2_MODEL_CFG 是绝对路径，已转换为配置名: {raw_cfg} -> {cfg}")
+    else:
+        cfg = raw_cfg or "configs/sam2/sam2_hiera_l.yaml"
 
     print(f"[SAM2服务] 正在加载 SAM2 模型: cfg={cfg}, ckpt={ckpt}, device={device}")
     sam2_model = build_sam2(cfg, ckpt, device=device)
@@ -142,7 +146,7 @@ async def startup_event():
             print("[SAM2服务] ⚠️  CUDA 不可用，将使用 CPU（性能较慢）")
     except Exception as e:
         print(f"[SAM2服务] ⚠️  无法检查 CUDA 状态: {str(e)}")
-
+    
     print("[SAM2服务] ✅ 服务启动完成，监听端口 7860")
     print("[SAM2服务] ========================================")
 
@@ -167,7 +171,7 @@ async def health_check():
             gpu_available = torch.cuda.is_available()
     except Exception:
         pass
-
+    
     return {
         "status": "ok",
         "service": "SAM2 API",
@@ -201,13 +205,13 @@ async def auto_label(
         print("  - 后端: sam2_amg")
         print(
             "  - SAM2 AMG 参数: "
-            f"sam2_points_per_side={sam2_points_per_side}, "
-            f"sam2_pred_iou_thresh={sam2_pred_iou_thresh}, "
-            f"sam2_stability_score_thresh={sam2_stability_score_thresh}, "
-            f"sam2_box_nms_thresh={sam2_box_nms_thresh}, "
-            f"sam2_min_mask_region_area={sam2_min_mask_region_area}, "
-            f"max_polygon_points={max_polygon_points}"
-        )
+                f"sam2_points_per_side={sam2_points_per_side}, "
+                f"sam2_pred_iou_thresh={sam2_pred_iou_thresh}, "
+                f"sam2_stability_score_thresh={sam2_stability_score_thresh}, "
+                f"sam2_box_nms_thresh={sam2_box_nms_thresh}, "
+                f"sam2_min_mask_region_area={sam2_min_mask_region_area}, "
+                f"max_polygon_points={max_polygon_points}"
+            )
 
         load_sam2_model()
 

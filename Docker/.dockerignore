@@ -1,0 +1,10 @@
+**/node_modules
+**/.git
+**/.DS_Store
+**/dist
+**/.cache
+**/.pytest_cache
+**/__pycache__
+**/*.log
+server/uploads
+database

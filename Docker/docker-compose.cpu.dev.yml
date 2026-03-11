@@ -1,0 +1,49 @@
+name: dax-autolabeling
+
+services:
+  sam2:
+    image: ${SAM2_IMAGE:-dax-sam2:local}
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile.sam2.gpu
+    ports:
+      - "7860:7860"
+    environment:
+      SAM2_CHECKPOINT: ${SAM2_CHECKPOINT:-/sam2-assets/checkpoints/sam2_hiera_large.pt}
+      # SAM2_MODEL_CFG 使用 Hydra 配置名（而不是文件路径）。
+      # 默认建议使用：configs/sam2/sam2_hiera_l.yaml（Hydra 配置名，不是磁盘路径）
+      SAM2_MODEL_CFG: ${SAM2_MODEL_CFG:-configs/sam2/sam2_hiera_l.yaml}
+    # 开发模式如需 GPU，请叠加使用 `docker-compose.gpu.dev.yml`
+
+  api:
+    image: ${API_IMAGE:-dax-api:local}
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile.api
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      SESSION_SECRET: ${SESSION_SECRET:-CHANGE_ME}
+      GROUNDED_SAM2_API_URL: ${GROUNDED_SAM2_API_URL:-http://sam2:7860/api/auto-label}
+    depends_on:
+      - sam2
+    volumes:
+      - ./data/uploads:/app/server/uploads:rw
+      - ./data/database:/app/database:rw
+    networks:
+      default:
+        aliases:
+          - dax-api
+
+  web:
+    image: ${WEB_IMAGE:-dax-web:local}
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile.web
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+

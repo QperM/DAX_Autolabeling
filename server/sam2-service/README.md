@@ -152,7 +152,7 @@ Node.js 后端（`server/index.js`）已配置为连接此服务：
 
 ### 必需环境变量
 
-- `SAM2_CHECKPOINT`: checkpoint 文件路径
+  - `SAM2_CHECKPOINT`: checkpoint 文件路径
 - `SAM2_MODEL_CFG`: cfg 名称/路径（默认 `configs/sam2/sam2_hiera_l.yaml`；如果你使用本项目自带的 `grounded-sam2` 目录，脚本会自动指向对应文件）
 
 ## 注意事项

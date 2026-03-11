@@ -74,3 +74,10 @@ server/uploads/
 # Embedded SAM2 / checkpoints（仅本地使用，不入 Git）
 server/sam2-service/grounded-sam2/
 *.pt
+
+# Large local artifacts / images (do not commit)
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tar.xz

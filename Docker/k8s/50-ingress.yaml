@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dax-ingress
+  namespace: dax-autolabeling
+  annotations:
+    # If using nginx ingress controller, you may need:
+    # nginx.ingress.kubernetes.io/proxy-body-size: "3000m"
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    #
+    # Uploads can be large (ZIP). Adjust per your ingress controller.
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: dax.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dax-web
+                port:
+                  number: 80
+

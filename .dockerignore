@@ -1,0 +1,32 @@
+**/node_modules
+**/.git
+**/.DS_Store
+**/dist
+**/.cache
+**/.pytest_cache
+**/__pycache__
+**/*.log
+
+# runtime data (should be persisted externally, not baked into images)
+server/uploads
+database
+
+# ==== SAM2 vendored repo: keep runtime code only; exclude dev/demo artifacts ====
+server/sam2-service/grounded-sam2/.git
+server/sam2-service/grounded-sam2/checkpoints
+server/sam2-service/grounded-sam2/gdino_checkpoints
+server/sam2-service/grounded-sam2/assets
+server/sam2-service/grounded-sam2/demo
+server/sam2-service/grounded-sam2/demo_images
+server/sam2-service/grounded-sam2/notebooks
+server/sam2-service/grounded-sam2/sav_dataset
+server/sam2-service/grounded-sam2/training
+server/sam2-service/grounded-sam2/tools
+
+# Exclude large media & notebooks anywhere
+**/*.mp4
+**/*.ipynb
+
+# Exclude all PyTorch weights by default; we only bake the intended SAM2 weights under Docker/sam2-assets/
+**/*.pt
+!Docker/sam2-assets/checkpoints/*.pt

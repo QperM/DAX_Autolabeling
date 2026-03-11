@@ -2,10 +2,12 @@ import axios from 'axios';
 import type { Image, UploadResponse, AutoAnnotationResponse } from '../types';
 
 // 项目类型定义
-interface Project {
+export interface Project {
   id: number;
   name: string;
   description: string;
+  access_code?: string | null;
+  locked?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -22,7 +24,27 @@ interface CreateProjectRequest {
   description?: string;
 }
 
-const API_BASE_URL = 'http://localhost:3001/api';
+// API 基础地址：
+// - 开发模式（Vite dev server，端口 5173）：直接打到 http://localhost:3001/api，保持原来的跨域 + Cookie 方案，避免代理导致的 Cookie 丢失
+// - 生产/打包（Docker + Nginx）：使用相对路径 /api，由 Nginx 反向代理到 dax-api:3001
+const API_BASE_URL =
+  import.meta.env.MODE === 'development'
+    ? 'http://localhost:3001/api'
+    : '/api';
+
+// uploads 静态资源地址（OBJ/MTL/贴图等）
+// 开发模式下必须指向 3001，否则 /uploads/... 会落到 Vite(5173) 导致 404 且后端无日志
+const UPLOADS_BASE_URL =
+  import.meta.env.MODE === 'development'
+    ? 'http://localhost:3001'
+    : '';
+
+function toAbsoluteUploadsUrl(u?: string | null): string | undefined {
+  if (!u) return undefined;
+  if (/^(blob:|data:|https?:\/\/)/i.test(u)) return u;
+  if (u.startsWith('/uploads/')) return `${UPLOADS_BASE_URL}${u}`;
+  return u;
+}
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -80,6 +102,87 @@ export const imageApi = {
   //   const response = await apiClient.get<Image>(`/images/${imageId}`);
   //   return response.data;
   // },
+};
+
+// 9D Pose Mesh (OBJ) upload API
+export const meshApi = {
+  uploadMeshes: async (
+    files: File[],
+    projectId: number | string,
+    onUploadProgress?: (progressPercent: number) => void
+  ): Promise<{ success: boolean; files: Array<{ id?: number; filename: string; originalName: string; size?: number; url: string }> }> => {
+    const formData = new FormData();
+    files.forEach((file) => {
+      formData.append('meshes', file);
+    });
+    formData.append('projectId', String(projectId));
+
+    const response = await apiClient.post('/meshes/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      onUploadProgress: (evt) => {
+        if (!onUploadProgress) return;
+        const total = evt.total || 0;
+        if (!total) return;
+        const pct = Math.round((evt.loaded / total) * 100);
+        onUploadProgress(Math.max(0, Math.min(100, pct)));
+      },
+    });
+    return response.data;
+  },
+  getMeshes: async (
+    projectId: number | string
+  ): Promise<Array<{ id: number; filename: string; originalName: string; size?: number; url: string; uploadTime?: string; assetDirUrl?: string; assets?: string[] }>> => {
+    const response = await apiClient.get<{ success: boolean; meshes: any[] }>('/meshes', {
+      params: { projectId },
+    });
+    const meshes = response.data.meshes || [];
+    return meshes.map((m: any) => ({
+      ...m,
+      url: toAbsoluteUploadsUrl(m?.url) || m?.url,
+      assetDirUrl: toAbsoluteUploadsUrl(m?.assetDirUrl),
+    }));
+  },
+};
+
+// 深度图 / 深度原始数据 API
+export const depthApi = {
+  uploadDepth: async (
+    files: File[],
+    projectId: number | string,
+    onUploadProgress?: (progressPercent: number) => void
+  ): Promise<{ success: boolean; files: Array<{ id?: number; filename: string; originalName: string; size?: number; url: string; role?: string; modality?: string }> }> => {
+    const formData = new FormData();
+    files.forEach((file) => {
+      formData.append('depthFiles', file);
+    });
+    formData.append('projectId', String(projectId));
+
+    const response = await apiClient.post('/depth/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      onUploadProgress: (evt) => {
+        if (!onUploadProgress) return;
+        const total = evt.total || 0;
+        if (!total) return;
+        const pct = Math.round((evt.loaded / total) * 100);
+        onUploadProgress(Math.max(0, Math.min(100, pct)));
+      },
+    });
+    return response.data;
+  },
+
+  getDepth: async (
+    projectId: number | string,
+    imageId?: number | string
+  ): Promise<Array<{ id: number; filename: string; originalName: string; size?: number; url: string; role?: string; modality?: string; uploadTime?: string; imageId?: number }>> => {
+    const params: any = { projectId };
+    if (imageId != null) params.imageId = imageId;
+    const response = await apiClient.get<{ success: boolean; depth: any[] }>('/depth', { params });
+    return response.data.depth || [];
+  },
 };
 
 // 上传 job 进度（ZIP 解压等）
@@ -152,7 +255,8 @@ export const projectApi = {
 
   // 删除项目
   deleteProject: async (projectId: number): Promise<void> => {
-    await apiClient.delete(`/projects/${projectId}`);
+    // 项目删除可能涉及大量文件（depth/mesh/images）清理，默认 30s timeout 容易误报超时
+    await apiClient.delete(`/projects/${projectId}`, { timeout: 5 * 60 * 1000 });
   },
 
   // 获取项目标注汇总
@@ -205,7 +309,17 @@ export const authApi = {
   getAccessibleProjects: async (): Promise<Project[]> => {
     const response = await apiClient.get<Project[]>('/auth/accessible-projects');
     return response.data;
-  }
+  },
+
+  // 管理员修改密码（需要已登录）
+  changePassword: async (currentPassword: string, newPassword: string, confirmPassword: string): Promise<{ success: boolean }> => {
+    const response = await apiClient.post<{ success: boolean }>('/auth/change-password', {
+      currentPassword,
+      newPassword,
+      confirmPassword,
+    });
+    return response.data;
+  },
 };
 
 // 管理员API
@@ -225,6 +339,12 @@ export const adminApi = {
   // 重新生成项目验证码
   regenerateAccessCode: async (projectId: number): Promise<Project> => {
     const response = await apiClient.post<Project>(`/admin/projects/${projectId}/regenerate-code`);
+    return response.data;
+  },
+  
+  // 锁定/解锁项目
+  toggleProjectLock: async (projectId: number): Promise<Project> => {
+    const response = await apiClient.post<Project>(`/admin/projects/${projectId}/toggle-lock`);
     return response.data;
   }
 };

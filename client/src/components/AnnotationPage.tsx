@@ -563,7 +563,7 @@ const AnnotationPage: React.FC = () => {
             alert('您没有访问该项目的权限，请重新输入验证码');
             navigate('/');
           } else {
-            dispatch(setError(err.message || '加载图像失败'));
+          dispatch(setError(err.message || '加载图像失败'));
           }
         } finally {
           dispatch(setLoading(false));
@@ -1588,7 +1588,22 @@ const AnnotationPage: React.FC = () => {
       }
     } catch (e: any) {
       console.error('[前端] 单张AI试标注失败:', e);
-      alert(e?.message || 'AI 试标注失败，请稍后重试');
+      
+      // 检查是否是服务器过载/排队响应
+      if (e?.response?.status === 429) {
+        const queueData = e?.response?.data;
+        const queuePosition = queueData?.queuePosition;
+        const estimatedWaitTime = queueData?.estimatedWaitTime;
+        
+        if (queuePosition) {
+          const waitMinutes = estimatedWaitTime ? Math.ceil(estimatedWaitTime / 60) : Math.ceil(queuePosition * 0.5);
+          alert(`服务器当前负载较高，您的任务已加入队列\n排队位置：第 ${queuePosition} 位\n预计等待时间：约 ${waitMinutes} 分钟\n请稍后重试`);
+        } else {
+          alert('服务器当前负载较高，请稍后重试');
+        }
+      } else {
+        alert(e?.message || 'AI 试标注失败，请稍后重试');
+      }
     } finally {
       dispatch(setLoading(false));
     }
@@ -1788,10 +1803,10 @@ const AnnotationPage: React.FC = () => {
             <div className="welcome-left-top">
               <div className="welcome-content">
                 {isAdmin ? (
-                  <ImageUploader 
-                    onUploadComplete={handleUploadComplete} 
-                    projectId={currentProject?.id}
-                  />
+                <ImageUploader 
+                  onUploadComplete={handleUploadComplete} 
+                  projectId={currentProject?.id}
+                />
                 ) : (
                   <div className="image-uploader">
                     <div className="dropzone disabled-dropzone">
@@ -2320,114 +2335,114 @@ const AnnotationPage: React.FC = () => {
                   SAM2 AMG
                 </div>
               </div>
-              <div className="model-param-row">
-                <div className="model-param-label">
-                  SAM2 points_per_side
-                  <span className="model-param-value">{modelParams.sam2PointsPerSide}</span>
-                </div>
-                <input
-                  type="range"
-                  min={8}
-                  max={64}
-                  step={4}
-                  value={modelParams.sam2PointsPerSide}
-                  onChange={(e) =>
-                    setModelParams((prev) => ({
-                      ...prev,
-                      sam2PointsPerSide: Number(e.target.value),
-                    }))
-                  }
-                />
-                <div className="model-param-hint">越大分割越细，但更慢（默认 32）。</div>
-              </div>
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      SAM2 points_per_side
+                      <span className="model-param-value">{modelParams.sam2PointsPerSide}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={8}
+                      max={64}
+                      step={4}
+                      value={modelParams.sam2PointsPerSide}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          sam2PointsPerSide: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">越大分割越细，但更慢（默认 32）。</div>
+                  </div>
 
-              <div className="model-param-row">
-                <div className="model-param-label">
-                  SAM2 pred_iou_thresh
-                  <span className="model-param-value">{modelParams.sam2PredIouThresh.toFixed(2)}</span>
-                </div>
-                <input
-                  type="range"
-                  min={0.5}
-                  max={0.98}
-                  step={0.02}
-                  value={modelParams.sam2PredIouThresh}
-                  onChange={(e) =>
-                    setModelParams((prev) => ({
-                      ...prev,
-                      sam2PredIouThresh: Number(e.target.value),
-                    }))
-                  }
-                />
-                <div className="model-param-hint">越高越严格，保留的 mask 更少（默认 0.88）。</div>
-              </div>
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      SAM2 pred_iou_thresh
+                      <span className="model-param-value">{modelParams.sam2PredIouThresh.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={0.98}
+                      step={0.02}
+                      value={modelParams.sam2PredIouThresh}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          sam2PredIouThresh: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">越高越严格，保留的 mask 更少（默认 0.88）。</div>
+                  </div>
 
-              <div className="model-param-row">
-                <div className="model-param-label">
-                  SAM2 stability_score_thresh
-                  <span className="model-param-value">{modelParams.sam2StabilityScoreThresh.toFixed(2)}</span>
-                </div>
-                <input
-                  type="range"
-                  min={0.5}
-                  max={0.98}
-                  step={0.02}
-                  value={modelParams.sam2StabilityScoreThresh}
-                  onChange={(e) =>
-                    setModelParams((prev) => ({
-                      ...prev,
-                      sam2StabilityScoreThresh: Number(e.target.value),
-                    }))
-                  }
-                />
-                <div className="model-param-hint">越高越偏向稳定的大块区域（默认 0.95）。</div>
-              </div>
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      SAM2 stability_score_thresh
+                      <span className="model-param-value">{modelParams.sam2StabilityScoreThresh.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={0.98}
+                      step={0.02}
+                      value={modelParams.sam2StabilityScoreThresh}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          sam2StabilityScoreThresh: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">越高越偏向稳定的大块区域（默认 0.95）。</div>
+                  </div>
 
-              <div className="model-param-row">
-                <div className="model-param-label">
-                  SAM2 box_nms_thresh
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      SAM2 box_nms_thresh
                   <span className="model-param-value">{modelParams.sam2BoxNmsThresh.toFixed(2)}</span>
-                </div>
-                <input
-                  type="range"
-                  min={0.3}
-                  max={0.95}
-                  step={0.05}
-                  value={modelParams.sam2BoxNmsThresh}
-                  onChange={(e) =>
-                    setModelParams((prev) => ({
-                      ...prev,
-                      sam2BoxNmsThresh: Number(e.target.value),
-                    }))
-                  }
-                />
-                <div className="model-param-hint">
-                  控制相邻 mask 的合并程度：越低越容易保留相近的多个目标，越高越容易合并（默认 0.70）。
-                </div>
-              </div>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={0.95}
+                      step={0.05}
+                      value={modelParams.sam2BoxNmsThresh}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          sam2BoxNmsThresh: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">
+                      控制相邻 mask 的合并程度：越低越容易保留相近的多个目标，越高越容易合并（默认 0.70）。
+                    </div>
+                  </div>
 
-              <div className="model-param-row">
-                <div className="model-param-label">
-                  SAM2 min_mask_region_area
+                  <div className="model-param-row">
+                    <div className="model-param-label">
+                      SAM2 min_mask_region_area
                   <span className="model-param-value">{modelParams.sam2MinMaskRegionArea}</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={20000}
-                  step={500}
-                  value={modelParams.sam2MinMaskRegionArea}
-                  onChange={(e) =>
-                    setModelParams((prev) => ({
-                      ...prev,
-                      sam2MinMaskRegionArea: Number(e.target.value),
-                    }))
-                  }
-                />
-                <div className="model-param-hint">
-                  过滤掉特别小的噪声区域（像素面积）。0 表示不过滤（默认 0，可按需要提高到几千）。
-                </div>
-              </div>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={20000}
+                      step={500}
+                      value={modelParams.sam2MinMaskRegionArea}
+                      onChange={(e) =>
+                        setModelParams((prev) => ({
+                          ...prev,
+                          sam2MinMaskRegionArea: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="model-param-hint">
+                      过滤掉特别小的噪声区域（像素面积）。0 表示不过滤（默认 0，可按需要提高到几千）。
+                    </div>
+                  </div>
 
               <div className="model-param-row">
                 <div className="model-param-label">

@@ -1,0 +1,21 @@
+name: dax-autolabeling
+
+services:
+  sam2:
+    # GPU enablement for local Docker Compose (dev overlay).
+    # Use with:
+    #   docker compose -f Docker/docker-compose.cpu.dev.yml -f Docker/docker-compose.gpu.dev.yml up -d --build
+    # Requires:
+    # - NVIDIA driver on host (nvidia-smi works)
+    # - NVIDIA Container Toolkit installed
+    # - Docker Desktop: WSL2 backend + GPU support (Windows)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
