@@ -308,12 +308,8 @@ const PoseAnnotationPage: React.FC = () => {
                     <div className="image-preview-wrapper">
                       <div className="preview-image-layer" style={{ width: '100%', height: '100%' }}>
                         <MeshPreview3D
-                          meshUrl={selectedPreviewMesh.url ? `http://localhost:3001${selectedPreviewMesh.url}` : null}
-                          assetDirUrl={
-                            selectedPreviewMesh.assetDirUrl
-                              ? `http://localhost:3001${selectedPreviewMesh.assetDirUrl}`
-                              : undefined
-                          }
+                          meshUrl={selectedPreviewMesh.url || null}
+                          assetDirUrl={selectedPreviewMesh.assetDirUrl || undefined}
                           assets={selectedPreviewMesh.assets}
                         />
                       </div>
@@ -504,11 +500,9 @@ const PoseAnnotationPage: React.FC = () => {
                               >
                                 <div className="thumbnail-image-layer">
                                   <MeshThumbnail
-                                    meshUrl={m.url ? `http://localhost:3001${m.url}` : null}
+                                    meshUrl={m.url || null}
                                     label={m.originalName || m.filename}
-                                    assetDirUrl={
-                                      m.assetDirUrl ? `http://localhost:3001${m.assetDirUrl}` : undefined
-                                    }
+                                    assetDirUrl={m.assetDirUrl || undefined}
                                     assets={m.assets}
                                   />
                                 </div>

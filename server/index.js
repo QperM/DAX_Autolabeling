@@ -13,6 +13,10 @@ const AdmZip = require('adm-zip');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// 统一的管理员账号配置（只允许这一个账号登录）
+const DEFAULT_ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'DaxAdmin';
+const DEFAULT_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+
 // ========== AI标注任务队列管理器 ==========
 // 非管理员用户最多同时10个并发任务
 const MAX_CONCURRENT_TASKS = 10;
@@ -170,7 +174,7 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    // 本地 Docker (http://localhost:8080) 下不能使用 secure，否则浏览器不会保存 Cookie
+    // 本地 Docker (http://localhost:38080) 下不能使用 secure，否则浏览器不会保存 Cookie
     // 通过环境变量显式控制，默认关闭；将来线上如果有 HTTPS，可以在部署时设置 SESSION_COOKIE_SECURE=true
     secure: process.env.SESSION_COOKIE_SECURE === 'true',
     httpOnly: true,
@@ -645,6 +649,10 @@ app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) {
       return res.status(400).json({ error: '用户名和密码不能为空' });
+    }
+    // 只允许统一配置的管理员账号登录，防止历史遗留的其它账号继续使用
+    if (username !== DEFAULT_ADMIN_USERNAME) {
+      return res.status(401).json({ error: '用户名或密码错误' });
     }
     
     const user = await db.getUserByUsername(username);
@@ -2165,15 +2173,13 @@ app.use((err, req, res, next) => {
 // 初始化默认管理员账号（如果不存在）
 async function initializeDefaultAdmin() {
   try {
-    const defaultUsername = process.env.ADMIN_USERNAME || 'DaxAdmin';
-    const adminUser = await db.getUserByUsername(defaultUsername);
+    const adminUser = await db.getUserByUsername(DEFAULT_ADMIN_USERNAME);
     if (!adminUser) {
-      // 默认密码：admin123（生产环境请修改！）
-      const defaultPassword = process.env.ADMIN_PASSWORD || 'admin123';
-      const passwordHash = await bcrypt.hash(defaultPassword, 10);
-      await db.createUser(defaultUsername, passwordHash);
-      console.log(`✅ 已创建默认管理员账号: ${defaultUsername}`);
-      console.log('⚠️  默认密码: admin123（请在生产环境中修改！）');
+      // 默认密码：DEFAULT_ADMIN_PASSWORD（生产环境请通过环境变量修改！）
+      const passwordHash = await bcrypt.hash(DEFAULT_ADMIN_PASSWORD, 10);
+      await db.createUser(DEFAULT_ADMIN_USERNAME, passwordHash);
+      console.log(`✅ 已创建默认管理员账号: ${DEFAULT_ADMIN_USERNAME}`);
+      console.log(`⚠️  默认密码: ${DEFAULT_ADMIN_PASSWORD}（请在生产环境中修改！）`);
       console.log('⚠️  可通过环境变量 ADMIN_USERNAME / ADMIN_PASSWORD 设置账号密码');
     } else {
       console.log('✅ 管理员账号已存在');

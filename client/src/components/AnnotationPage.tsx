@@ -19,12 +19,12 @@ type Sam2ModelParams = {
 };
 
 const DEFAULT_MODEL_PARAMS: Sam2ModelParams = {
-  maxPolygonPoints: 80,
-  sam2PointsPerSide: 32,
+  maxPolygonPoints: 60,
+  sam2PointsPerSide: 20,
   sam2PredIouThresh: 0.88,
   sam2StabilityScoreThresh: 0.95,
-  sam2BoxNmsThresh: 0.7,
-  sam2MinMaskRegionArea: 0,
+  sam2BoxNmsThresh: 0.55,
+  sam2MinMaskRegionArea: 6000,
 };
 
 const AnnotationPage: React.FC = () => {
@@ -2353,7 +2353,7 @@ const AnnotationPage: React.FC = () => {
                         }))
                       }
                     />
-                    <div className="model-param-hint">越大分割越细，但更慢（默认 32）。</div>
+                    <div className="model-param-hint">越大分割越细，但更慢（默认 20）。</div>
                   </div>
 
                   <div className="model-param-row">
@@ -2417,7 +2417,7 @@ const AnnotationPage: React.FC = () => {
                       }
                     />
                     <div className="model-param-hint">
-                      控制相邻 mask 的合并程度：越低越容易保留相近的多个目标，越高越容易合并（默认 0.70）。
+                      控制相邻 mask 的合并程度：越低越容易保留相近的多个目标，越高越容易合并（默认 0.55）。
                     </div>
                   </div>
 
@@ -2440,7 +2440,7 @@ const AnnotationPage: React.FC = () => {
                       }
                     />
                     <div className="model-param-hint">
-                      过滤掉特别小的噪声区域（像素面积）。0 表示不过滤（默认 0，可按需要提高到几千）。
+                      过滤掉特别小的噪声区域（像素面积）。0 表示不过滤（默认 6000，可按需要提高到几千）。
                     </div>
                   </div>
 
@@ -2465,7 +2465,7 @@ const AnnotationPage: React.FC = () => {
                   }
                 />
                 <div className="model-param-hint">
-                  控制从 mask 轮廓抽样的最大点数。越大边缘越贴合，但生成/渲染更重（默认 80）。
+                  控制从 mask 轮廓抽样的最大点数。越大边缘越贴合，但生成/渲染更重（默认 60）。
                 </div>
               </div>
             </div>

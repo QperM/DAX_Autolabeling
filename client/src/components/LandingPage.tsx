@@ -257,7 +257,6 @@ const LandingPage: React.FC = () => {
 
   const availableModules = [
     { id: '2d-bbox-mask', name: '2D Bbox/Mask 标注', description: '基础的2D边界框和Mask标注功能', disabled: false },
-    // 9D Pose 当前版本不开放：首次打包只保留 2D 功能
     { id: '9d-pose', name: '9D Pose 标注', description: '3D姿态标注（开发中）', disabled: true },
   ];
 

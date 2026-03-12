@@ -103,12 +103,12 @@ python app.py
 - Content-Type: `multipart/form-data`
 - 参数：
   - `image`: 图片文件（必需）
-  - `max_polygon_points` (可选): 轮廓最大点数（影响轮廓精细度，默认 80）
-  - `sam2_points_per_side` (可选): points_per_side（默认 32）
+  - `max_polygon_points` (可选): 轮廓最大点数（影响轮廓精细度，默认 60）
+  - `sam2_points_per_side` (可选): points_per_side（默认 20）
   - `sam2_pred_iou_thresh` (可选): pred_iou_thresh（默认 0.88）
   - `sam2_stability_score_thresh` (可选): stability_score_thresh（默认 0.95）
-  - `sam2_box_nms_thresh` (可选): box_nms_thresh（默认 0.7）
-  - `sam2_min_mask_region_area` (可选): min_mask_region_area（默认 0）
+  - `sam2_box_nms_thresh` (可选): box_nms_thresh（默认 0.55）
+  - `sam2_min_mask_region_area` (可选): min_mask_region_area（默认 6000）
 
 **响应格式：**
 ```json

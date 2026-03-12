@@ -106,9 +106,9 @@ docker exec -it dax-autolabeling-sam2-1 ls -lah /sam2-assets/checkpoints /sam2-a
 ```
 
 服务端口：
-- Web：`http://localhost:8080`
+- Web：`http://localhost:38080`
 - API：`http://localhost:3001`
-- SAM2：`http://localhost:7860`
+- SAM2：`http://localhost:37860`
 
 ### 1.5.4 冒烟测试（健康检查）
 

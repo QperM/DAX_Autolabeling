@@ -1,7 +1,7 @@
 param(
-  [string]$WebUrl = "http://localhost:8080",
+  [string]$WebUrl = "http://localhost:38080",
   [string]$ApiUrl = "http://localhost:3001",
-  [string]$Sam2Url = "http://localhost:7860"
+  [string]$Sam2Url = "http://localhost:37860"
 )
 
 $ErrorActionPreference = "Stop"

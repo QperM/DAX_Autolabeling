@@ -266,7 +266,7 @@ start.bat
 ```
 这会同时启动：
 - Node.js 后端服务（端口 3001）
-- Grounded SAM2 API 服务（端口 7860）
+- Grounded SAM2 API 服务（端口 7860，Docker 映射到宿主机 37860）
 - React 前端应用（端口 5173）
 
 **注意：首次使用需要配置 Python 环境**

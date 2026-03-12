@@ -139,8 +139,41 @@ async def startup_event():
     print("[SAM2服务] GPU 可用性检查...")
     try:
         if torch is not None and torch.cuda.is_available():
-            device = "cuda"
-            print(f"[SAM2服务] ✅ CUDA 可用，设备: {torch.cuda.get_device_name(0)}")
+            # Print detailed CUDA enumeration to avoid host-side "GPU0/GPU1" confusion.
+            print("[SAM2服务] CUDA 环境信息:")
+            try:
+                print(f"[SAM2服务]   - torch.__version__={getattr(torch, '__version__', 'unknown')}")
+                print(f"[SAM2服务]   - torch.version.cuda={getattr(getattr(torch, 'version', None), 'cuda', None)}")
+            except Exception:
+                pass
+
+            cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+            nvidia_visible = os.environ.get("NVIDIA_VISIBLE_DEVICES", "").strip()
+            cuda_order = os.environ.get("CUDA_DEVICE_ORDER", "").strip()
+            if cuda_order:
+                print(f"[SAM2服务]   - CUDA_DEVICE_ORDER={cuda_order}")
+            if cuda_visible:
+                print(f"[SAM2服务]   - CUDA_VISIBLE_DEVICES={cuda_visible}")
+            if nvidia_visible:
+                print(f"[SAM2服务]   - NVIDIA_VISIBLE_DEVICES={nvidia_visible}")
+
+            try:
+                count = int(torch.cuda.device_count())
+            except Exception:
+                count = -1
+            print(f"[SAM2服务]   - torch.cuda.device_count()={count}")
+            if count > 0:
+                for i in range(count):
+                    try:
+                        name = torch.cuda.get_device_name(i)
+                        cap = torch.cuda.get_device_capability(i)
+                        print(f"[SAM2服务]   - cuda:{i} name={name}, capability={cap}")
+                    except Exception as e:
+                        print(f"[SAM2服务]   - cuda:{i} 查询失败: {type(e).__name__}: {e}")
+
+            # Be explicit: use cuda:0
+            device = "cuda:0"
+            print(f"[SAM2服务] ✅ CUDA 可用，选择设备: {device}")
         else:
             device = "cpu"
             print("[SAM2服务] ⚠️  CUDA 不可用，将使用 CPU（性能较慢）")
@@ -185,12 +218,12 @@ async def health_check():
 @app.post("/api/auto-label")
 async def auto_label(
     image: UploadFile = File(..., description="要标注的图片文件"),
-    max_polygon_points: int = Form(80, description="轮廓最大点数（默认 80）"),
-    sam2_points_per_side: int = Form(32, description="SAM2 AMG points_per_side（默认 32）"),
+    max_polygon_points: int = Form(60, description="轮廓最大点数（默认 60）"),
+    sam2_points_per_side: int = Form(20, description="SAM2 AMG points_per_side（默认 20）"),
     sam2_pred_iou_thresh: float = Form(0.88, description="SAM2 AMG pred_iou_thresh（默认 0.88）"),
     sam2_stability_score_thresh: float = Form(0.95, description="SAM2 AMG stability_score_thresh（默认 0.95）"),
-    sam2_box_nms_thresh: float = Form(0.7, description="SAM2 AMG box_nms_thresh（默认 0.7）"),
-    sam2_min_mask_region_area: int = Form(0, description="SAM2 AMG min_mask_region_area（默认 0）"),
+    sam2_box_nms_thresh: float = Form(0.55, description="SAM2 AMG box_nms_thresh（默认 0.55）"),
+    sam2_min_mask_region_area: int = Form(6000, description="SAM2 AMG min_mask_region_area（默认 6000）"),
 ):
     try:
         image_bytes = await image.read()

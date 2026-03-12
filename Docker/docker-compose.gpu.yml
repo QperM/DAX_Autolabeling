@@ -3,27 +3,36 @@ name: dax-autolabeling
 services:
   sam2:
     image: ${SAM2_IMAGE:-dax-sam2:local}
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile.sam2.gpu
     ports:
-      - "7860:7860"
+      # Host port is customizable; container listens on 7860.
+      - "${SAM2_HOST_PORT:-37860}:7860"
+    # Local Docker Compose GPU enablement.
+    # NOTE: `deploy.resources.reservations.devices` is Swarm-oriented and is commonly ignored by local compose.
+    # `gpus: all` works with Docker Desktop + NVIDIA Container Toolkit (or Linux Docker + nvidia-container-toolkit).
+    gpus: all
     environment:
       SAM2_CHECKPOINT: ${SAM2_CHECKPOINT:-/sam2-assets/checkpoints/sam2_hiera_large.pt}
       # SAM2_MODEL_CFG 使用 Hydra 配置名（不是磁盘路径）
       SAM2_MODEL_CFG: ${SAM2_MODEL_CFG:-configs/sam2/sam2_hiera_l.yaml}
+      # Make CUDA device selection stable & explicit (prevents "sometimes GPU0/GPU1" confusion across hosts).
+      # - CUDA_DEVICE_ORDER=PCI_BUS_ID makes device indexing stable.
+      # - CUDA_VISIBLE_DEVICES=0 pins the container to the first visible NVIDIA GPU.
+      CUDA_DEVICE_ORDER: ${CUDA_DEVICE_ORDER:-PCI_BUS_ID}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
       # NVIDIA runtime hints (works when NVIDIA Container Toolkit is installed)
-      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   api:
     image: ${API_IMAGE:-dax-api:local}
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile.api
     ports:
-      - "3001:3001"
+      - "${API_HOST_PORT:-3001}:3001"
     environment:
       NODE_ENV: production
       PORT: "3001"
@@ -41,8 +50,11 @@ services:
 
   web:
     image: ${WEB_IMAGE:-dax-web:local}
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile.web
     ports:
-      - "8080:80"
+      - "${WEB_HOST_PORT:-38080}:80"
     depends_on:
       - api
 
