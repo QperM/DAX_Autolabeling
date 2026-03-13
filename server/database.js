@@ -175,6 +175,31 @@ function initializeDatabase() {
     }
   });
 
+  // 9D Pose：按 (image_id, mesh_id) 保存一条记录，JSON 原样存储
+  db.run(`
+    CREATE TABLE IF NOT EXISTS pose9d_annotations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      image_id INTEGER NOT NULL,
+      mesh_id INTEGER,
+      pose_json TEXT NOT NULL, -- JSON 字符串
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (image_id) REFERENCES images (id) ON DELETE CASCADE,
+      FOREIGN KEY (mesh_id) REFERENCES meshes (id) ON DELETE SET NULL,
+      UNIQUE(image_id, mesh_id)
+    )
+  `, (err) => {
+    if (err) {
+      console.error('创建 pose9d_annotations 表失败:', err.message);
+    } else {
+      console.log('✅ pose9d_annotations 表创建成功');
+    }
+  });
+
+  db.run('CREATE INDEX IF NOT EXISTS idx_pose9d_image_id ON pose9d_annotations(image_id)', (err) => {
+    if (err) console.error('为 pose9d_annotations.image_id 创建索引失败:', err.message);
+  });
+
   // 创建 meshes 表（用于存储 OBJ / Mesh 相关元信息）
   db.run(`
     CREATE TABLE IF NOT EXISTS meshes (
@@ -185,6 +210,7 @@ function initializeDatabase() {
       file_path TEXT NOT NULL,
       file_size INTEGER,
       upload_time TEXT NOT NULL,
+      sku_label TEXT,
       FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE
     )
   `, (err) => {
@@ -197,6 +223,13 @@ function initializeDatabase() {
 
   db.run('CREATE INDEX IF NOT EXISTS idx_meshes_project_id ON meshes(project_id)', (err) => {
     if (err) console.error('为 meshes.project_id 创建索引失败:', err.message);
+  });
+
+  // 兼容已有 DB：补充 sku_label 列（如果不存在）
+  db.run('ALTER TABLE meshes ADD COLUMN sku_label TEXT', (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.warn('为 meshes 表添加 sku_label 列失败:', err.message);
+    }
   });
 
   // 创建 depth_maps 表（用于存储深度图 / 深度原始数据）
@@ -327,12 +360,43 @@ const database = {
   // 根据项目 ID 获取 Mesh 列表
   getMeshesByProjectId: (projectId, callback) => {
     const sql = `
-      SELECT id, project_id, filename, original_name, file_path, file_size, upload_time
+      SELECT id, project_id, filename, original_name, file_path, file_size, upload_time, sku_label
       FROM meshes
       WHERE project_id = ?
       ORDER BY upload_time DESC
     `;
     db.all(sql, [projectId], callback);
+  },
+
+  getMeshById: (meshId, callback) => {
+    const sql = `
+      SELECT id, project_id, filename, original_name, file_path, file_size, upload_time
+      FROM meshes
+      WHERE id = ?
+      LIMIT 1
+    `;
+    db.get(sql, [meshId], callback);
+  },
+
+  deleteMeshById: (meshId, callback) => {
+    const sql = `DELETE FROM meshes WHERE id = ?`;
+    db.run(sql, [meshId], function (err) {
+      if (callback) callback(err, this.changes || 0);
+    });
+  },
+
+  deletePose9DByMeshId: (meshId, callback) => {
+    const sql = `DELETE FROM pose9d_annotations WHERE mesh_id = ?`;
+    db.run(sql, [meshId], function (err) {
+      if (callback) callback(err, this.changes || 0);
+    });
+  },
+
+  updateMeshSkuLabel: (meshId, skuLabel, callback) => {
+    const sql = `UPDATE meshes SET sku_label = ? WHERE id = ?`;
+    db.run(sql, [skuLabel ?? null, meshId], function (err) {
+      if (callback) callback(err, this.changes || 0);
+    });
   },
 
   // 插入深度图 / 深度原始文件
@@ -606,6 +670,84 @@ const database = {
     
     db.run(sql, params, function(err) {
       callback(err, this.changes);
+    });
+  },
+
+  // 保存 / 覆盖 9D Pose（按 image_id + mesh_id 唯一）
+  savePose9D: (imageId, meshId, poseJson, callback) => {
+    const meshIdVal = meshId == null ? null : Number(meshId);
+    const payload = typeof poseJson === 'string' ? poseJson : JSON.stringify(poseJson || {});
+    const sql = `
+      INSERT INTO pose9d_annotations (image_id, mesh_id, pose_json, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(image_id, mesh_id) DO UPDATE SET
+        pose_json = excluded.pose_json,
+        updated_at = CURRENT_TIMESTAMP
+    `;
+    db.run(sql, [imageId, meshIdVal, payload], function (err) {
+      if (err) return callback(err, null);
+      callback(null, this.lastID);
+    });
+  },
+
+  getPose9D: (imageId, meshId, callback) => {
+    const meshIdVal = meshId == null ? null : Number(meshId);
+    // 若 meshId 为空，则返回该 image 最新的一条 9D Pose（任意 mesh）
+    const baseSql = `
+      SELECT id, image_id, mesh_id, pose_json, created_at, updated_at
+      FROM pose9d_annotations
+      WHERE image_id = ?
+    `;
+    const sql =
+      meshIdVal == null
+        ? `${baseSql} ORDER BY updated_at DESC LIMIT 1`
+        : `${baseSql} AND mesh_id = ? ORDER BY updated_at DESC LIMIT 1`;
+    const params = meshIdVal == null ? [imageId] : [imageId, meshIdVal];
+    db.get(sql, params, (err, row) => {
+      if (err) return callback(err, null);
+      if (!row) return callback(null, null);
+      try {
+        row.pose = JSON.parse(row.pose_json || '{}');
+      } catch (e) {
+        row.pose = null;
+      }
+      callback(null, row);
+    });
+  },
+
+  // 获取某张图片下的全部 9D Pose（用于恢复多 Mesh 场景）
+  listPose9DByImageId: (imageId, callback) => {
+    const sql = `
+      SELECT id, image_id, mesh_id, pose_json, created_at, updated_at
+      FROM pose9d_annotations
+      WHERE image_id = ?
+      ORDER BY updated_at DESC
+    `;
+    db.all(sql, [imageId], (err, rows) => {
+      if (err) return callback(err, []);
+      const formatted = (rows || []).map((row) => {
+        const r = { ...row };
+        try {
+          r.pose = JSON.parse(row.pose_json || '{}');
+        } catch (e) {
+          r.pose = null;
+        }
+        return r;
+      });
+      callback(null, formatted);
+    });
+  },
+
+  deletePose9D: (imageId, meshId, callback) => {
+    const meshIdVal = meshId == null ? null : Number(meshId);
+    const sql = `
+      DELETE FROM pose9d_annotations
+      WHERE image_id = ? AND mesh_id ${meshIdVal == null ? 'IS NULL' : '= ?'}
+    `;
+    const params = meshIdVal == null ? [imageId] : [imageId, meshIdVal];
+    db.run(sql, params, function (err) {
+      if (err) return callback(err, 0);
+      callback(null, this.changes || 0);
     });
   },
 

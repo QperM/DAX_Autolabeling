@@ -288,7 +288,7 @@ const LandingPage: React.FC = () => {
 
   const availableModules = [
     { id: '2d-bbox-mask', name: '2D Bbox/Mask 标注', description: '基础的2D边界框和Mask标注功能', disabled: false },
-    { id: '9d-pose', name: '9D Pose 标注', description: '3D姿态标注（开发中）', disabled: true },
+    { id: '9d-pose', name: '9D Pose 标注', description: '3D姿态标注（开发中）', disabled: false },
   ];
 
   const handleModuleToggle = (moduleId: string) => {

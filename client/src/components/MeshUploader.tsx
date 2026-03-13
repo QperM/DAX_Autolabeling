@@ -32,57 +32,50 @@ const MeshUploader: React.FC<MeshUploaderProps> = ({ projectId, onUploadComplete
 
   const hasActiveProgress = useMemo(() => uploadProgress !== null, [uploadProgress]);
 
-  const onDrop = useCallback(
-    async (acceptedFiles: File[]) => {
-      try {
-        console.log('[MeshUploader] onDrop 接收到文件:', {
-          projectId,
-          count: acceptedFiles.length,
-          names: acceptedFiles.map((f) => f.name),
-        });
-        if (!projectId) {
-          alert('请先选择项目后再上传 Mesh（.obj）');
-          return;
-        }
-        if (!acceptedFiles || acceptedFiles.length === 0) return;
+  const isDepthName = useCallback((name: string) => /^(depth_raw_|depth_)/i.test(String(name || '').trim()), []);
+  const isMeshAssetExt = useCallback(
+    (name: string) => /\.(obj|mtl|png|jpg|jpeg|webp|bmp|tga|gif)$/i.test(String(name || '')),
+    []
+  );
+  const isDepthExt = useCallback((name: string) => /\.(png|tif|tiff|npy)$/i.test(String(name || '')), []);
 
-        dispatch(setLoading(true));
-        dispatch(setError(null));
-        setUploadProgress(0);
-
-        const isDepthName = (name: string) => /^(depth_raw_|depth_)/i.test(String(name || '').trim());
-        const isMeshAssetExt = (name: string) => /\.(obj|mtl|png|jpg|jpeg|webp|bmp|tga|gif)$/i.test(String(name || ''));
-        const isDepthExt = (name: string) => /\.(png|tif|tiff|npy)$/i.test(String(name || ''));
-
-        // 规则：
-        // - Mesh 资源：.obj/.mtl/贴图图片（但避免把 depth_*.png 当作贴图）
-        // - Depth 数据：depth_*.png / depth_raw_*.npy / depth_*.tif
-        const meshFiles = acceptedFiles.filter((f) => isMeshAssetExt(f.name) && !isDepthName(f.name));
-        const depthFiles = acceptedFiles.filter((f) => isDepthExt(f.name) && isDepthName(f.name));
-
-        console.log('[MeshUploader] 分类结果:', {
-          meshFiles: meshFiles.map((f) => f.name),
-          depthFiles: depthFiles.map((f) => f.name),
-        });
-
-        // 先上传 Mesh，再上传 Depth（如果都有的话）
-        if (meshFiles.length > 0) {
+  const uploadMeshes = useCallback(
+    async (meshFiles: File[]) => {
+      if (meshFiles.length === 0) return;
           console.log('[MeshUploader] 开始上传 Mesh 文件:', meshFiles.map((f) => f.name));
-          const resp = await meshApi.uploadMeshes(meshFiles, projectId, (pct) => setUploadProgress(pct));
+      const resp = await meshApi.uploadMeshes(meshFiles, projectId as any, (pct) => setUploadProgress(pct));
           console.log('[MeshUploader] /api/meshes/upload 响应:', resp);
           const files = (resp?.files || []) as UploadedMesh[];
           setUploaded((prev) => [...files, ...prev]);
           console.log('[MeshUploader] 已记录 Mesh 到前端状态，数量:', files.length);
           if (onUploadComplete) onUploadComplete(files);
-        }
+    },
+    [onUploadComplete, projectId]
+  );
 
-        if (depthFiles.length > 0) {
+  const uploadDepth = useCallback(
+    async (depthFiles: File[]) => {
+      if (depthFiles.length === 0) return;
           console.log('[MeshUploader] 开始上传 Depth 文件:', depthFiles.map((f) => f.name));
-          const respDepth = await depthApi.uploadDepth(depthFiles, projectId, (pct) => setUploadProgress(pct));
+      const respDepth = await depthApi.uploadDepth(depthFiles, projectId as any, (pct) => setUploadProgress(pct));
           console.log('[MeshUploader] /api/depth/upload 响应:', respDepth);
           const depthList = (respDepth?.files || []) as UploadedDepth[];
           setUploadedDepth((prev) => [...depthList, ...prev]);
+    },
+    [projectId]
+  );
+
+  const withUploadSession = useCallback(
+    async (fn: () => Promise<void>) => {
+      try {
+        if (!projectId) {
+          alert('请先选择项目后再上传 Mesh/深度数据');
+          return;
         }
+        dispatch(setLoading(true));
+        dispatch(setError(null));
+        setUploadProgress(0);
+        await fn();
       } catch (error: any) {
         console.error('❌ Mesh/Depth 上传失败:', error);
         console.error('❌ 详细错误响应:', error?.response?.data);
@@ -98,34 +91,116 @@ const MeshUploader: React.FC<MeshUploaderProps> = ({ projectId, onUploadComplete
         dispatch(setLoading(false));
       }
     },
-    [dispatch, onUploadComplete, projectId]
+    [dispatch, projectId]
   );
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
+  const onDropMesh = useCallback(
+    async (acceptedFiles: File[]) => {
+      console.log('[MeshUploader] onDropMesh 接收到文件:', {
+        projectId,
+        count: acceptedFiles.length,
+        names: acceptedFiles.map((f) => f.name),
+      });
+      if (!acceptedFiles || acceptedFiles.length === 0) return;
+      const meshFiles = acceptedFiles.filter((f) => isMeshAssetExt(f.name) && !isDepthName(f.name));
+      const depthLike = acceptedFiles.filter((f) => isDepthExt(f.name) && isDepthName(f.name));
+      console.log('[MeshUploader] onDropMesh 分类结果:', {
+        meshFiles: meshFiles.map((f) => f.name),
+        ignoredDepthLike: depthLike.map((f) => f.name),
+      });
+      await withUploadSession(async () => {
+        await uploadMeshes(meshFiles);
+      });
+    },
+    [isDepthExt, isDepthName, isMeshAssetExt, projectId, uploadMeshes, withUploadSession]
+  );
+
+  const onDropDepth = useCallback(
+    async (acceptedFiles: File[]) => {
+      console.log('[MeshUploader] onDropDepth 接收到文件:', {
+        projectId,
+        count: acceptedFiles.length,
+        names: acceptedFiles.map((f) => f.name),
+      });
+      if (!acceptedFiles || acceptedFiles.length === 0) return;
+      const depthFiles = acceptedFiles.filter((f) => isDepthExt(f.name) && isDepthName(f.name));
+      const meshLike = acceptedFiles.filter((f) => isMeshAssetExt(f.name) && !isDepthName(f.name));
+      console.log('[MeshUploader] onDropDepth 分类结果:', {
+        depthFiles: depthFiles.map((f) => f.name),
+        ignoredMeshLike: meshLike.map((f) => f.name),
+      });
+      await withUploadSession(async () => {
+        await uploadDepth(depthFiles);
+      });
+    },
+    [isDepthExt, isDepthName, isMeshAssetExt, projectId, uploadDepth, withUploadSession]
+  );
+
+  const {
+    getRootProps: getMeshRootProps,
+    getInputProps: getMeshInputProps,
+    isDragActive: isMeshDragActive,
+  } = useDropzone({
+    onDrop: onDropMesh,
     multiple: true,
     accept: {
-      'text/plain': ['.obj', '.mtl', '.npy'],
-      'application/octet-stream': ['.obj', '.mtl', '.npy'],
+      'text/plain': ['.obj', '.mtl'],
+      'application/octet-stream': ['.obj', '.mtl'],
       'image/png': ['.png'],
       'image/jpeg': ['.jpg', '.jpeg'],
       'image/webp': ['.webp'],
+    },
+  });
+
+  const {
+    getRootProps: getDepthRootProps,
+    getInputProps: getDepthInputProps,
+    isDragActive: isDepthDragActive,
+  } = useDropzone({
+    onDrop: onDropDepth,
+    multiple: true,
+    accept: {
+      'text/plain': ['.npy'],
+      'application/octet-stream': ['.npy'],
+      'image/png': ['.png'],
       'image/tiff': ['.tif', '.tiff'],
     },
   });
 
   return (
     <div className="image-uploader">
-      <div {...getRootProps()} className={`dropzone ${isDragActive ? 'drag-active' : ''}`}>
-        <input {...getInputProps()} />
-        {isDragActive ? (
-          <p>释放文件以上传...</p>
+      <div className="mesh-depth-dropzones">
+        <div
+          {...getDepthRootProps()}
+          className={`dropzone dropzone-depth ${isDepthDragActive ? 'drag-active' : ''}`}
+        >
+          <input {...getDepthInputProps()} />
+          {isDepthDragActive ? (
+            <p>释放深度数据以上传...</p>
         ) : (
           <div className="upload-prompt">
-            <p>拖拽 Mesh 到此处，或点击选择文件</p>
-            <p className="hint">支持 OBJ（.obj）Mesh 和深度图 PNG/TIFF、.npy 深度数据；RGB 图片仍在 2D 标注模块导入</p>
+              <div className="dropzone-title">深度数据</div>
+              <p>拖拽 depth_* 文件到此处，或点击选择文件</p>
+              <p className="hint">支持：depth_*.png / depth_*.tif(f) / depth_raw_*.npy</p>
           </div>
         )}
+        </div>
+
+        <div
+          {...getMeshRootProps()}
+          className={`dropzone dropzone-mesh ${isMeshDragActive ? 'drag-active' : ''}`}
+        >
+          <input {...getMeshInputProps()} />
+          {isMeshDragActive ? (
+            <p>释放 Mesh 资源以上传...</p>
+          ) : (
+            <div className="upload-prompt">
+              <div className="dropzone-title">Mesh 资源</div>
+              <p>拖拽 OBJ/MTL/贴图 到此处，或点击选择文件</p>
+              <p className="hint">支持：.obj + .mtl + 贴图（png/jpg/webp/bmp/tga/gif）</p>
+            </div>
+          )}
+        </div>
       </div>
 
       {hasActiveProgress && (

@@ -8,9 +8,11 @@ interface MeshPreview3DProps {
   meshUrl: string | null;
   assetDirUrl?: string;
   assets?: string[];
+  /** 是否加载 MTL/贴图（调试用） */
+  enableTexture?: boolean;
 }
 
-const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, assets }) => {
+const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, assets, enableTexture = true }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -35,17 +37,6 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
-    keyLight.position.set(2, 4, 5);
-    scene.add(keyLight);
-
-    const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
-    fillLight.position.set(-3, 2, -4);
-    scene.add(fillLight);
-
-    const ambient = new THREE.AmbientLight(0xffffff, 0.35);
-    scene.add(ambient);
 
     const grid = new THREE.GridHelper(4, 8, 0x4b5563, 0x1f2937);
     grid.position.y = -0.5;
@@ -134,7 +125,7 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
       obj.position.sub(center);
     };
 
-    // 优先走 “OBJ(text) + MTL + 贴图” 链路；没有 mtllib 则退化为纯 OBJ
+    // 优先走 “OBJ(text) + MTL + 贴图” 链路；可通过 enableTexture 关闭，强制纯 OBJ（方便看几何/法线）
     (async () => {
       try {
         const objText = await loadText(meshUrl);
@@ -142,7 +133,7 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
 
         const objLoader = new OBJLoader(manager);
         const mtlToLoad = pickMtlCandidate(mtlName, assets);
-        if (mtlToLoad) {
+        if (enableTexture && mtlToLoad) {
           const mtlLoader = new MTLLoader(manager);
           mtlLoader.setPath(baseDir);
           // 让 MTL 内引用的贴图从同目录加载
@@ -157,17 +148,24 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
         const obj = objLoader.parse(objText);
         meshGroup = obj;
 
-        // 如果 OBJ/MTL 没给材质，也别强行覆盖（覆盖会导致贴图丢失）
-        // 仅补一个轻量的光照增强：让没有贴图的模型也更易看
+        // “无光渲染”模式：统一转为 MeshBasicMaterial，直接展示贴图，不受光照影响。
         obj.traverse((child: THREE.Object3D) => {
           if ((child as THREE.Mesh).isMesh) {
             const mesh = child as THREE.Mesh;
-            if (!mesh.material) {
-              mesh.material = new THREE.MeshStandardMaterial({
-                color: 0x4ade80,
-                metalness: 0.2,
-                roughness: 0.7,
-              });
+            const origMat = mesh.material as any;
+            const toBasic = (mat: any) => {
+              if (!mat) return new THREE.MeshBasicMaterial({ color: 0xd1d5db });
+              const map = mat.map as THREE.Texture | undefined;
+              if (map) {
+                return new THREE.MeshBasicMaterial({ map });
+              }
+              const color = (mat.color && (mat.color as THREE.Color).getHex()) || 0xd1d5db;
+              return new THREE.MeshBasicMaterial({ color });
+            };
+            if (Array.isArray(origMat)) {
+              mesh.material = origMat.map((m) => toBasic(m));
+            } else {
+              mesh.material = toBasic(origMat);
             }
           }
         });
@@ -208,7 +206,7 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
       }
       container.innerHTML = '';
     };
-  }, [meshUrl, assetDirUrl, assets]);
+  }, [meshUrl, assetDirUrl, assets, enableTexture]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
 };

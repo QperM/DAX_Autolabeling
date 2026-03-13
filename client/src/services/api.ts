@@ -178,7 +178,7 @@ export const meshApi = {
   },
   getMeshes: async (
     projectId: number | string
-  ): Promise<Array<{ id: number; filename: string; originalName: string; size?: number; url: string; uploadTime?: string; assetDirUrl?: string; assets?: string[] }>> => {
+  ): Promise<Array<{ id: number; filename: string; originalName: string; size?: number; url: string; uploadTime?: string; assetDirUrl?: string; assets?: string[]; skuLabel?: string | null }>> => {
     const response = await apiClient.get<{ success: boolean; meshes: any[] }>('/meshes', {
       params: { projectId },
     });
@@ -188,6 +188,17 @@ export const meshApi = {
       url: toAbsoluteUploadsUrl(m?.url) || m?.url,
       assetDirUrl: toAbsoluteUploadsUrl(m?.assetDirUrl),
     }));
+  },
+  deleteMesh: async (meshId: number | string): Promise<{ success: boolean; changes?: number; message?: string }> => {
+    const response = await apiClient.delete(`/meshes/${meshId}`);
+    return response.data;
+  },
+  updateMesh: async (
+    meshId: number | string,
+    payload: { skuLabel?: string | null },
+  ): Promise<{ success: boolean; changes?: number; message?: string }> => {
+    const response = await apiClient.put(`/meshes/${meshId}`, payload);
+    return response.data;
   },
 };
 
@@ -288,6 +299,26 @@ export const annotationApi = {
   // 获取标注
   getAnnotation: async (imageId: number): Promise<any> => {
     const response = await apiClient.get(`/annotations/${imageId}`);
+    return response.data;
+  },
+};
+
+// 9D Pose API
+export const pose9dApi = {
+  savePose9D: async (imageId: number | string, payload: any): Promise<any> => {
+    const response = await apiClient.post(`/pose9d/${imageId}`, payload);
+    return response.data;
+  },
+  getPose9D: async (imageId: number | string, meshId?: number | string | null): Promise<any> => {
+    const response = await apiClient.get(`/pose9d/${imageId}`, { params: meshId != null ? { meshId } : undefined });
+    return response.data;
+  },
+  listPose9D: async (imageId: number | string): Promise<any> => {
+    const response = await apiClient.get(`/pose9d/${imageId}/all`);
+    return response.data;
+  },
+  deletePose9D: async (imageId: number | string, meshId?: number | string | null): Promise<any> => {
+    const response = await apiClient.delete(`/pose9d/${imageId}`, { params: meshId != null ? { meshId } : undefined });
     return response.data;
   },
 };

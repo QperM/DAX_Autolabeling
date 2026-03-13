@@ -28,6 +28,7 @@ const PoseAnnotationPage: React.FC = () => {
     url: string;
     assetDirUrl?: string;
     assets?: string[];
+    skuLabel?: string | null;
   } | null>(null);
   const [imageCacheBust, setImageCacheBust] = useState(0);
   const [bottomViewMode, setBottomViewMode] = useState<'images' | 'meshes'>('images');
@@ -39,8 +40,56 @@ const PoseAnnotationPage: React.FC = () => {
       url: string;
       assetDirUrl?: string;
       assets?: string[];
+      skuLabel?: string | null;
     }>
   >([]);
+  const [meshSkuDraft, setMeshSkuDraft] = useState<string>('');
+  const [meshSkuSaving, setMeshSkuSaving] = useState(false);
+  const [meshPreviewTextureEnabled, setMeshPreviewTextureEnabled] = useState(true);
+  const [projectLabelOptions, setProjectLabelOptions] = useState<Array<{ label: string; color: string }>>([]);
+
+  // 从 2D 的 “Mask Label 对照表” 复用项目级 label 列表（localStorage: labelColorMap:${projectId}）
+  useEffect(() => {
+    if (!currentProject?.id) return;
+    const key = `labelColorMap:${currentProject.id}`;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) {
+        setProjectLabelOptions([]);
+        return;
+      }
+      const obj = JSON.parse(raw) as Record<string, string>;
+      const pairs = Object.entries(obj)
+        .map(([label, color]) => ({ label: (label || '').trim(), color: (color || '').trim() }))
+        .filter((p) => p.label && p.color);
+      pairs.sort((a, b) => a.label.localeCompare(b.label, 'zh-Hans-CN'));
+      setProjectLabelOptions(pairs);
+    } catch (e) {
+      console.warn('[PoseAnnotationPage] 读取 labelColorMap 失败:', e);
+      setProjectLabelOptions([]);
+    }
+  }, [currentProject?.id]);
+
+  const selectedSkuColor = useMemo(() => {
+    const label = (meshSkuDraft || '').trim();
+    if (!label) return null;
+    const hit = projectLabelOptions.find((p) => p.label === label);
+    return hit?.color || null;
+  }, [meshSkuDraft, projectLabelOptions]);
+
+  const handlePreviewMeshNavigate = (direction: 'prev' | 'next') => {
+    if (!selectedPreviewMesh?.id) return;
+    const idx = projectMeshes.findIndex((m) => m.id === selectedPreviewMesh.id);
+    if (idx < 0) return;
+    const nextIdx = direction === 'prev' ? idx - 1 : idx + 1;
+    if (nextIdx < 0 || nextIdx >= projectMeshes.length) return;
+    setSelectedPreviewMesh(projectMeshes[nextIdx] as any);
+  };
+
+  useEffect(() => {
+    // 切换预览 Mesh 时同步 sku draft
+    setMeshSkuDraft(String(selectedPreviewMesh?.skuLabel || ''));
+  }, [selectedPreviewMesh?.id]);
 
   // 缩略图虚拟滚动（与 AnnotationPage 一致的思路：只渲染视口范围内）
   const thumbnailsScrollRef = useRef<HTMLDivElement | null>(null);
@@ -285,7 +334,17 @@ const PoseAnnotationPage: React.FC = () => {
             {/* 左上：布局模仿 AnnotationPage，但内部功能先留空（只先放 Mesh 上传区） */}
             <div className="welcome-left-top">
               <div className="welcome-content">
-                <MeshUploader projectId={currentProject?.id} />
+                <MeshUploader
+                  projectId={currentProject?.id}
+                  onUploadComplete={(meshes) => {
+                    if (!meshes || meshes.length === 0) return;
+                    // 新上传的 Mesh 追加到列表头部，并切换到底部 Mesh 视图，方便立即预览
+                    setProjectMeshes((prev) => [...meshes, ...prev]);
+                    if (bottomViewMode !== 'meshes') {
+                      setBottomViewMode('meshes');
+                    }
+                  }}
+                />
 
                 <div style={{ marginTop: '1rem', color: '#666', fontSize: '0.95rem' }}>
                   <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>功能占位</div>
@@ -306,14 +365,149 @@ const PoseAnnotationPage: React.FC = () => {
                         ×
                       </button>
                     </div>
-                    <div className="image-preview-wrapper">
+                    <div className="image-preview-wrapper" style={{ position: 'relative' }}>
                       <div className="preview-image-layer" style={{ width: '100%', height: '100%' }}>
                         <MeshPreview3D
                           meshUrl={selectedPreviewMesh.url || null}
                           assetDirUrl={selectedPreviewMesh.assetDirUrl || undefined}
                           assets={selectedPreviewMesh.assets}
+                          enableTexture={meshPreviewTextureEnabled}
                         />
                       </div>
+                      {/* 左上角悬浮：贴图开关 */}
+                      <button
+                        type="button"
+                        onClick={() => setMeshPreviewTextureEnabled((v) => !v)}
+                        title={meshPreviewTextureEnabled ? '已加载贴图（点击关闭）' : '未加载贴图（点击开启）'}
+                        style={{
+                          position: 'absolute',
+                          top: 10,
+                          left: 10,
+                          zIndex: 10,
+                          padding: '0.35rem 0.55rem',
+                          borderRadius: 10,
+                          border: '1px solid rgba(255,255,255,0.18)',
+                          background: meshPreviewTextureEnabled ? 'rgba(34,197,94,0.22)' : 'rgba(148,163,184,0.22)',
+                          color: '#e5e7eb',
+                          fontSize: '0.85rem',
+                          cursor: 'pointer',
+                          backdropFilter: 'blur(6px)',
+                        }}
+                      >
+                        {meshPreviewTextureEnabled ? 'Texture: ON' : 'Texture: OFF'}
+                      </button>
+                    </div>
+                    {/* 底部工具栏（Mesh 预览）- 样式对齐图片预览的 preview-actions */}
+                    <div className="preview-actions">
+                      <button
+                        className="nav-image-btn prev-image-btn"
+                        onClick={() => handlePreviewMeshNavigate('prev')}
+                        disabled={
+                          !selectedPreviewMesh?.id || projectMeshes.findIndex((m) => m.id === selectedPreviewMesh.id) <= 0
+                        }
+                      >
+                        ← 上一个
+                      </button>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                          <div style={{ color: '#666', fontSize: '0.9rem' }}>Label</div>
+                          <span
+                            title={selectedSkuColor ? `颜色：${selectedSkuColor}` : '未选择'}
+                            style={{
+                              width: 10,
+                              height: 10,
+                              borderRadius: 999,
+                              background: selectedSkuColor || '#e5e7eb',
+                              border: '1px solid rgba(0,0,0,0.12)',
+                              display: 'inline-block',
+                            }}
+                          />
+                          <select
+                            value={meshSkuDraft}
+                            onChange={(e) => setMeshSkuDraft(e.target.value)}
+                            style={{
+                              padding: '0.4rem 0.55rem',
+                              borderRadius: 10,
+                              border: '1px solid #d0d7e2',
+                              minWidth: 220,
+                              background: '#fff',
+                              color: '#111',
+                            }}
+                            title="从 2D Mask Label 对照表中选择（不允许手动输入）"
+                          >
+                            <option value="" disabled>
+                              请选择…
+                            </option>
+                            {projectLabelOptions.map((p) => (
+                              <option key={p.label} value={p.label}>
+                                {p.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          style={{ background: '#16a34a', borderColor: '#15803d', color: '#fff' }}
+                          disabled={!selectedPreviewMesh?.id || meshSkuSaving}
+                          onClick={async () => {
+                            if (!selectedPreviewMesh?.id) return;
+                            try {
+                              setMeshSkuSaving(true);
+                              await meshApi.updateMesh(selectedPreviewMesh.id, { skuLabel: meshSkuDraft.trim() || null });
+                              setProjectMeshes((prev) =>
+                                prev.map((m) =>
+                                  m.id === selectedPreviewMesh.id ? { ...m, skuLabel: meshSkuDraft.trim() || null } : m,
+                                ),
+                              );
+                              setSelectedPreviewMesh((prev) =>
+                                prev ? ({ ...prev, skuLabel: meshSkuDraft.trim() || null } as any) : prev,
+                              );
+                            } catch (e: any) {
+                              console.error('[PoseAnnotationPage] 更新 Mesh SKU/Label 失败:', e);
+                              alert(e?.message || '更新 SKU/Label 失败');
+                            } finally {
+                              setMeshSkuSaving(false);
+                            }
+                          }}
+                          title="保存该 Mesh 的 SKU/Label 绑定（入库）"
+                        >
+                          {meshSkuSaving ? '保存中...' : '保存绑定'}
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          style={{ background: '#dc2626', borderColor: '#b91c1c', color: '#fff' }}
+                          onClick={async () => {
+                            if (!selectedPreviewMesh?.id) return;
+                            const ok = window.confirm(`确定删除 Mesh：${selectedPreviewMesh.originalName || selectedPreviewMesh.filename} ？`);
+                            if (!ok) return;
+                            try {
+                              await meshApi.deleteMesh(selectedPreviewMesh.id);
+                              setProjectMeshes((prev) => prev.filter((m) => m.id !== selectedPreviewMesh.id));
+                              setSelectedPreviewMesh(null);
+                            } catch (e: any) {
+                              console.error('[PoseAnnotationPage] 删除 Mesh 失败:', e);
+                              alert(e?.message || '删除 Mesh 失败');
+                            }
+                          }}
+                          title="删除该 Mesh（会同时删除其 9D Pose 记录）"
+                        >
+                          删除 Mesh
+                        </button>
+                      </div>
+
+                      <button
+                        className="nav-image-btn next-image-btn"
+                        onClick={() => handlePreviewMeshNavigate('next')}
+                        disabled={
+                          !selectedPreviewMesh?.id ||
+                          projectMeshes.findIndex((m) => m.id === selectedPreviewMesh.id) === projectMeshes.length - 1
+                        }
+                      >
+                        下一个 →
+                      </button>
                     </div>
                   </div>
                 ) : (

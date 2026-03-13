@@ -1325,6 +1325,7 @@ app.get('/api/meshes', async (req, res) => {
         originalName: row.original_name,
         size: row.file_size,
         uploadTime: row.upload_time,
+        skuLabel: row.sku_label || null,
         url: buildImageUrl(row.file_path, row.filename),
         // 资源目录 & 目录内文件列表（用于兼容旧数据：OBJ 引用的 mtl/贴图文件名可能与落盘名不一致）
         assetDirUrl: buildUploadsDirUrl(path.dirname(row.file_path || '')),
@@ -1346,6 +1347,114 @@ app.get('/api/meshes', async (req, res) => {
   } catch (error) {
     console.error('❌ GET /api/meshes 处理失败:', error);
     return res.status(500).json({ success: false, message: '获取 Mesh 列表失败' });
+  }
+});
+
+// 更新 Mesh 元信息（目前仅支持 skuLabel），需要 Mesh 所属项目的访问权限
+app.put('/api/meshes/:id', async (req, res) => {
+  try {
+    const meshId = Number(req.params.id);
+    if (!meshId || Number.isNaN(meshId)) {
+      return res.status(400).json({ success: false, message: '非法的 meshId' });
+    }
+    const skuLabel = req.body?.skuLabel ?? null;
+
+    const meshRow = await new Promise((resolve, reject) => {
+      db.getMeshById(meshId, (err, row) => {
+        if (err) return reject(err);
+        resolve(row || null);
+      });
+    });
+    if (!meshRow) {
+      return res.status(404).json({ success: false, message: 'Mesh 不存在' });
+    }
+
+    const projectId = meshRow.project_id;
+    if (!(req.session && req.session.isAdmin)) {
+      const sessionId = req.sessionID;
+      const hasAccess = await db.hasProjectAccess(sessionId, projectId);
+      if (!hasAccess) {
+        return res.status(403).json({ success: false, message: '没有访问该项目的权限，请先输入验证码' });
+      }
+    }
+
+    const changes = await new Promise((resolve, reject) => {
+      db.updateMeshSkuLabel(meshId, skuLabel, (err, ch) => {
+        if (err) return reject(err);
+        resolve(ch || 0);
+      });
+    });
+
+    return res.json({ success: true, changes, message: 'Mesh 已更新' });
+  } catch (error) {
+    console.error('❌ PUT /api/meshes/:id 处理失败:', error);
+    return res.status(500).json({ success: false, message: '更新 Mesh 失败', error: error?.message || String(error) });
+  }
+});
+
+// 删除某个 Mesh（需要 Mesh 所属项目的访问权限）
+app.delete('/api/meshes/:id', async (req, res) => {
+  try {
+    const meshId = Number(req.params.id);
+    if (!meshId || Number.isNaN(meshId)) {
+      return res.status(400).json({ success: false, message: '非法的 meshId' });
+    }
+
+    const meshRow = await new Promise((resolve, reject) => {
+      db.getMeshById(meshId, (err, row) => {
+        if (err) return reject(err);
+        resolve(row || null);
+      });
+    });
+
+    if (!meshRow) {
+      return res.status(404).json({ success: false, message: 'Mesh 不存在' });
+    }
+
+    const projectId = meshRow.project_id;
+    // 管理员放行；普通用户校验项目访问权限
+    if (!(req.session && req.session.isAdmin)) {
+      const sessionId = req.sessionID;
+      const hasAccess = await db.hasProjectAccess(sessionId, projectId);
+      if (!hasAccess) {
+        return res.status(403).json({ success: false, message: '没有访问该项目的权限，请先输入验证码' });
+      }
+    }
+
+    // 先删除关联的 9D Pose 记录
+    await new Promise((resolve, reject) => {
+      db.deletePose9DByMeshId(meshId, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+
+    // 删除物理文件（pack 目录）
+    try {
+      const fp = meshRow.file_path;
+      if (fp) {
+        const dir = path.dirname(fp);
+        if (dir && fs.existsSync(dir)) {
+          fs.rmSync(dir, { recursive: true, force: true });
+        } else if (fs.existsSync(fp)) {
+          fs.unlinkSync(fp);
+        }
+      }
+    } catch (e) {
+      console.warn('[DELETE /api/meshes/:id] 删除物理文件失败（继续删除 DB 记录）:', e);
+    }
+
+    const changes = await new Promise((resolve, reject) => {
+      db.deleteMeshById(meshId, (err, ch) => {
+        if (err) return reject(err);
+        resolve(ch || 0);
+      });
+    });
+
+    return res.json({ success: true, changes, message: 'Mesh 已删除' });
+  } catch (error) {
+    console.error('❌ DELETE /api/meshes/:id 处理失败:', error);
+    return res.status(500).json({ success: false, message: '删除 Mesh 失败', error: error?.message || String(error) });
   }
 });
 
@@ -2116,6 +2225,73 @@ app.get('/api/annotations/:imageId', requireImageProjectAccess, (req, res) => {
       message: '获取标注失败',
       error: error.message
     });
+  }
+});
+
+// 9D Pose 保存/读取/删除（需要图片所属项目的访问权限）
+app.post('/api/pose9d/:imageId', requireImageProjectAccess, (req, res) => {
+  try {
+    const { imageId } = req.params;
+    const meshId = req.body?.meshId ?? req.body?.mesh?.id ?? null;
+    const pose = req.body?.pose9d ?? req.body?.pose ?? req.body ?? {};
+
+    db.savePose9D(imageId, meshId, pose, (err, id) => {
+      if (err) {
+        console.error('保存 9D Pose 失败:', err);
+        return res.status(500).json({ success: false, message: '保存 9D Pose 失败', error: err.message });
+      }
+      res.json({ success: true, id, message: '9D Pose 保存成功' });
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '保存 9D Pose 失败', error: error.message });
+  }
+});
+
+app.get('/api/pose9d/:imageId', requireImageProjectAccess, (req, res) => {
+  try {
+    const { imageId } = req.params;
+    const meshId = req.query?.meshId ?? null;
+    db.getPose9D(imageId, meshId, (err, row) => {
+      if (err) {
+        console.error('获取 9D Pose 失败:', err);
+        return res.status(500).json({ success: false, message: '获取 9D Pose 失败', error: err.message });
+      }
+      res.json({ success: true, pose9d: row ? row.pose : null, record: row || null });
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '获取 9D Pose 失败', error: error.message });
+  }
+});
+
+// 获取某张图片下的全部 9D Pose（用于恢复多 Mesh）
+app.get('/api/pose9d/:imageId/all', requireImageProjectAccess, (req, res) => {
+  try {
+    const { imageId } = req.params;
+    db.listPose9DByImageId(imageId, (err, rows) => {
+      if (err) {
+        console.error('获取 9D Pose 列表失败:', err);
+        return res.status(500).json({ success: false, message: '获取 9D Pose 列表失败', error: err.message });
+      }
+      res.json({ success: true, poses: rows || [] });
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '获取 9D Pose 列表失败', error: error.message });
+  }
+});
+
+app.delete('/api/pose9d/:imageId', requireImageProjectAccess, (req, res) => {
+  try {
+    const { imageId } = req.params;
+    const meshId = req.query?.meshId ?? null;
+    db.deletePose9D(imageId, meshId, (err, changes) => {
+      if (err) {
+        console.error('删除 9D Pose 失败:', err);
+        return res.status(500).json({ success: false, message: '删除 9D Pose 失败', error: err.message });
+      }
+      res.json({ success: true, changes, message: '9D Pose 已删除' });
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '删除 9D Pose 失败', error: error.message });
   }
 });
 

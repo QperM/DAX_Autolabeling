@@ -499,6 +499,33 @@ body {
   margin-top: 2rem;
 }
 
+.mesh-depth-dropzones {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  align-items: stretch; /* 两个模块等高 */
+  width: 100%;
+}
+
+.mesh-depth-dropzones .dropzone {
+  width: 100%;
+  min-width: 0; /* 允许内容收缩，避免撑破某一列导致宽度不一致 */
+  min-height: 180px;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+}
+
+.mesh-depth-dropzones .upload-prompt {
+  width: 100%;
+}
+
+.mesh-depth-dropzones .upload-prompt p,
+.mesh-depth-dropzones .upload-prompt .hint {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .dropzone {
   border: 2px dashed #ccc;
   border-radius: 8px;
@@ -509,9 +536,37 @@ body {
   background: white;
 }
 
+.dropzone-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 0.4rem;
+  text-align: left;
+}
+
+.dropzone-mesh {
+  background: rgba(16, 185, 129, 0.06); /* green tint */
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.dropzone-depth {
+  background: rgba(59, 130, 246, 0.06); /* blue tint */
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
 .dropzone:hover, .dropzone.drag-active {
   border-color: #667eea;
   background: #f8f9ff;
+}
+
+.dropzone-mesh:hover, .dropzone-mesh.drag-active {
+  border-color: rgba(16, 185, 129, 0.9);
+  background: rgba(16, 185, 129, 0.10);
+}
+
+.dropzone-depth:hover, .dropzone-depth.drag-active {
+  border-color: rgba(59, 130, 246, 0.9);
+  background: rgba(59, 130, 246, 0.10);
 }
 
 .upload-prompt p {

@@ -46,11 +46,7 @@ async function renderObjToDataUrl(
   renderer.setSize(width, height);
   renderer.setPixelRatio(1);
 
-  const ambient = new THREE.AmbientLight(0xffffff, 0.45);
-  scene.add(ambient);
-  const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
-  keyLight.position.set(2, 4, 5);
-  scene.add(keyLight);
+  // 预览使用“无光”风格：材质统一转为 MeshBasicMaterial，保证贴图明亮清晰
 
   const baseDir =
     assetDirUrl && assetDirUrl.startsWith('http')
@@ -59,6 +55,11 @@ async function renderObjToDataUrl(
         ? meshUrl.slice(0, meshUrl.lastIndexOf('/') + 1)
         : meshUrl;
   const manager = new THREE.LoadingManager();
+  // 等待所有由 OBJ/MTL 触发的贴图资源加载完成，再渲染缩略图
+  const waitForResources = new Promise<void>((resolve) => {
+    manager.onLoad = () => resolve();
+    manager.onError = () => resolve();
+  });
   manager.setURLModifier((url: string) => {
     if (!url) return url;
     if (/^(blob:|data:|https?:\/\/)/i.test(url)) return url;
@@ -128,6 +129,9 @@ async function renderObjToDataUrl(
 
   const obj = objLoader.parse(objText);
 
+  // 等待贴图等资源通过 LoadingManager 加载完成，再统一做“无光材质 + 取景”
+  await waitForResources;
+
   // center + scale
   const box = new THREE.Box3().setFromObject(obj);
   const size = new THREE.Vector3();
@@ -139,26 +143,31 @@ async function renderObjToDataUrl(
   box.getCenter(center);
   obj.position.sub(center);
 
-  // 如果没有任何材质（无 mtl），给一个保底材质；有 mtl 时不要覆盖，避免贴图丢失
-  let hasMaterial = false;
+  // 将所有 Mesh 材质转为 MeshBasicMaterial：
+  // - 若原材质有贴图，则沿用 map；
+  // - 否则使用中性灰色，避免全黑/全白。
   obj.traverse((child: THREE.Object3D) => {
     if ((child as THREE.Mesh).isMesh) {
       const mesh = child as THREE.Mesh;
-      if (mesh.material) hasMaterial = true;
+      const origMat = mesh.material as any;
+      const toBasic = (mat: any) => {
+        if (!mat) return new THREE.MeshBasicMaterial({ color: 0xd1d5db });
+        const map = mat.map as THREE.Texture | undefined;
+        if (map) {
+          return new THREE.MeshBasicMaterial({ map });
+        }
+        const rawColor = (mat.color && (mat.color as THREE.Color).getHex()) || 0xd1d5db;
+        // 避免全黑/极暗材质导致缩略图“一片黑”，做一个下限保护
+        const safeColor = rawColor === 0x000000 || rawColor <= 0x222222 ? 0xd1d5db : rawColor;
+        return new THREE.MeshBasicMaterial({ color: safeColor });
+      };
+      if (Array.isArray(origMat)) {
+        mesh.material = origMat.map((m) => toBasic(m));
+      } else {
+        mesh.material = toBasic(origMat);
+      }
     }
   });
-  if (!hasMaterial) {
-    obj.traverse((child: THREE.Object3D) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        mesh.material = new THREE.MeshStandardMaterial({
-          color: 0x93c5fd,
-          metalness: 0.15,
-          roughness: 0.7,
-        });
-      }
-    });
-  }
 
   scene.add(obj);
 
