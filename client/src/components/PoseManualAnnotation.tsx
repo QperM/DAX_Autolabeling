@@ -5,6 +5,7 @@ import type { Image } from '../types';
 import { setCurrentImage } from '../store/annotationSlice';
 import { authApi, depthApi, meshApi } from '../services/api';
 import { getStoredCurrentProject } from '../tabStorage';
+import { toAbsoluteUrl } from '../utils/urls';
 import './ManualAnnotation.css';
 import MeshThumbnail from './MeshThumbnail';
 import PointCloudPreview3D from './PointCloudPreview3D';
@@ -253,7 +254,7 @@ const PoseManualAnnotation: React.FC = () => {
               <div style={{ position: 'relative', width: '100%', height: '100%' }}>
                 {showRgbLayer && (
                   <img
-                    src={`http://localhost:3001${currentImage.url}`}
+                    src={toAbsoluteUrl(currentImage.url) || currentImage.url}
                     alt={currentImage.originalName || currentImage.filename}
                     className="annotation-image"
                     style={{ position: 'absolute', inset: 0, margin: 'auto' }}
@@ -264,7 +265,7 @@ const PoseManualAnnotation: React.FC = () => {
                   selectedDepth &&
                   (selectedDepth.modality === 'depth_png' || (selectedDepth.url || '').toLowerCase().endsWith('.png')) && (
                     <img
-                      src={`http://localhost:3001${selectedDepth.url}`}
+                      src={toAbsoluteUrl(selectedDepth.url) || selectedDepth.url}
                       alt={selectedDepth.originalName || selectedDepth.filename}
                       className="annotation-image"
                       style={{
@@ -305,7 +306,7 @@ const PoseManualAnnotation: React.FC = () => {
                     {selectedDepth && selectedDepth.modality === 'depth_raw' ? (
                       <>
                         <PointCloudPreview3D
-                          npyUrl={selectedDepth.url ? `http://localhost:3001${selectedDepth.url}` : null}
+                          npyUrl={toAbsoluteUrl(selectedDepth.url) || null}
                           stride={pointStride}
                           depthScale={pointDepthScale}
                           selectedMesh={meshInScene}

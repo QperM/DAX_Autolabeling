@@ -49,7 +49,7 @@ function toAbsoluteUploadsUrl(u?: string | null): string | undefined {
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
   timeout: 30000,
-  withCredentials: true,  // 发送 session cookie，确保登录状态保持
+  withCredentials: true, // 发送 session cookie，确保登录状态保持
 });
 
 // 图像相关API
@@ -60,6 +60,21 @@ export const imageApi = {
     projectId?: number | string,
     onUploadProgress?: (progressPercent: number) => void
   ): Promise<UploadResponse> => {
+    // 为大体积上传单独实现“无进度超时”逻辑：
+    // - 禁用 axios 自带的 30s 硬超时
+    // - 仅在一段时间内完全没有收到上传进度事件时才中断
+    const INACTIVITY_TIMEOUT_MS = 30000; // 无进度累计 30s 才视为超时
+    const controller = new AbortController();
+    let lastProgressTs = Date.now();
+
+    const inactivityTimer = setInterval(() => {
+      const now = Date.now();
+      if (now - lastProgressTs > INACTIVITY_TIMEOUT_MS) {
+        controller.abort();
+        clearInterval(inactivityTimer);
+      }
+    }, 1000);
+
     const formData = new FormData();
     files.forEach(file => {
       formData.append('images', file);
@@ -68,20 +83,30 @@ export const imageApi = {
     if (projectId !== undefined && projectId !== null) {
       formData.append('projectId', String(projectId));
     }
-    
-    const response = await apiClient.post<UploadResponse>('/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      onUploadProgress: (evt) => {
-        if (!onUploadProgress) return;
-        const total = evt.total || 0;
-        if (!total) return;
-        const pct = Math.round((evt.loaded / total) * 100);
-        onUploadProgress(Math.max(0, Math.min(100, pct)));
-      },
-    });
-    return response.data;
+
+    try {
+      const response = await apiClient.post<UploadResponse>('/upload', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        // 禁用该请求自身的 axios 超时，由上面的“无进度超时”来控制
+        timeout: 0,
+        signal: controller.signal,
+        onUploadProgress: (evt) => {
+          // 一旦有进度，就刷新“最后进度时间”，防止误判超时
+          lastProgressTs = Date.now();
+
+          if (!onUploadProgress) return;
+          const total = evt.total || 0;
+          if (!total) return;
+          const pct = Math.round((evt.loaded / total) * 100);
+          onUploadProgress(Math.max(0, Math.min(100, pct)));
+        },
+      });
+      return response.data;
+    } finally {
+      clearInterval(inactivityTimer);
+    }
   },
 
   // 获取图像列表
@@ -111,25 +136,45 @@ export const meshApi = {
     projectId: number | string,
     onUploadProgress?: (progressPercent: number) => void
   ): Promise<{ success: boolean; files: Array<{ id?: number; filename: string; originalName: string; size?: number; url: string }> }> => {
+    // 与图片上传一致：改为基于“无进度时间”的超时控制
+    const INACTIVITY_TIMEOUT_MS = 30000;
+    const controller = new AbortController();
+    let lastProgressTs = Date.now();
+
+    const inactivityTimer = setInterval(() => {
+      const now = Date.now();
+      if (now - lastProgressTs > INACTIVITY_TIMEOUT_MS) {
+        controller.abort();
+        clearInterval(inactivityTimer);
+      }
+    }, 1000);
+
     const formData = new FormData();
     files.forEach((file) => {
       formData.append('meshes', file);
     });
     formData.append('projectId', String(projectId));
 
-    const response = await apiClient.post('/meshes/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      onUploadProgress: (evt) => {
-        if (!onUploadProgress) return;
-        const total = evt.total || 0;
-        if (!total) return;
-        const pct = Math.round((evt.loaded / total) * 100);
-        onUploadProgress(Math.max(0, Math.min(100, pct)));
-      },
-    });
-    return response.data;
+    try {
+      const response = await apiClient.post('/meshes/upload', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 0,
+        signal: controller.signal,
+        onUploadProgress: (evt) => {
+          lastProgressTs = Date.now();
+          if (!onUploadProgress) return;
+          const total = evt.total || 0;
+          if (!total) return;
+          const pct = Math.round((evt.loaded / total) * 100);
+          onUploadProgress(Math.max(0, Math.min(100, pct)));
+        },
+      });
+      return response.data;
+    } finally {
+      clearInterval(inactivityTimer);
+    }
   },
   getMeshes: async (
     projectId: number | string
@@ -153,25 +198,45 @@ export const depthApi = {
     projectId: number | string,
     onUploadProgress?: (progressPercent: number) => void
   ): Promise<{ success: boolean; files: Array<{ id?: number; filename: string; originalName: string; size?: number; url: string; role?: string; modality?: string }> }> => {
+    // 深度图上传同样采用“无进度超时”策略
+    const INACTIVITY_TIMEOUT_MS = 30000;
+    const controller = new AbortController();
+    let lastProgressTs = Date.now();
+
+    const inactivityTimer = setInterval(() => {
+      const now = Date.now();
+      if (now - lastProgressTs > INACTIVITY_TIMEOUT_MS) {
+        controller.abort();
+        clearInterval(inactivityTimer);
+      }
+    }, 1000);
+
     const formData = new FormData();
     files.forEach((file) => {
       formData.append('depthFiles', file);
     });
     formData.append('projectId', String(projectId));
 
-    const response = await apiClient.post('/depth/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      onUploadProgress: (evt) => {
-        if (!onUploadProgress) return;
-        const total = evt.total || 0;
-        if (!total) return;
-        const pct = Math.round((evt.loaded / total) * 100);
-        onUploadProgress(Math.max(0, Math.min(100, pct)));
-      },
-    });
-    return response.data;
+    try {
+      const response = await apiClient.post('/depth/upload', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 0,
+        signal: controller.signal,
+        onUploadProgress: (evt) => {
+          lastProgressTs = Date.now();
+          if (!onUploadProgress) return;
+          const total = evt.total || 0;
+          if (!total) return;
+          const pct = Math.round((evt.loaded / total) * 100);
+          onUploadProgress(Math.max(0, Math.min(100, pct)));
+        },
+      });
+      return response.data;
+    } finally {
+      clearInterval(inactivityTimer);
+    }
   },
 
   getDepth: async (

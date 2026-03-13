@@ -152,9 +152,10 @@ docker exec -it dax-autolabeling-sam2-1 nvidia-smi
 
 ---
 
-## 2. K8s 部署（模板）
+## 2. K8s 部署（模板） + Rancher 指南
 
-模板目录：`Docker/k8s/`
+模板目录：`Docker/k8s/`  
+基于 Rancher 的完整内网部署流程见：`Docker/RANCHER_DEPLOYMENT.md`
 
 推荐顺序：
 1. 创建 namespace（可选）

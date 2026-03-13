@@ -5,6 +5,7 @@ import { setCurrentImage, setError, setImages, setLoading } from '../store/annot
 import { authApi, imageApi, meshApi } from '../services/api';
 import type { Image } from '../types';
 import { clearStoredCurrentProject, getStoredCurrentProject } from '../tabStorage';
+import { toAbsoluteUrl } from '../utils/urls';
 import MeshUploader from './MeshUploader';
 import MeshPreview3D from './MeshPreview3D';
 import MeshThumbnail from './MeshThumbnail';
@@ -334,7 +335,7 @@ const PoseAnnotationPage: React.FC = () => {
                   <div className="image-preview-wrapper">
                     <div className="preview-image-layer">
                       <img
-                        src={`http://localhost:3001${selectedPreviewImage.url}?v=${imageCacheBust}`}
+                        src={`${(toAbsoluteUrl(selectedPreviewImage.url) || selectedPreviewImage.url)}?v=${imageCacheBust}`}
                         alt={selectedPreviewImage.originalName || selectedPreviewImage.filename}
                         className="preview-image"
                       />
@@ -462,7 +463,7 @@ const PoseAnnotationPage: React.FC = () => {
                               >
                                 <div className="thumbnail-image-layer">
                                   <img
-                                    src={`http://localhost:3001${image.url}?v=${imageCacheBust}`}
+                                    src={`${(toAbsoluteUrl(image.url) || image.url)}?v=${imageCacheBust}`}
                                     alt={image.originalName || image.filename}
                                     onError={() => console.error('❌ 图片加载失败:', image.url)}
                                   />

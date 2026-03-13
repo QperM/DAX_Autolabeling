@@ -6,6 +6,7 @@ import type { Image, Mask, BoundingBox, Polygon } from '../types';
 import { annotationApi, authApi } from '../services/api';
 import AnnotationCanvas from './AnnotationCanvas';
 import { getStoredCurrentProject } from '../tabStorage';
+import { toAbsoluteUrl } from '../utils/urls';
 import './ManualAnnotation.css';
 
 const ManualAnnotation: React.FC = () => {
@@ -599,7 +600,7 @@ const ManualAnnotation: React.FC = () => {
         <div className="annotation-center-panel">
           <div className="canvas-area">
             <AnnotationCanvas
-              imageUrl={`http://localhost:3001${currentImage.url}`}
+              imageUrl={toAbsoluteUrl(currentImage.url) || currentImage.url}
               // “Mask 图层”：只显示 Mask
               // “Bounding Box 图层”：只显示 BBox，隐藏 Mask
               masks={activeLayer === 'annotation' ? masks : []}

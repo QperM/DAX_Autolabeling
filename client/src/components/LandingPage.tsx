@@ -11,6 +11,37 @@ import {
 } from '../tabStorage';
 import './LandingPage.css';
 
+async function copyToClipboard(text: string): Promise<boolean> {
+  // Prefer modern Clipboard API when available (requires secure context in most browsers).
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to legacy fallback.
+  }
+
+  // Legacy fallback: hidden textarea + execCommand('copy')
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', 'true');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 const LandingPage: React.FC = () => {
   // 认证状态
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -880,8 +911,14 @@ const LandingPage: React.FC = () => {
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     const btn = e.currentTarget as HTMLButtonElement;
-                                    navigator.clipboard.writeText(project.access_code).then(() => {
-                                      btn.textContent = '✅';
+                                    copyToClipboard(project.access_code).then((ok) => {
+                                      if (ok) {
+                                        btn.textContent = '✅';
+                                      } else {
+                                        btn.textContent = '❌';
+                                        // Most common reason: non-secure context (http) blocks Clipboard API.
+                                        console.warn('[copy] Clipboard unavailable. If this is an http site, consider using https.');
+                                      }
                                       setTimeout(() => { btn.textContent = '📋'; }, 1500);
                                     });
                                   }}

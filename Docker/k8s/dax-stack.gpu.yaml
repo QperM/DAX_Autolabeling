@@ -1,0 +1,245 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dax-autolabeling
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dax-secrets
+  namespace: dax-autolabeling
+type: Opaque
+stringData:
+  # TODO: change in real environments
+  sessionSecret: "CHANGE_ME_TO_A_LONG_RANDOM_STRING"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dax-uploads-pvc
+  namespace: dax-autolabeling
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Gi
+  # If your cluster has no default StorageClass, uncomment and set:
+  # storageClassName: <your-storage-class>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dax-sqlite-pvc
+  namespace: dax-autolabeling
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # If your cluster has no default StorageClass, uncomment and set:
+  # storageClassName: <your-storage-class>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dax-sam2
+  namespace: dax-autolabeling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dax-sam2
+  template:
+    metadata:
+      labels:
+        app: dax-sam2
+    spec:
+      # GPU (option A): if your cluster uses RuntimeClass for NVIDIA, keep this:
+      # runtimeClassName: nvidia
+      #
+      # GPU (option B): if you use nodeSelector/taints for GPU nodes, add them here.
+      containers:
+        - name: sam2
+          # TODO: replace with your pushed image
+          image: registry.daxrobotics.cn/auto-labeling-tool/dax-sam2:<tag>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 7860
+          env:
+            - name: SAM2_CHECKPOINT
+              value: /sam2-assets/checkpoints/sam2_hiera_large.pt
+            # K8s: Do NOT set CUDA_VISIBLE_DEVICES here.
+            # - With NVIDIA device plugin, runtime injects CUDA_VISIBLE_DEVICES automatically
+            #   based on allocated GPUs.
+            - name: CUDA_DEVICE_ORDER
+              value: PCI_BUS_ID
+            # SAM2_MODEL_CFG 使用 Hydra 配置名（例如 configs/sam2/sam2_hiera_l.yaml），
+            # 默认不设置时，服务内部会回落到该默认值。
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 7860
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 7860
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+            limits:
+              cpu: "4"
+              memory: 16Gi
+              # 핵심：向 K8s 申请 1 张 GPU
+              nvidia.com/gpu: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dax-sam2
+  namespace: dax-autolabeling
+spec:
+  selector:
+    app: dax-sam2
+  ports:
+    - name: http
+      port: 7860
+      targetPort: 7860
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dax-api
+  namespace: dax-autolabeling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dax-api
+  template:
+    metadata:
+      labels:
+        app: dax-api
+    spec:
+      containers:
+        - name: api
+          # TODO: replace with your pushed image
+          image: registry.daxrobotics.cn/auto-labeling-tool/dax-api:<tag>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3001
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3001"
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dax-secrets
+                  key: sessionSecret
+            - name: GROUNDED_SAM2_API_URL
+              value: "http://dax-sam2:7860/api/auto-label"
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/server/uploads
+            - name: sqlite
+              mountPath: /app/database
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3001
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "0.5"
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: dax-uploads-pvc
+        - name: sqlite
+          persistentVolumeClaim:
+            claimName: dax-sqlite-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dax-api
+  namespace: dax-autolabeling
+spec:
+  selector:
+    app: dax-api
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dax-web
+  namespace: dax-autolabeling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dax-web
+  template:
+    metadata:
+      labels:
+        app: dax-web
+    spec:
+      containers:
+        - name: web
+          # TODO: replace with your pushed image
+          image: registry.daxrobotics.cn/auto-labeling-tool/dax-web:<tag>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "0.1"
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dax-web
+  namespace: dax-autolabeling
+spec:
+  selector:
+    app: dax-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+  # If you want NodePort quickly (no Ingress), use:
+  # type: NodePort
+  # ports:
+  #   - name: http
+  #     protocol: TCP
+  #     port: 8080
+  #     targetPort: 80
+  #     # optional fixed mapping (30000-32767):
+  #     # nodePort: 30080
+

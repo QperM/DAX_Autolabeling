@@ -6,6 +6,7 @@ import { imageApi, annotationApi, projectApi, authApi } from '../services/api';
 import type { Image, Mask, BoundingBox, Polygon } from '../types';
 import ImageUploader from './ImageUploader';
 import { clearStoredCurrentProject, getStoredCurrentProject } from '../tabStorage';
+import { toAbsoluteUrl } from '../utils/urls';
 import './AnnotationPage.css';
 import JSZip from 'jszip';
 
@@ -2025,7 +2026,7 @@ const AnnotationPage: React.FC = () => {
 
                     <div className="preview-image-layer">
                     <img 
-                      src={`http://localhost:3001${selectedPreviewImage.url}?v=${imageCacheBust}`} 
+                      src={`${(toAbsoluteUrl(selectedPreviewImage.url) || selectedPreviewImage.url)}?v=${imageCacheBust}`} 
                       alt={selectedPreviewImage.originalName}
                       className="preview-image"
                         onLoad={(e) => {
@@ -2240,7 +2241,7 @@ const AnnotationPage: React.FC = () => {
                             >
                         <div className="thumbnail-image-layer">
                         <img 
-                          src={`http://localhost:3001${image.url}?v=${imageCacheBust}`} 
+                          src={`${(toAbsoluteUrl(image.url) || image.url)}?v=${imageCacheBust}`} 
                           alt={image.originalName}
                           onError={() => {
                             console.error('❌ 图片加载失败:', image.url);
