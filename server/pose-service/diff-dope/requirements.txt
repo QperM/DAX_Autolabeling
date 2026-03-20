@@ -1,0 +1,15 @@
+hydra-core
+icecream
+imageio[ffmpeg]
+matplotlib
+ninja
+numpy
+nvdiffrast@git+https://github.com/NVlabs/nvdiffrast.git
+omegaconf
+opencv-python
+pillow
+pyglet==1.5.27
+pyrr
+tqdm
+torch
+trimesh[easy]==3.21.5

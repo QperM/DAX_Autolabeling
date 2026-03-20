@@ -1,0 +1,21 @@
+fastapi
+uvicorn[standard]
+pydantic
+numpy
+opencv-python
+pillow
+scipy
+omegaconf
+hydra-core
+icecream
+imageio[ffmpeg]
+matplotlib
+ninja
+pyglet==1.5.27
+pyrr
+tqdm
+torch
+trimesh[easy]==3.21.5
+# Diff-DOPE differentiable rasterizer (requires CUDA toolchain / compatible torch build)
+nvdiffrast@git+https://github.com/NVlabs/nvdiffrast.git
+

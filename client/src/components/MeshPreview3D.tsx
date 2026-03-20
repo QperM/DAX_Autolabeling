@@ -1,19 +1,37 @@
-import React, { useEffect, useRef } from 'react';
-import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
-import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
+import React, { useEffect, useRef } from "react";
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
+import { createAxisGizmo } from "./AxisGizmo";
+import { toAbsoluteUrl } from "../utils/urls";
 
 interface MeshPreview3DProps {
   meshUrl: string | null;
   assetDirUrl?: string;
   assets?: string[];
-  /** 是否加载 MTL/贴图（调试用） */
+  /** 是否加载贴图（调试用，可以关闭看几何） */
   enableTexture?: boolean;
+  /** 是否显示右上角坐标轴指示器 */
+  showAxisGizmo?: boolean;
+  /** mesh 原始 bounding box 尺寸（OBJ 坐标系单位） */
+  onMeshBoundsChange?: (size: { x: number; y: number; z: number } | null) => void;
 }
 
-const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, assets, enableTexture = true }) => {
+const MeshPreview3D: React.FC<MeshPreview3DProps> = ({
+  meshUrl,
+  assetDirUrl,
+  assets,
+  enableTexture = true,
+  showAxisGizmo = true,
+  onMeshBoundsChange,
+}) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const onMeshBoundsChangeRef = useRef<MeshPreview3DProps["onMeshBoundsChange"]>(onMeshBoundsChange);
+
+  useEffect(() => {
+    onMeshBoundsChangeRef.current = onMeshBoundsChange;
+  }, [onMeshBoundsChange]);
 
   useEffect(() => {
     if (!containerRef.current || !meshUrl) return;
@@ -31,7 +49,8 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio || 1);
-    container.innerHTML = '';
+    renderer.autoClear = false; // 允许后面再渲染 gizmo
+    container.innerHTML = "";
     container.appendChild(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -42,47 +61,44 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
     grid.position.y = -0.5;
     scene.add(grid);
 
+    // ---- 右上角轴向指示 gizmo（只做视觉语义：X 前 / Y 右 / Z 上） ----
+    const { gizmoScene, gizmoCamera, gizmoRoot } = createAxisGizmo();
+
     let meshGroup: THREE.Group | null = null;
 
     const baseDir =
-      assetDirUrl && assetDirUrl.startsWith('http')
+      assetDirUrl && assetDirUrl.startsWith("http")
         ? assetDirUrl
-        : meshUrl.includes('/')
-          ? meshUrl.slice(0, meshUrl.lastIndexOf('/') + 1)
+        : meshUrl.includes("/")
+          ? meshUrl.slice(0, meshUrl.lastIndexOf("/") + 1)
           : meshUrl;
 
     const manager = new THREE.LoadingManager();
     manager.setURLModifier((url: string) => {
-      // 将 OBJ/MTL 内的相对贴图路径重写到同目录（uploads/project_x/meshes/）下
       if (!url) return url;
       if (/^(blob:|data:|https?:\/\/)/i.test(url)) return url;
-      const clean = String(url).replace(/\\/g, '/');
+      const clean = String(url).replace(/\\/g, "/");
 
-      // 尝试用服务器返回的 assets 做一次大小写不敏感的纠正（Docker/Linux 上文件名大小写敏感）
-      // 例如：MTL 里写 map_Kd BODY.PNG，但实际落盘是 body.png
       const tryPickExisting = (raw: string) => {
         if (!assets || assets.length === 0) return raw;
-        const base = raw.split('/').filter(Boolean).pop() || raw;
+        const base = raw.split("/").filter(Boolean).pop() || raw;
         const lower = base.toLowerCase();
-        const hit = assets.find((a) => (a || '').toLowerCase() === lower);
+        const hit = assets.find((a) => (a || "").toLowerCase() === lower);
         return hit || raw;
       };
       const normalized = tryPickExisting(clean);
-      const encoded = clean
-        .split('/')
-        .filter(Boolean)
-        .map((seg) => encodeURIComponent(seg))
-        .join('/');
       const encoded2 = normalized
-        .split('/')
+        .split("/")
         .filter(Boolean)
         .map((seg) => encodeURIComponent(seg))
-        .join('/');
-      return `${baseDir}${encoded2 || encoded}`;
+        .join("/");
+      return `${baseDir}${encoded2}`;
     });
 
     const loadText = async (url: string) => {
-      const resp = await fetch(url, { credentials: 'include' });
+      // 防止拿到相对路径时被 Vite dev server 吞掉返回 index.html
+      const abs = (toAbsoluteUrl(url) || url) as string;
+      const resp = await fetch(abs, { credentials: "include" });
       if (!resp.ok) throw new Error(`请求失败: ${resp.status} ${resp.statusText}`);
       return await resp.text();
     };
@@ -91,31 +107,29 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
       const lines = objText.split(/\r?\n/);
       for (const line of lines) {
         const t = line.trim();
-        if (!t || t.startsWith('#')) continue;
-        if (t.toLowerCase().startsWith('mtllib ')) {
-          return t.slice(7).trim();
-        }
+        if (!t || t.startsWith("#")) continue;
+        if (t.toLowerCase().startsWith("mtllib ")) return t.slice(7).trim();
       }
       return null;
     };
 
     const pickMtlCandidate = (mtl: string | null, assetList?: string[]) => {
       if (!mtl) return null;
-      // 如果服务器没返回任何资源文件，或者目录里根本没有 .mtl，就直接放弃加载 MTL，避免 404 噪音
       if (!assetList || assetList.length === 0) return null;
-      const onlyMtl = assetList.filter((a) => a.toLowerCase().endsWith('.mtl'));
-      if (onlyMtl.length === 0) return null;
-      const exact = assetList.find((a) => a.toLowerCase() === mtl.toLowerCase());
+      const onlyMtl = assetList.filter((a) => a.toLowerCase().endsWith(".mtl"));
+      if (!onlyMtl.length) return null;
+      const exact = onlyMtl.find((a) => a.toLowerCase() === mtl.toLowerCase());
       if (exact) return exact;
-      const stem = mtl.replace(/\.mtl$/i, '').toLowerCase();
-      const fuzzy = onlyMtl.find((a) => a.toLowerCase().includes(stem));
-      return fuzzy || mtl;
+      const stem = mtl.replace(/\.mtl$/i, "").toLowerCase();
+      return onlyMtl.find((a) => a.toLowerCase().includes(stem)) || null;
     };
 
     const fitToView = (obj: THREE.Object3D) => {
       const box = new THREE.Box3().setFromObject(obj);
       const size = new THREE.Vector3();
       box.getSize(size);
+
+      onMeshBoundsChangeRef.current?.({ x: size.x, y: size.y, z: size.z });
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
       const scale = 1.5 / maxDim;
       obj.scale.setScalar(scale);
@@ -125,7 +139,6 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
       obj.position.sub(center);
     };
 
-    // 优先走 “OBJ(text) + MTL + 贴图” 链路；可通过 enableTexture 关闭，强制纯 OBJ（方便看几何/法线）
     (async () => {
       try {
         const objText = await loadText(meshUrl);
@@ -136,7 +149,6 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
         if (enableTexture && mtlToLoad) {
           const mtlLoader = new MTLLoader(manager);
           mtlLoader.setPath(baseDir);
-          // 让 MTL 内引用的贴图从同目录加载
           mtlLoader.setResourcePath(baseDir);
           const materials = await new Promise<any>((resolve, reject) => {
             mtlLoader.load(mtlToLoad, resolve, undefined, reject);
@@ -148,7 +160,6 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
         const obj = objLoader.parse(objText);
         meshGroup = obj;
 
-        // “无光渲染”模式：统一转为 MeshBasicMaterial，直接展示贴图，不受光照影响。
         obj.traverse((child: THREE.Object3D) => {
           if ((child as THREE.Mesh).isMesh) {
             const mesh = child as THREE.Mesh;
@@ -156,9 +167,7 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
             const toBasic = (mat: any) => {
               if (!mat) return new THREE.MeshBasicMaterial({ color: 0xd1d5db });
               const map = mat.map as THREE.Texture | undefined;
-              if (map) {
-                return new THREE.MeshBasicMaterial({ map });
-              }
+              if (map) return new THREE.MeshBasicMaterial({ map });
               const color = (mat.color && (mat.color as THREE.Color).getHex()) || 0xd1d5db;
               return new THREE.MeshBasicMaterial({ color });
             };
@@ -173,7 +182,8 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
         fitToView(obj);
         scene.add(obj);
       } catch (err) {
-        console.error('[MeshPreview3D] OBJ/MTL 加载失败:', meshUrl, err);
+        console.error("[MeshPreview3D] OBJ/MTL 加载失败:", meshUrl, err);
+        onMeshBoundsChangeRef.current?.(null);
       }
     })();
 
@@ -181,7 +191,28 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
     const animate = () => {
       frameId = requestAnimationFrame(animate);
       controls.update();
+
+      renderer.setScissorTest(false);
+      renderer.clear();
       renderer.render(scene, camera);
+
+      if (showAxisGizmo) {
+        gizmoRoot.quaternion.copy(camera.quaternion).invert();
+
+        const size = renderer.getSize(new THREE.Vector2());
+        const pad = 22;
+        const s = Math.max(88, Math.min(160, Math.floor(Math.min(size.x, size.y) * 0.22)));
+        const x = Math.floor(size.x - s - pad);
+        const y = Math.floor(size.y - s - pad);
+
+        renderer.setScissorTest(true);
+        renderer.setViewport(x, y, s, s);
+        renderer.setScissor(x, y, s, s);
+        renderer.clearDepth();
+        renderer.render(gizmoScene, gizmoCamera);
+        renderer.setViewport(0, 0, size.x, size.y);
+        renderer.setScissorTest(false);
+      }
     };
     animate();
 
@@ -194,21 +225,34 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({ meshUrl, assetDirUrl, ass
       renderer.setSize(w, h);
     };
 
-    window.addEventListener('resize', handleResize);
+    window.addEventListener("resize", handleResize);
 
     return () => {
-      window.removeEventListener('resize', handleResize);
+      window.removeEventListener("resize", handleResize);
       cancelAnimationFrame(frameId);
       controls.dispose();
       renderer.dispose();
+      onMeshBoundsChangeRef.current?.(null);
       if (meshGroup) {
         scene.remove(meshGroup);
       }
-      container.innerHTML = '';
+      gizmoRoot.traverse((obj: any) => {
+        if (obj?.isMesh) {
+          obj.geometry?.dispose?.();
+          obj.material?.dispose?.();
+        }
+        if (obj?.isSprite) {
+          const mat = obj.material as THREE.SpriteMaterial;
+          const map = mat.map as THREE.Texture | null;
+          map?.dispose?.();
+          mat.dispose();
+        }
+      });
+      container.innerHTML = "";
     };
-  }, [meshUrl, assetDirUrl, assets, enableTexture]);
+  }, [meshUrl, assetDirUrl, assets, enableTexture, showAxisGizmo]);
 
-  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
+  return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 };
 
 export default MeshPreview3D;

@@ -10,9 +10,11 @@ interface AnnotationCanvasProps {
   masks: Mask[];
   boundingBoxes: BoundingBox[];
   polygons: Polygon[];
+  activeLayer?: 'background' | 'annotation' | 'bbox';
   toolMode: 'select' | 'mask-select' | 'eraser' | 'polygon' | 'bbox';
   brushSize: number;
   onMaskUpdate: (updatedMasks: Mask[]) => void;
+  onBoundingBoxUpdate?: (updatedBBoxes: BoundingBox[]) => void;
   onPolygonUpdate: (updatedPolygons: Polygon[]) => void;
 }
 
@@ -21,9 +23,11 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   masks,
   boundingBoxes,
   polygons,
+  activeLayer = 'annotation',
   toolMode,
   brushSize,
   onMaskUpdate,
+  onBoundingBoxUpdate,
   onPolygonUpdate
 }) => {
   const [image] = useImage(imageUrl);
@@ -351,7 +355,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       }
     }
 
-    // 3. 应用到所有选中的 Mask
+    // 3. 先计算要应用到 Mask 的更新结果
     const updatedMasks = masks.map(mask => {
       if (!renameTargetMaskIds.includes(mask.id)) return mask;
 
@@ -363,6 +367,99 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         label: nextLabel,
       };
     });
+
+    // 3.1 同步重命名对应的 BoundingBox（如果有 onBoundingBoxUpdate）
+    // 关联策略（期望一一对应，且当前数据结构没有显式关联字段）：
+    // - 对每个被选中的 mask，计算其几何包围盒（image 坐标系）
+    // - 与所有 bbox 计算 IoU，选择 IoU 最大的那个作为“对应 bbox”
+    // - 多选时尽量避免多个 mask 指向同一个 bbox（贪心去重）
+    if (onBoundingBoxUpdate) {
+      const selectedMaskIdSet = new Set(renameTargetMaskIds);
+      const selectedMasks = masks.filter((m) => selectedMaskIdSet.has(m.id));
+      const maskBoxById = new Map<string, { x1: number; y1: number; x2: number; y2: number }>();
+      selectedMasks.forEach((m) => {
+        if (!m.points || m.points.length < 2) return;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let i = 0; i < m.points.length; i += 2) {
+          const x = Number(m.points[i]);
+          const y = Number(m.points[i + 1]);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+        if (![minX, minY, maxX, maxY].every((v) => Number.isFinite(v))) return;
+        maskBoxById.set(m.id, { x1: minX, y1: minY, x2: maxX, y2: maxY });
+      });
+
+      const iou = (a: { x1: number; y1: number; x2: number; y2: number }, b: { x1: number; y1: number; x2: number; y2: number }) => {
+        const ix1 = Math.max(a.x1, b.x1);
+        const iy1 = Math.max(a.y1, b.y1);
+        const ix2 = Math.min(a.x2, b.x2);
+        const iy2 = Math.min(a.y2, b.y2);
+        const iw = ix2 - ix1;
+        const ih = iy2 - iy1;
+        if (iw <= 0 || ih <= 0) return 0;
+        const inter = iw * ih;
+        const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
+        const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+        const union = areaA + areaB - inter;
+        if (union <= 0) return 0;
+        return inter / union;
+      };
+
+      // 先为每个 mask 找到 best bbox（按 IoU），再做去重分配
+      const candidates = selectedMasks
+        .map((m) => {
+          const mb = maskBoxById.get(m.id);
+          if (!mb) return null;
+          let bestIdx = -1;
+          let bestIoU = 0;
+          for (let i = 0; i < boundingBoxes.length; i++) {
+            const bb = boundingBoxes[i];
+            const bbBox = { x1: bb.x, y1: bb.y, x2: bb.x + bb.width, y2: bb.y + bb.height };
+            const s = iou(mb, bbBox);
+            if (s > bestIoU) {
+              bestIoU = s;
+              bestIdx = i;
+            }
+          }
+          return { maskId: m.id, bestIdx, bestIoU };
+        })
+        .filter(Boolean) as Array<{ maskId: string; bestIdx: number; bestIoU: number }>;
+
+      // IoU 大的优先占用 bbox
+      candidates.sort((a, b) => b.bestIoU - a.bestIoU);
+
+      const usedBboxIdx = new Set<number>();
+      const selectedBboxIdx = new Set<number>();
+
+      // 阈值：太小则认为“没有对应 bbox”，不改 bbox
+      const MIN_IOU = 0.01;
+      for (const c of candidates) {
+        if (c.bestIdx < 0) continue;
+        if (c.bestIoU < MIN_IOU) continue;
+        if (usedBboxIdx.has(c.bestIdx)) continue;
+        usedBboxIdx.add(c.bestIdx);
+        selectedBboxIdx.add(c.bestIdx);
+      }
+
+      if (selectedBboxIdx.size > 0) {
+        const updatedBBoxes = boundingBoxes.map((bb, idx) => {
+          if (!selectedBboxIdx.has(idx)) return bb;
+          return {
+            ...bb,
+            label: trimmed.length > 0 ? trimmed : bb.label,
+            color: targetColor,
+          };
+        });
+        onBoundingBoxUpdate(updatedBBoxes);
+      }
+
+      // 注意：这里不再做“相交就全部更新”，确保一一对应
+      // （若用户确实需要严格绑定关系，建议后续在数据结构里加入 maskId/bboxId 显式关联字段）
+    }
 
     // 4. 仅更新画布当前状态（不在这里做项目级 label 映射持久化）
     onMaskUpdate(updatedMasks);
@@ -1053,6 +1150,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
   // 渲染Mask
   const renderMasks = () => {
+    if (activeLayer === 'bbox' || activeLayer === 'background') return null;
     return masks.map(mask => {
       const isSelected =
         toolMode === 'mask-select' && selectedMaskIds.includes(mask.id);
@@ -1172,6 +1270,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
   // 渲染边界框
   const renderBoundingBoxes = () => {
+    if (activeLayer === 'annotation' || activeLayer === 'background') return null;
     return boundingBoxes.map(bbox => (
       <Rect
         key={bbox.id}
@@ -1460,6 +1559,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
             />
           )}
           
+          {renderBoundingBoxes()}
           {renderMasks()}
 
           {/* 框选可视化 */}
@@ -1477,7 +1577,6 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
             />
           )}
           {renderMaskControlPoints()}
-          {renderBoundingBoxes()}
           {renderPolygons()}
           
           {/* 当前正在绘制的多边形 */}

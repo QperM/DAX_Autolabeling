@@ -256,16 +256,6 @@ const AnnotationPage: React.FC = () => {
   const THUMB_GAP = 16; // 对应 CSS gap: 1rem
   const thumbStride = THUMB_SIZE + THUMB_GAP;
 
-  const batchSuccessCount = useMemo(
-    () => batchProgress.results.filter((r) => r.success).length,
-    [batchProgress.results]
-  );
-  const batchFailCount = useMemo(
-    () => batchProgress.results.filter((r) => !r.success).length,
-    [batchProgress.results]
-  );
-  const showBatchResultBreakdown = batchProgress.results.length > 0;
-
   const thumbCols = useMemo(() => {
     const w = thumbViewport.width;
     if (!w) return 1;
@@ -1840,18 +1830,6 @@ const AnnotationPage: React.FC = () => {
                         >
                           调整模型参数
                         </button>
-                      </div>
-                      {/* 标注结果汇总模块（移动到提示词右侧） */}
-                      <div className="ai-summary">
-                        <div className="ai-summary-left">
-                          <div className="ai-summary-label">已完成AI标注</div>
-                          <div className="ai-summary-stat success">
-                            成功 {showBatchResultBreakdown ? batchSuccessCount : 0}
-                          </div>
-                          <div className="ai-summary-stat fail">
-                            失败 {showBatchResultBreakdown ? batchFailCount : 0}
-                          </div>
-                        </div>
                       </div>
                     </div>
                     {/* Mask Label 对照表按钮 */}

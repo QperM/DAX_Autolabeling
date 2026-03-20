@@ -1,0 +1,22 @@
+*__pycache__*
+*egg-info*
+*DS_Store
+outputs/
+docs/_buid/
+*.png
+*.jpg
+*.jpeg
+
+# Additional ignores
+**/__pycache__/
+.DS_Store
+Thumbs.db
+outputs/
+.tmp/
+docs/_build/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.log

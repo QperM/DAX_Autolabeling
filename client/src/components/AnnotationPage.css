@@ -120,7 +120,7 @@
 /* 欢迎内容区域 */
 .welcome-content {
   text-align: center;
-  max-width: 500px;
+  max-width: 491px;
   margin: 2rem auto;
   padding: 2rem;
   background: rgba(255, 255, 255, 0.95);
@@ -388,6 +388,16 @@
   flex-direction: column;
   gap: 0.75rem;
   overflow: hidden; /* 让“底部按钮条”不被滚动条挤窄；滚动交给内部内容区 */
+}
+
+/* 通用：弹窗内部可滚动内容区（用于长表单/长说明） */
+.ai-prompt-modal-body {
+  flex: 1 1 auto;
+  min-height: 0; /* 关键：允许在 flex 容器里收缩，从而出现滚动条 */
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.25rem; /* 留一点空隙避免滑块/文字贴着滚动条 */
+  scrollbar-gutter: stable;
 }
 
 /* 通用：滚动区域美化（用于模型参数/提示词列表/label 对照表等） */
@@ -1336,4 +1346,20 @@
     gap: 0.75rem;
     padding: 1rem;
   }
+}
+
+/* PoseAnnotationPage: Mesh 预览 - 尺寸浮窗（位于 Texture 按钮下方） */
+.mesh-dims-panel {
+  padding: 0.45rem 0.6rem;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  line-height: 1.25;
+  backdrop-filter: blur(6px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  pointer-events: none;
 }

@@ -135,7 +135,20 @@ export const meshApi = {
     files: File[],
     projectId: number | string,
     onUploadProgress?: (progressPercent: number) => void
-  ): Promise<{ success: boolean; files: Array<{ id?: number; filename: string; originalName: string; size?: number; url: string }> }> => {
+  ): Promise<{
+    success: boolean;
+    files: Array<{
+      id?: number;
+      filename: string;
+      originalName: string;
+      size?: number;
+      url: string;
+      assetDirUrl?: string;
+      assets?: string[];
+      skuLabel?: string | null;
+      bbox?: any;
+    }>;
+  }> => {
     // 与图片上传一致：改为基于“无进度时间”的超时控制
     const INACTIVITY_TIMEOUT_MS = 30000;
     const controller = new AbortController();
@@ -171,7 +184,16 @@ export const meshApi = {
           onUploadProgress(Math.max(0, Math.min(100, pct)));
         },
       });
-      return response.data;
+      const data = response.data as any;
+      const filesOut = Array.isArray(data?.files) ? data.files : [];
+      return {
+        ...data,
+        files: filesOut.map((m: any) => ({
+          ...m,
+          url: toAbsoluteUploadsUrl(m?.url) || m?.url,
+          assetDirUrl: toAbsoluteUploadsUrl(m?.assetDirUrl),
+        })),
+      };
     } finally {
       clearInterval(inactivityTimer);
     }
@@ -208,7 +230,20 @@ export const depthApi = {
     files: File[],
     projectId: number | string,
     onUploadProgress?: (progressPercent: number) => void
-  ): Promise<{ success: boolean; files: Array<{ id?: number; filename: string; originalName: string; size?: number; url: string; role?: string; modality?: string }> }> => {
+  ): Promise<{
+    success: boolean;
+    files: Array<{
+      id?: number | null;
+      filename: string;
+      originalName: string;
+      size?: number;
+      url: string;
+      role?: string;
+      modality?: string;
+      imageId?: number | null;
+      cameraId?: number | null;
+    }>;
+  }> => {
     // 深度图上传同样采用“无进度超时”策略
     const INACTIVITY_TIMEOUT_MS = 30000;
     const controller = new AbortController();
@@ -309,6 +344,10 @@ export const pose9dApi = {
     const response = await apiClient.post(`/pose9d/${imageId}`, payload);
     return response.data;
   },
+  saveInitialPose: async (imageId: number | string, payload: any): Promise<any> => {
+    const response = await apiClient.post(`/pose9d/${imageId}/initial-pose`, payload);
+    return response.data;
+  },
   getPose9D: async (imageId: number | string, meshId?: number | string | null): Promise<any> => {
     const response = await apiClient.get(`/pose9d/${imageId}`, { params: meshId != null ? { meshId } : undefined });
     return response.data;
@@ -319,6 +358,83 @@ export const pose9dApi = {
   },
   deletePose9D: async (imageId: number | string, meshId?: number | string | null): Promise<any> => {
     const response = await apiClient.delete(`/pose9d/${imageId}`, { params: meshId != null ? { meshId } : undefined });
+    return response.data;
+  },
+};
+
+// 6D Pose (Diff-DOPE) API
+export const pose6dApi = {
+  diffdopeEstimate: async (
+    imageId: number | string,
+    payload?: {
+      projectId?: number | string | null;
+      onlyUniqueMasks?: boolean;
+      iters?: number;
+      batchSize?: number;
+      lrLow?: number;
+      lrHigh?: number;
+      baseLr?: number;
+      lrDecay?: number;
+      useMaskLoss?: boolean;
+      useRgbLoss?: boolean;
+      useDepthLoss?: boolean;
+      weightMask?: number;
+      weightRgb?: number;
+      weightDepth?: number;
+      returnDebugImages?: boolean;
+      /** 打开端到端调试日志（前端/Node/pose-service 都会输出更多信息） */
+      debug?: boolean;
+    },
+  ): Promise<any> => {
+    const response = await apiClient.post(`/pose6d/${imageId}/diffdope-estimate`, payload || {});
+    return response.data;
+  },
+};
+
+// 9D Pose: Fit rotation (server-side)
+export const poseFitApi = {
+  fitRotation: async (
+    imageId: number | string,
+    payload: {
+      meshId: number | string;
+      maskIndex?: number;
+      maskId?: string;
+      mode?: 'z' | 'xyz';
+      rasterSize?: number;
+      projectionDetail?: 'fast' | 'balanced' | 'high';
+      debug?: boolean;
+      initialRotationDeg?: { x?: number; y?: number; z?: number };
+      search?: {
+        zMin?: number;
+        zMax?: number;
+        zStep?: number;
+        xMin?: number;
+        xMax?: number;
+        xStep?: number;
+        yMin?: number;
+        yMax?: number;
+        yStep?: number;
+      };
+    }
+  ): Promise<{
+    success: boolean;
+    bestIoU?: number;
+    bestRotationDeg?: { x: number; y: number; z: number };
+    meshHullSvgPoints?: string;
+    meshHull?: Array<[number, number]>;
+    diagnostics?: any;
+    message?: string;
+    error?: string;
+  }> => {
+    // pose fitting can be CPU-heavy on server (xyz search + raster IoU), so allow longer timeout
+    const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const response = await apiClient.post(`/pose9d/${imageId}/fit-rotation`, payload, { timeout: 120000 });
+    const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    // Profiling is enabled by default during performance investigation.
+    // eslint-disable-next-line no-console
+    console.log('[poseFitApi.fitRotation] payload:', payload);
+    // eslint-disable-next-line no-console
+    console.log(`[poseFitApi.fitRotation] httpMs=${(t1 as number) - (t0 as number)}`, response.data);
     return response.data;
   },
 };

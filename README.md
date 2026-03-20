@@ -1,7 +1,7 @@
 # 智能图像标注系统
 
-**版本：V2.0**  
-**最后更新：2026年3月11日**
+**版本：V2.1**  
+**最后更新：2026年3月20日**
 
 ## 项目概述
 
@@ -49,6 +49,14 @@
 - ✅ 3D 预览：基于 Three.js 的交互预览（OrbitControls、光照/网格、自动居中与缩放）
 - ✅ Mesh 缩略图：列表中静态截图预览（自动取景 + 可调视角偏移/拉远）
 - ✅ 点云显示：已具备点云显示的前端能力（用于 9D Pose 工作流可视化基础）
+- ✅ **Mesh 上传器优化**：拆分为 Mesh 和 Depth 两个独立上传模块，不同背景色区分
+- ✅ **9D Pose 标注功能**：
+  - 支持多 Mesh 在同一图片中的位置标注（位置、旋转、缩放）
+  - 9D Pose 数据按图片和 Mesh 正确保存和加载
+  - 支持在 3D 预览中点击选择 Mesh 进行编辑
+  - TransformControls 交互优化，修复 scale 异常变化问题
+  - 手动保存时显示成功提示
+- ✅ **深度数据管理**：支持 PNG/TIFF/NPY 格式深度数据上传和管理
 
 #### 3. 标注工作界面
 - ✅ 实时图像预览窗口
@@ -57,6 +65,10 @@
 - ✅ 项目图片列表展示
 - ✅ **图层切换功能**：支持背景图层 / 标注图层（Mask+BoundingBox） / 仅 BoundingBox 图层三种模式切换
 - ✅ AI 分割 Mask 图层切换展示（背景图层 / 标注图层）
+- ✅ **图层切换优化**：
+  - 切换图片时自动加载对应的深度数据和点云图层
+  - Mask 图层切换时正确加载和显示 2D 标注数据
+  - 修复图层切换时的数据加载竞态问题
 
 #### 4. 标注工具
 - ✅ 画笔工具：绘制标注区域（预留接口）
@@ -124,7 +136,7 @@
 ## 项目结构
 
 ```
-DAXautolabeling/
+DAX_Autolabeling/
 ├── client/                 # 前端React应用
 │   ├── src/
 │   │   ├── components/    # 组件目录
@@ -135,12 +147,20 @@ DAXautolabeling/
 │   │   │   ├── ImageUploader.tsx     # 图像上传组件
 │   │   │   ├── LandingPage.tsx       # 首页导览组件
 │   │   │   ├── ManualAnnotation.tsx  # 手动标注组件
+│   │   │   ├── DepthUploader.tsx     # Depth/点云上传组件
+│   │   │   ├── AxisGizmo.tsx         # 3D 坐标轴 Gizmo 构建
 │   │   │   ├── MeshUploader.tsx      # Mesh 上传组件（OBJ/资源）
 │   │   │   ├── MeshPreview3D.tsx     # 3D Mesh 预览组件（Three.js）
 │   │   │   ├── MeshThumbnail.tsx     # Mesh 缩略图组件（静态截图）
+│   │   │   ├── PoseInitialPoseButton.tsx # 初始位姿计算/入库按钮
+│   │   │   ├── Pose6dEstimateButton.tsx   # Diff-DOPE 6D 姿态推测按钮
+│   │   │   ├── InitialPoseFitOverlay.tsx  # 拟合图层（bbox 投影）显示
+│   │   │   └── PointCloudMeshInteraction.tsx # 3D 点云/mesh 交互逻辑（hook）
 │   │   │   └── *.css                 # 样式文件
 │   │   ├── services/      # API服务
 │   │   │   └── api.ts                # 后端API接口
+│   │   ├── diffdopeOverlayCache.ts # Diff-DOPE overlay 缓存工具
+│   │   ├── poseAutoOpen3D.ts       # 3D 场景自动打开工具
 │   │   ├── store/         # 状态管理
 │   │   │   ├── annotationSlice.ts    # 标注状态切片
 │   │   │   └── index.ts              # Store配置
@@ -150,20 +170,24 @@ DAXautolabeling/
 │   │   ├── App.css        # 样式文件
 │   │   └── main.tsx       # 入口文件
 ├── server/                # 后端服务
-│   ├── index.js           # Node.js 服务器入口
-│   ├── database.js        # 数据库操作
+│   ├── index.js           # 路由注册中心（Express）
+│   ├── bootstrap.js       # 启动/初始化入口（等待 DB schema 完成）
 │   ├── package.json       # 后端依赖配置
 │   ├── uploads/           # 上传文件存储目录
-│   ├── sam2-service/      # Grounded SAM2 API 服务（Python）
+│   ├── db/                # SQLite 连接 + schema 初始化 + repo 层
+│   ├── middleware/        # 权限校验中间件
+│   ├── routes/            # 业务路由集合（projects/uploads/images/pose/...）
+│   ├── utils/             # 工具函数（uploads/depth naming/OBJ bbox 等）
+│   ├── sam2-service/      # Grounded SAM2 API 服务（Python FastAPI）
 │   │   ├── app.py         # FastAPI 服务主文件
 │   │   ├── requirements.txt # Python 依赖
 │   │   ├── README.md      # SAM2 服务说明
-│   │   └── start_sam2.bat # SAM2 服务启动脚本
-│   └── *.js               # 工具脚本
+│   │   └── setup.bat      # SAM2 服务启动/安装脚本
+│   ├── pose-service/      # 6D/姿态服务（例如 Diff-DOPE 相关）
+│   └── nodemon.json       # 开发模式热重载配置
 ├── database/              # 数据库文件目录
 │   └── annotations.db     # SQLite数据库文件
-├── README.md              # 项目说明文档
-└── start.bat             # 一键启动脚本
+└── README.md              # 项目说明文档
 ```
 
 ## 数据库设计
@@ -260,14 +284,7 @@ npm run dev
 # 前端应用将运行在 http://localhost:5173
 ```
 
-**方式二：使用批处理文件一键启动（Windows）**
-```bash
-start.bat
-```
-这会同时启动：
-- Node.js 后端服务（端口 3001）
-- Grounded SAM2 API 服务（端口 7860，Docker 映射到宿主机 37860）
-- React 前端应用（端口 5173）
+（当前仓库已移除 `start.bat`，请按“方式一”分别启动后端与前端，Grounded SAM2 按需单独启动/运行。）
 
 **注意：首次使用需要配置 Python 环境**
 ```bash
@@ -333,21 +350,21 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 ```json
 {
   "imageId": 123,
-  "prompt": "person, dog",
   "modelParams": {
-    "baseScoreThresh": 0.5,
-    "lowerScoreThresh": 0.3,
-    "maxDetections": 50,
-    "maskThreshold": 0.5,
-    "maxPolygonPoints": 80
+    "maxPolygonPoints": 120,
+    "sam2PointsPerSide": 32,
+    "sam2PredIouThresh": 0.5,
+    "sam2StabilityScoreThresh": 0.8,
+    "sam2BoxNmsThresh": 0.6,
+    "sam2MinMaskRegionArea": 100
   }
 }
 ```
 
 说明：
-- `prompt` 为空则尝试识别常见目标
+- 当前后端自动标注接口使用 `imageId + modelParams`（`prompt` 字段暂未使用，可忽略）
 - `modelParams` 会在前端按项目保存（`localStorage` 的 `modelParams:<projectId>`）
-- `maskThreshold` 会影响轮廓“更紧/更松”，`maxPolygonPoints` 影响轮廓精细度（点数越多越贴边但更重）
+- 主要控制：轮廓精细度（`maxPolygonPoints`）与 SAM2 掩码筛选阈值（`sam2*Thresh`）
 
 ## 功能特性
 
@@ -379,97 +396,9 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 - 外键约束和级联删除
 - 完整的错误处理和日志记录
 
-## 开发进展
+## 更新记录
 
-### V2.0 最新进展（2026年3月11日）
-- [x] **9D Pose 模块启动开发**：
-  - 新增 9D Pose 标注页面与底部 Mesh 列表视图
-  - 支持按项目上传/管理 OBJ Mesh，并返回同目录资源文件列表（MTL/贴图等）
-  - Three.js 3D 预览：OrbitControls、光照/网格、自动居中缩放
-  - Mesh 缩略图：自动取景，并支持视角偏移/拉远以获得更完整的模型展示
-  - 贴图加载链路增强：兼容大小写差异与同目录资源加载（开发环境下 `/uploads` 资源指向后端）
-
-### V1.9 最新功能（2026年3月9日）
-- [x] **管理员系统**：
-  - 增加管理员登录入口与会话管理（基于 `express-session`）
-  - 支持管理员创建项目、生成和重置项目验证码
-  - 普通用户通过验证码访问项目，管理员拥有全部项目的管理与标注权限
-  - 前端根据管理员/普通用户角色动态展示不同入口（如项目创建、图片上传、调用批量AI标注等）
-
-### V1.8 最新功能（2026年3月4日）
-- [x] **标注数据导入导出功能**：支持将整个项目的标注数据（Mask、BoundingBox、Polygon）导出为 JSON 格式，并可导入 JSON 文件恢复标注（按图片名称自动匹配）
-- [x] **颜色调色板扩展**：将标签颜色调色板从 8 种扩展到 30 种，支持更多标签的视觉区分
-- [x] **BoundingBox 图层独立显示**：在手动标注界面新增"仅 BoundingBox"图层模式，可单独查看边界框标注
-- [x] **重命名下拉框优化**：
-  - 下拉框背景色动态显示当前标签颜色，选项列表也显示对应颜色
-  - 按最近使用顺序排序标签，提升操作效率
-  - 导入数据后立即同步所有项目级标签-颜色映射
-- [x] **自动保存功能优化**：默认开启自动保存，UI 更醒目（绿色高亮显示）
-
-### V1.7 最新功能（2026年3月3日）
-- [x] Python AI 服务接入可切换的多种实例分割后端：`modelBackend=maskrcnn / yolo_seg / sam2_amg`
-- [x] SAM2 AMG 集成：通过 `SAM2_CHECKPOINT` + `SAM2_MODEL_CFG` 加载官方 SAM2 模型，并在前端下拉选择
-- [x] YOLO-Seg 集成：支持 YOLO 端到端实例分割，前端可配置置信度、IoU、输入尺寸、最大检测数
-- [x] 模型参数弹窗重构：根据当前后端只展示相关参数（Mask R-CNN / YOLO-Seg / SAM2 AMG 各自一组滑杆）
-- [x] 外观聚类：在 Mask R-CNN 输出上按颜色 + 形状 + 位置 + 姿态做层次聚类，并支持“外观聚类距离阈值”滑杆调节
-- [x] 前端 `Mask Label 对照表`：项目级维护「颜色 → label」映射，支持统一修改同色 Mask 的标签
-- [x] 批量 AI 标注结果展示优化：改为只展示“成功 / 失败”数量，移除总数，界面更简洁
-- [x] 手动标注体验优化：默认进入“标注图层”；多边形闭合后自动弹出重命名框；新建 Mask 默认更高不透明度
-
-### V1.4 最新功能（2026年3月2日）
-- [x] 在人工标注页面接入统一的标注画布组件 `AnnotationCanvas`，支持在原图上叠加显示分割 Mask / 边界框 / 多边形
-- [x] 新增“背景图层 / 标注图层”切换逻辑，可一键隐藏/显示 SAM2 生成的 Mask 图层
-- [x] 保持与 AI 标注预览弹窗的坐标与缩放一致，确保 Mask 轮廓与实际目标位置精准对齐
-- [x] 橡皮擦重构：支持可视化圆形笔刷、拖拽擦除，并通过悬浮下拉调节半径
-- [x] Mask 顶点编辑：在选择工具下支持顶点高亮、拖动微调、键盘 Delete 删除顶点、键盘 I 在相邻顶点之间插入新顶点
-
-### V1.5 最新功能（2026年3月3日）
-- [x] ZIP 压缩包批量上传：上传后自动解压导入多张图片并写入数据库
-- [x] ZIP 解压进度条：前端展示“上传进度 + 解压进度”，解压完成自动进入“已上传图片”
-- [x] 新增解压 job 查询接口：`GET /api/upload-jobs/:jobId`
-- [x] 已上传图片缩略图虚拟滚动：类似 Windows 文件管理器，仅渲染视口范围缩略图
-- [x] 缩略图 Mask 预览开关（默认关闭），开启后会预加载视口内缩略图的 Mask
-- [x] 项目级「标签-颜色」一致性：同一标签在同一项目中保持同色（前端 `localStorage` 持久化）
-- [x] AI 模型参数弹窗：支持调节检测阈值/目标数，并新增 `maskThreshold`（描边紧/松）、`maxPolygonPoints`（轮廓精细度）
-
-### V1.3 最新功能（2026年3月2日）
-- [x] 在 Python AI 服务中接入真实检测/分割模型（torchvision Mask R-CNN COCO 预训练），替代纯模拟多边形
-- [x] 支持通过提示词（prompt）过滤类别（例如：person, car 等），并打通前端提示词输入框 → Node → Python 全链路
-- [x] 批量 AI 标注改为调用真实模型推理，自动保存结果到数据库（同一图片多次批量标注会覆盖上一版 AI 结果）
-- [x] 为模型输出增加置信度阈值、多轮筛选和兜底逻辑，在难图像上尽量保证至少返回一个合理目标
-
-### V1.2 最新功能（2026年3月2日）
-- [x] 集成 Grounded SAM2 API 服务（Python FastAPI）
-- [x] 统一启动脚本（Node.js + Python + React）
-- [x] AI 自动标注服务框架（当前返回模拟数据，待模型集成）
-
-### V1.1 功能（2026年3月2日）
-- [x] 项目管理系统（创建、查看、编辑、删除）
-- [x] 项目与图片数据集关联
-- [x] 图片按项目分类管理
-- [x] 图片删除功能（数据库和文件同步删除）
-- [x] 自增数字ID系统
-- [x] 外键约束和级联删除
-- [x] 详细的调试日志系统
-- [x] UI优化和布局调整
-
-### V1.0 基础功能
-- [x] 基础图像上传和管理
-- [x] 模块化首页设计
-- [x] 图片预览和选择功能
-- [x] 基础标注工具（画笔、橡皮擦、多边形）
-- [x] 撤销/重做功能
-- [x] 状态管理和数据持久化
-
-### 待完善功能
-- [ ] 进一步优化 SAM2 推理性能（大图显存控制、多图批处理能力）
-- [ ] 9D Pose 标注工作流完善：标注交互（姿态/关键点/坐标系）、与 2D/深度/点云对齐、数据落库与导出格式
-- [ ] 9D Pose：点云/深度数据的导入规范化（文件命名绑定、坐标系约定）与可视化增强
-- [ ] 标注数据导出格式扩展（COCO、YOLO、Pascal VOC 等格式）
-- [ ] 更丰富的标注工具
-- [ ] 批量操作功能
-- [ ] 用户权限管理系统
-- [ ] 标注数据版本管理
+详细的版本/功能更新记录见 `UPDATES.md`。
 
 ## 注意事项
 

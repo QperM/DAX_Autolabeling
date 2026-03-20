@@ -601,11 +601,10 @@ const ManualAnnotation: React.FC = () => {
           <div className="canvas-area">
             <AnnotationCanvas
               imageUrl={toAbsoluteUrl(currentImage.url) || currentImage.url}
-              // “Mask 图层”：只显示 Mask
-              // “Bounding Box 图层”：只显示 BBox，隐藏 Mask
-              masks={activeLayer === 'annotation' ? masks : []}
-              boundingBoxes={activeLayer === 'bbox' ? boundingBoxes : []}
-              polygons={activeLayer === 'annotation' ? polygons : []}
+              activeLayer={activeLayer}
+              masks={masks}
+              boundingBoxes={boundingBoxes}
+              polygons={polygons}
               toolMode={
                 selectedTool === 'eraser'
                   ? 'eraser'
@@ -620,6 +619,11 @@ const ManualAnnotation: React.FC = () => {
                 console.log('[ManualAnnotation] onMaskUpdate, count =', updatedMasks.length);
                 setMasks(updatedMasks);
                 pushHistory(updatedMasks, boundingBoxes, polygons);
+              }}
+              onBoundingBoxUpdate={(updatedBBoxes) => {
+                console.log('[ManualAnnotation] onBoundingBoxUpdate, count =', updatedBBoxes.length);
+                setBoundingBoxes(updatedBBoxes);
+                pushHistory(masks, updatedBBoxes, polygons);
               }}
               onPolygonUpdate={(updatedPolygons) => {
                 console.log('[ManualAnnotation] onPolygonUpdate, count =', updatedPolygons.length);
