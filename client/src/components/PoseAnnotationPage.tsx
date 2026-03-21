@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { setCurrentImage, setError, setImages, setLoading } from '../store/annotationSlice';
-import { authApi, imageApi, meshApi } from '../services/api';
+import { authApi, imageApi, meshApi, pose6dApi } from '../services/api';
 import type { Image } from '../types';
 import { clearStoredCurrentProject, getStoredCurrentProject } from '../tabStorage';
 import { toAbsoluteUrl } from '../utils/urls';
@@ -13,9 +13,6 @@ import MeshPreview3D from './MeshPreview3D';
 // @ts-ignore: MeshThumbnail is a TSX React component resolved by bundler
 import MeshThumbnail from './MeshThumbnail';
 import './AnnotationPage.css';
-// Pose6D overlay cache is handled inside `Pose6dEstimateButton`
-import PoseInitialPoseButton from './PoseInitialPoseButton';
-import Pose6dEstimateButton from './Pose6dEstimateButton';
 
 const PoseAnnotationPage: React.FC = () => {
   const dispatch = useDispatch();
@@ -54,166 +51,7 @@ const PoseAnnotationPage: React.FC = () => {
   const [meshPreviewTextureEnabled, setMeshPreviewTextureEnabled] = useState(true);
   const [meshPreviewDims, setMeshPreviewDims] = useState<{ x: number; y: number; z: number } | null>(null);
   const [projectLabelOptions, setProjectLabelOptions] = useState<Array<{ label: string; color: string }>>([]);
-  const [pose6dOverlay, setPose6dOverlay] = useState<{
-    imageId: number;
-    meshId: number;
-    label?: string | null;
-    overlayRgbPngB64?: string;
-    overlayDepthPngB64?: string;
-    lossPlotPngB64?: string;
-    error?: string | null;
-    timingSec?: number | null;
-    savedAt: string;
-  } | null>(null);
-  const [showPoseFitParamModal, setShowPoseFitParamModal] = useState(false);
-  const DEFAULT_DIFFDOPE_PARAMS = useMemo(
-    () => ({
-      iters: 60,
-      batchSize: 8,
-      lrLow: 0.01,
-      lrHigh: 100,
-      baseLr: 20,
-      lrDecay: 0.1,
-      useMaskLoss: true,
-      useDepthLoss: true,
-      useRgbLoss: false,
-      weightMask: 1,
-      weightDepth: 1,
-      weightRgb: 0.7,
-      returnDebugImages: true,
-    }),
-    [],
-  );
-  const [diffDopeParams, setDiffDopeParams] = useState<{
-    iters: number;
-    batchSize: number;
-    lrLow: number;
-    lrHigh: number;
-    baseLr: number;
-    lrDecay: number;
-    useMaskLoss: boolean;
-    useDepthLoss: boolean;
-    useRgbLoss: boolean;
-    weightMask: number;
-    weightDepth: number;
-    weightRgb: number;
-    returnDebugImages: boolean;
-  }>(DEFAULT_DIFFDOPE_PARAMS);
-  const [poseFitParams, setPoseFitParams] = useState<{
-    zMin: number;
-    zMax: number;
-    zStep: number;
-    xMin: number;
-    xMax: number;
-    xStep: number;
-    yMin: number;
-    yMax: number;
-    yStep: number;
-    rasterSize: number;
-    minIou: number;
-    projectionDetail: 'fast' | 'balanced' | 'high';
-  }>({
-    zMin: -60,
-    zMax: 60,
-    zStep: 5,
-    xMin: -20,
-    xMax: 20,
-    xStep: 10,
-    yMin: -20,
-    yMax: 20,
-    yStep: 10,
-    rasterSize: 256,
-    minIou: 0.85,
-    projectionDetail: 'balanced',
-  });
-
-  // 加载当前项目的 pose-fit 参数
-  useEffect(() => {
-    if (!currentProject?.id) {
-      setPoseFitParams({
-        zMin: -60,
-        zMax: 60,
-        zStep: 5,
-        xMin: -20,
-        xMax: 20,
-        xStep: 10,
-        yMin: -20,
-        yMax: 20,
-        yStep: 10,
-        rasterSize: 256,
-        minIou: 0.85,
-        projectionDetail: 'balanced',
-      });
-      return;
-    }
-    const key = `poseFitParams:${currentProject.id}`;
-    try {
-      const raw = localStorage.getItem(key);
-      if (!raw) return;
-      const js = JSON.parse(raw) as Partial<typeof poseFitParams>;
-      setPoseFitParams((prev) => ({
-        zMin: typeof js.zMin === 'number' ? js.zMin : prev.zMin,
-        zMax: typeof js.zMax === 'number' ? js.zMax : prev.zMax,
-        zStep: typeof js.zStep === 'number' ? js.zStep : prev.zStep,
-        xMin: typeof js.xMin === 'number' ? js.xMin : prev.xMin,
-        xMax: typeof js.xMax === 'number' ? js.xMax : prev.xMax,
-        xStep: typeof js.xStep === 'number' ? js.xStep : prev.xStep,
-        yMin: typeof js.yMin === 'number' ? js.yMin : prev.yMin,
-        yMax: typeof js.yMax === 'number' ? js.yMax : prev.yMax,
-        yStep: typeof js.yStep === 'number' ? js.yStep : prev.yStep,
-        rasterSize: typeof js.rasterSize === 'number' ? js.rasterSize : prev.rasterSize,
-        minIou:
-          typeof js.minIou === 'number' && Number.isFinite(js.minIou) ? Math.max(0, Math.min(1, js.minIou)) : prev.minIou,
-        projectionDetail:
-          js.projectionDetail === 'fast' || js.projectionDetail === 'balanced' || js.projectionDetail === 'high'
-            ? js.projectionDetail
-            : prev.projectionDetail,
-      }));
-    } catch (e) {
-      console.warn('[PoseAnnotationPage] 读取 poseFitParams 失败，将使用默认值:', e);
-    }
-  }, [currentProject?.id]);
-
-  // 加载当前项目的 diffdope 参数（用于 6D 姿态推测）
-  useEffect(() => {
-    if (!currentProject?.id) return;
-    const key = `diffDopeParams:${currentProject.id}`;
-    try {
-      const raw = localStorage.getItem(key);
-      if (!raw) return;
-      const js = JSON.parse(raw) as Partial<typeof diffDopeParams>;
-      setDiffDopeParams((prev) => ({
-        iters: typeof js.iters === 'number' && Number.isFinite(js.iters) ? Math.max(1, Math.min(500, Math.round(js.iters))) : prev.iters,
-        batchSize:
-          typeof js.batchSize === 'number' && Number.isFinite(js.batchSize) ? Math.max(1, Math.min(64, Math.round(js.batchSize))) : prev.batchSize,
-        lrLow: typeof js.lrLow === 'number' && Number.isFinite(js.lrLow) ? Math.max(1e-6, js.lrLow) : prev.lrLow,
-        lrHigh: typeof js.lrHigh === 'number' && Number.isFinite(js.lrHigh) ? Math.max(1e-6, js.lrHigh) : prev.lrHigh,
-        baseLr: typeof js.baseLr === 'number' && Number.isFinite(js.baseLr) ? Math.max(1e-6, js.baseLr) : prev.baseLr,
-        lrDecay: typeof js.lrDecay === 'number' && Number.isFinite(js.lrDecay) ? Math.max(1e-6, js.lrDecay) : prev.lrDecay,
-        useMaskLoss: typeof js.useMaskLoss === 'boolean' ? js.useMaskLoss : prev.useMaskLoss,
-        useDepthLoss: typeof js.useDepthLoss === 'boolean' ? js.useDepthLoss : prev.useDepthLoss,
-        useRgbLoss: typeof js.useRgbLoss === 'boolean' ? js.useRgbLoss : prev.useRgbLoss,
-        weightMask: typeof js.weightMask === 'number' && Number.isFinite(js.weightMask) ? Math.max(0, js.weightMask) : prev.weightMask,
-        weightDepth: typeof js.weightDepth === 'number' && Number.isFinite(js.weightDepth) ? Math.max(0, js.weightDepth) : prev.weightDepth,
-        weightRgb: typeof js.weightRgb === 'number' && Number.isFinite(js.weightRgb) ? Math.max(0, js.weightRgb) : prev.weightRgb,
-        returnDebugImages: typeof js.returnDebugImages === 'boolean' ? js.returnDebugImages : prev.returnDebugImages,
-      }));
-    } catch (e) {
-      console.warn('[PoseAnnotationPage] 读取 diffDopeParams 失败，将使用默认值:', e);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentProject?.id]);
-
-  // const savePoseFitParamsToStorage = () => {
-  //   if (!currentProject?.id) return;
-  //   const key = `poseFitParams:${currentProject.id}`;
-  //   try {
-  //     localStorage.setItem(key, JSON.stringify(poseFitParams));
-  //   } catch (e) {
-  //     console.warn('[PoseAnnotationPage] 保存 poseFitParams 失败:', e);
-  //   }
-  // };
-
+  const [estimating6d, setEstimating6d] = useState(false);
   // 从 2D 的 “Mask Label 对照表” 复用项目级 label 列表（localStorage: labelColorMap:${projectId}）
   useEffect(() => {
     if (!currentProject?.id) return;
@@ -258,9 +96,12 @@ const PoseAnnotationPage: React.FC = () => {
     setMeshPreviewDims(null);
   }, [selectedPreviewMesh?.id]);
 
-  const fmtMeters = (v: number) => {
+  // MeshPreview3D 的 bbox 尺寸单位来自模型导出（Blender 默认 m）。
+  // 这里为了全局统一显示 cm：m -> cm。
+  const fmtCmFromMeters = (v: number) => {
     if (!Number.isFinite(v)) return '-';
-    const n = Math.round(v * 100) / 100;
+    const cm = v * 100;
+    const n = Math.round(cm * 100) / 100; // 保留两位小数
     return String(n).replace(/\.0$/, '');
   };
 
@@ -484,6 +325,31 @@ const PoseAnnotationPage: React.FC = () => {
     }
   };
 
+  const handleEstimate6D = async () => {
+    if (!selectedPreviewImage?.id || !currentProject?.id || estimating6d) return;
+    try {
+      setEstimating6d(true);
+      const resp = await pose6dApi.diffdopeEstimate(selectedPreviewImage.id, {
+        projectId: currentProject.id,
+        onlyUniqueMasks: false,
+        returnDebugImages: true,
+      });
+      const results = Array.isArray(resp?.results) ? resp.results : [];
+      const failures = Array.isArray(resp?.failures) ? resp.failures : [];
+      alert(
+        [
+          `AI 6D 姿态标注完成：成功 ${results.length} 条。`,
+          failures.length ? `\n失败/跳过：\n- ${failures.join('\n- ')}` : '',
+          '\n可在“开始人工标注”页面打开“拟合图层”查看效果图。',
+        ].join(''),
+      );
+    } catch (e: any) {
+      alert(e?.response?.data?.message || e?.message || 'AI 6D 姿态标注失败');
+    } finally {
+      setEstimating6d(false);
+    }
+  };
+
   return (
     <div className="annotation-page">
       <header className="page-header">
@@ -541,20 +407,6 @@ const PoseAnnotationPage: React.FC = () => {
                   {/* UI 占位：批量 AI 标注 / 导入 / 导出（功能留空） */}
                   <div className="ai-section">
                     <div className="ai-controls">
-                      <button
-                        type="button"
-                        className="ai-annotation-btn"
-                        onClick={() => {
-                          if (!currentProject) {
-                            alert('请先选择项目');
-                            return;
-                          }
-                          console.log('[PoseAnnotationPage][poseFitParams] open modal', { poseFitParams: { ...poseFitParams } });
-                          setShowPoseFitParamModal(true);
-                        }}
-                      >
-                        调整拟合参数
-                      </button>
                       <button
                         type="button"
                         className="ai-annotation-btn"
@@ -639,9 +491,9 @@ const PoseAnnotationPage: React.FC = () => {
                       {/* 按钮下方：mesh 尺寸（xyz） */}
                       {meshPreviewDims && (
                         <div className="mesh-dims-panel" style={{ position: 'absolute', top: 48, left: 10, zIndex: 10 }}>
-                          <div>长（x）：{fmtMeters(meshPreviewDims.x)} 米</div>
-                          <div>高（y）：{fmtMeters(meshPreviewDims.y)} 米</div>
-                          <div>宽（z）：{fmtMeters(meshPreviewDims.z)} 米</div>
+                          <div>长（x）：{fmtCmFromMeters(meshPreviewDims.x)} cm</div>
+                          <div>高（y）：{fmtCmFromMeters(meshPreviewDims.y)} cm</div>
+                          <div>宽（z）：{fmtCmFromMeters(meshPreviewDims.z)} cm</div>
                         </div>
                       )}
                     </div>
@@ -783,110 +635,6 @@ const PoseAnnotationPage: React.FC = () => {
                       />
                     </div>
 
-                    {/* Diff-DOPE overlay：直接叠在预览图上，立即验收对齐效果 */}
-                    {pose6dOverlay &&
-                      pose6dOverlay.imageId === Number(selectedPreviewImage.id) &&
-                      pose6dOverlay.overlayRgbPngB64 && (
-                        <img
-                          src={`data:image/png;base64,${pose6dOverlay.overlayRgbPngB64}`}
-                          alt="diffdope overlay"
-                          className="preview-image"
-                          style={{
-                            position: 'absolute',
-                            inset: 0,
-                            margin: 'auto',
-                            zIndex: 26,
-                            pointerEvents: 'none',
-                            opacity: 0.98,
-                          }}
-                        />
-                      )}
-
-                    {/* 若没有 RGB overlay，但有 loss plot，也直接叠加显示（用于确认“确实跑完并产出了 debug”） */}
-                    {pose6dOverlay &&
-                      pose6dOverlay.imageId === Number(selectedPreviewImage.id) &&
-                      !pose6dOverlay.overlayRgbPngB64 &&
-                      pose6dOverlay.lossPlotPngB64 && (
-                        <img
-                          src={`data:image/png;base64,${pose6dOverlay.lossPlotPngB64}`}
-                          alt="diffdope loss plot"
-                          style={{
-                            position: 'absolute',
-                            top: 10,
-                            right: 10,
-                            zIndex: 26,
-                            width: 320,
-                            height: 'auto',
-                            borderRadius: 10,
-                            border: '1px solid rgba(148,163,184,0.25)',
-                            background: 'rgba(15,23,42,0.35)',
-                            pointerEvents: 'none',
-                          }}
-                        />
-                      )}
-
-                    {/* Diff-DOPE overlay info + clear */}
-                    {pose6dOverlay &&
-                      pose6dOverlay.imageId === Number(selectedPreviewImage.id) &&
-                      (pose6dOverlay.overlayRgbPngB64 || pose6dOverlay.lossPlotPngB64 || pose6dOverlay.error) && (
-                        <div
-                          style={{
-                            position: 'absolute',
-                            top: 10,
-                            left: 10,
-                            zIndex: 27,
-                            display: 'flex',
-                            gap: '0.5rem',
-                            alignItems: 'center',
-                          }}
-                        >
-                          <div
-                            style={{
-                              padding: '0.35rem 0.55rem',
-                              borderRadius: 10,
-                              background: 'rgba(15,23,42,0.55)',
-                              border: '1px solid rgba(148,163,184,0.25)',
-                              color: '#e2e8f0',
-                              fontSize: '0.82rem',
-                              backdropFilter: 'blur(6px)',
-                              maxWidth: 520,
-                              lineHeight: 1.25,
-                            }}
-                          >
-                            {`Diff-DOPE: ${
-                              pose6dOverlay.meshId ? `meshId=${pose6dOverlay.meshId}` : '（无 meshId）'
-                            }${pose6dOverlay.label ? ` label=${pose6dOverlay.label}` : ''}${
-                              typeof pose6dOverlay.timingSec === 'number' ? ` time=${pose6dOverlay.timingSec.toFixed(2)}s` : ''
-                            }${
-                              pose6dOverlay.overlayRgbPngB64
-                                ? '  overlay=RGB'
-                                : pose6dOverlay.lossPlotPngB64
-                                ? '  overlay=lossPlot(仅)'
-                                : pose6dOverlay.error
-                                ? `  overlay=无（${pose6dOverlay.error}）`
-                                : ''
-                            }`}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setPose6dOverlay(null)}
-                            style={{
-                              padding: '0.35rem 0.55rem',
-                              borderRadius: 10,
-                              border: '1px solid rgba(148,163,184,0.35)',
-                              background: 'rgba(30,41,59,0.55)',
-                              color: '#e2e8f0',
-                              cursor: 'pointer',
-                              backdropFilter: 'blur(6px)',
-                              fontSize: '0.82rem',
-                            }}
-                            title="清除 overlay"
-                          >
-                            清除
-                          </button>
-                        </div>
-                      )}
-
                   </div>
                   <div className="preview-actions">
                     <button
@@ -897,19 +645,17 @@ const PoseAnnotationPage: React.FC = () => {
                       ← 上一张
                     </button>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <div style={{ color: '#666', fontSize: '0.9rem' }}>
-                        Pose 预览（后续将支持：mesh 渲染、深度叠加、姿态结果）
-                      </div>
-                      <PoseInitialPoseButton
-                        projectId={currentProject?.id ?? null}
-                        image={selectedPreviewImage}
-                      />
-                      <Pose6dEstimateButton
-                        projectId={currentProject?.id ?? null}
-                        image={selectedPreviewImage}
-                        diffDopeParams={diffDopeParams}
-                        setPose6dOverlay={setPose6dOverlay}
-                      />
+                      {selectedPreviewImage && (
+                        <button
+                          type="button"
+                          className="ai-prompt-modal-btn secondary"
+                          disabled={estimating6d}
+                          onClick={handleEstimate6D}
+                          title="调用 Diff-DOPE 进行 AI 6D 姿态标注"
+                        >
+                          {estimating6d ? 'AI计算中...' : 'AI 6D姿态标注'}
+                        </button>
+                      )}
                       {selectedPreviewImage && (
                         <button
                           type="button"
@@ -1097,251 +843,6 @@ const PoseAnnotationPage: React.FC = () => {
         </div>
       </div>
 
-      {/* 拟合参数弹窗（已废弃，目前仅作为占位说明） */}
-      {showPoseFitParamModal && (
-        <div
-          className="ai-prompt-modal-backdrop"
-          onClick={() => setShowPoseFitParamModal(false)}
-        >
-          <div
-            className="ai-prompt-modal"
-            style={{ width: 'min(720px, 94vw)' }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="ai-prompt-modal-title">Diff-DOPE 参数（6D 姿态推测）</h3>
-            <p className="ai-prompt-modal-desc">这些参数会直接影响梯度下降优化（lr、迭代次数、loss 权重等）。保存后仅对当前项目生效。</p>
-
-            <div className="ai-prompt-modal-body">
-              <div className="model-param-group" style={{ maxHeight: 460 }}>
-                <div className="model-param-row">
-                  <div className="model-param-label">
-                    <span>nb_iterations</span>
-                    <span className="model-param-value">{diffDopeParams.iters}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={1}
-                    max={200}
-                    step={1}
-                    value={diffDopeParams.iters}
-                    onChange={(e) => setDiffDopeParams((p) => ({ ...p, iters: Math.max(1, Math.min(500, Number(e.target.value) || 60)) }))}
-                  />
-                  <div className="model-param-hint">迭代次数越高越慢，但可能更稳定。</div>
-                </div>
-
-                <div className="model-param-row">
-                  <div className="model-param-label">
-                    <span>batchsize</span>
-                    <span className="model-param-value">{diffDopeParams.batchSize}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={1}
-                    max={32}
-                    step={1}
-                    value={diffDopeParams.batchSize}
-                    onChange={(e) => setDiffDopeParams((p) => ({ ...p, batchSize: Math.max(1, Math.min(64, Number(e.target.value) || 8)) }))}
-                  />
-                  <div className="model-param-hint">batch 越大越吃显存/更平滑；无 GPU 时建议小一点。</div>
-                </div>
-
-                <div className="model-param-row">
-                  <div className="model-param-label">
-                    <span>learning_rates_bound.low (lrLow)</span>
-                    <span className="model-param-value">{diffDopeParams.lrLow}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.000001}
-                    max={5}
-                    step={0.000001}
-                    value={diffDopeParams.lrLow}
-                    onChange={(e) =>
-                      setDiffDopeParams((p) => {
-                        const v = Math.max(1e-6, Number(e.target.value) || 0.01);
-                        const hi = Math.max(v * 1.0001, p.lrHigh);
-                        return { ...p, lrLow: v, lrHigh: hi };
-                      })
-                    }
-                  />
-                  <div className="model-param-hint">学习率下界（避免过小/过大导致不稳定）。</div>
-                </div>
-
-                <div className="model-param-row">
-                  <div className="model-param-label">
-                    <span>learning_rates_bound.high (lrHigh)</span>
-                    <span className="model-param-value">{diffDopeParams.lrHigh}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.001}
-                    max={200}
-                    step={0.001}
-                    value={diffDopeParams.lrHigh}
-                    onChange={(e) =>
-                      setDiffDopeParams((p) => {
-                        const v = Math.max(1e-6, Number(e.target.value) || 100);
-                        const lo = Math.min(p.lrLow, v / 1.0001);
-                        return { ...p, lrHigh: v, lrLow: Math.max(1e-6, lo) };
-                      })
-                    }
-                  />
-                  <div className="model-param-hint">学习率上界（过大可能震荡/发散）。</div>
-                </div>
-
-                <div className="model-param-row">
-                  <div className="model-param-label">
-                    <span>base_lr</span>
-                    <span className="model-param-value">{diffDopeParams.baseLr}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.001}
-                    max={80}
-                    step={0.001}
-                    value={diffDopeParams.baseLr}
-                    onChange={(e) => setDiffDopeParams((p) => ({ ...p, baseLr: Math.max(1e-6, Number(e.target.value) || 20) }))}
-                  />
-                  <div className="model-param-hint">基础学习率（配合 bound 与 decay）。</div>
-                </div>
-
-                <div className="model-param-row">
-                  <div className="model-param-label">
-                    <span>lr_decay</span>
-                    <span className="model-param-value">{diffDopeParams.lrDecay}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.000001}
-                    max={1}
-                    step={0.000001}
-                    value={diffDopeParams.lrDecay}
-                    onChange={(e) => setDiffDopeParams((p) => ({ ...p, lrDecay: Math.max(1e-6, Number(e.target.value) || 0.1) }))}
-                  />
-                  <div className="model-param-hint">学习率衰减系数（越小衰减越快）。</div>
-                </div>
-
-                <div className="model-param-row">
-                  <div className="model-param-label">
-                    <span>loss toggles</span>
-                    <span className="model-param-value">
-                      {diffDopeParams.useMaskLoss ? 'mask' : ''}{diffDopeParams.useDepthLoss ? '+depth' : ''}{diffDopeParams.useRgbLoss ? '+rgb' : ''}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', color: '#1e293b' }}>
-                      <input
-                        type="checkbox"
-                        checked={diffDopeParams.useMaskLoss}
-                        onChange={(e) => setDiffDopeParams((p) => ({ ...p, useMaskLoss: e.target.checked }))}
-                      />
-                      mask
-                    </label>
-                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', color: '#1e293b' }}>
-                      <input
-                        type="checkbox"
-                        checked={diffDopeParams.useDepthLoss}
-                        onChange={(e) => setDiffDopeParams((p) => ({ ...p, useDepthLoss: e.target.checked }))}
-                      />
-                      depth
-                    </label>
-                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', color: '#1e293b' }}>
-                      <input
-                        type="checkbox"
-                        checked={diffDopeParams.useRgbLoss}
-                        onChange={(e) => setDiffDopeParams((p) => ({ ...p, useRgbLoss: e.target.checked }))}
-                      />
-                      rgb
-                    </label>
-                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', color: '#1e293b' }}>
-                      <input
-                        type="checkbox"
-                        checked={diffDopeParams.returnDebugImages}
-                        onChange={(e) => setDiffDopeParams((p) => ({ ...p, returnDebugImages: e.target.checked }))}
-                      />
-                      debug images
-                    </label>
-                  </div>
-                  <div className="model-param-hint">一般建议至少开 mask；depth 需要真实单通道深度才有意义。</div>
-                </div>
-
-                <div className="model-param-row">
-                  <div className="model-param-label">
-                    <span>weight_mask</span>
-                    <span className="model-param-value">{diffDopeParams.weightMask}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={5}
-                    step={0.01}
-                    value={diffDopeParams.weightMask}
-                    onChange={(e) => setDiffDopeParams((p) => ({ ...p, weightMask: Math.max(0, Number(e.target.value) || 1) }))}
-                  />
-                </div>
-
-                <div className="model-param-row">
-                  <div className="model-param-label">
-                    <span>weight_depth</span>
-                    <span className="model-param-value">{diffDopeParams.weightDepth}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={5}
-                    step={0.01}
-                    value={diffDopeParams.weightDepth}
-                    onChange={(e) => setDiffDopeParams((p) => ({ ...p, weightDepth: Math.max(0, Number(e.target.value) || 1) }))}
-                  />
-                </div>
-
-                <div className="model-param-row">
-                  <div className="model-param-label">
-                    <span>weight_rgb</span>
-                    <span className="model-param-value">{diffDopeParams.weightRgb}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={5}
-                    step={0.01}
-                    value={diffDopeParams.weightRgb}
-                    onChange={(e) => setDiffDopeParams((p) => ({ ...p, weightRgb: Math.max(0, Number(e.target.value) || 0.7) }))}
-                  />
-                </div>
-              </div>
-            </div>
-            <div className="ai-prompt-modal-actions">
-              <button
-                type="button"
-                className="ai-prompt-modal-btn secondary"
-                onClick={() => setDiffDopeParams(DEFAULT_DIFFDOPE_PARAMS)}
-              >
-                恢复默认
-              </button>
-              <button
-                type="button"
-                className="ai-prompt-modal-btn primary"
-                onClick={() => {
-                  if (!currentProject?.id) {
-                    setShowPoseFitParamModal(false);
-                    return;
-                  }
-                  const key = `diffDopeParams:${currentProject.id}`;
-                  try {
-                    localStorage.setItem(key, JSON.stringify(diffDopeParams));
-                  } catch (e) {
-                    console.warn('[PoseAnnotationPage] 保存 diffDopeParams 失败:', e);
-                  }
-                  setShowPoseFitParamModal(false);
-                }}
-              >
-                保存并关闭
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

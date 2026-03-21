@@ -2,6 +2,31 @@
 
 ## 开发进展
 
+### V2.3 最新进展（2026年3月22日）
+- [x] **成功接入 Diff-DOPE（单 Mesh 6D 姿态）**：
+  - Pose 页面新增 `AI 6D姿态标注` 入口，支持对当前图片执行 6D 姿态推理
+  - 采用与本地验证脚本一致的两阶段优化流程（粗定位 + 精修）
+  - 拟合结果图落盘到 `server/uploads/project_<id>/pose-fit-overlays/`
+  - 数据库存储拟合图相对路径，并在人工标注页“拟合图层”读取展示
+- [x] **人工标注显示一致性优化**：
+  - RGB / 深度 / 拟合图层统一按 RGB 显示区域渲染，缩放比例保持一致
+  - 拟合图层拆分为独立组件 `PoseFitLayer.tsx`
+
+### V2.2 最新进展（2026年3月21日）
+- [x] **9D Pose 页面功能收敛（按当前验收范围精简）**：
+  - 删除 Pose 入口页的“确定初始位姿”与“6D姿态推测”按钮及其前端调用链
+  - 删除 Pose 入口页中的“Pose 预览（后续将支持：mesh 渲染、深度叠加、姿态结果）”占位文案
+  - 删除人工标注页“拟合图层”“点云图层”入口及其关联状态/副作用逻辑
+  - 人工标注页当前仅保留 RGB / Mask / 深度 三类图层
+- [x] **组件与死代码清理**：
+  - 删除 `PoseInitialPoseButton.tsx`
+  - 删除 `Pose6dEstimateButton.tsx`
+  - 删除 `PoseFitOverlay.tsx`
+  - 删除 `PointCloudPreview3D.tsx`
+  - 删除 `PointCloudMeshInteraction.tsx`
+- [x] **文档同步**：
+  - `README.md` 升级为 `V2.2`，并同步当前可用功能与目录结构
+
 ### V2.1 最新进展（2026年3月20日）
 - [x] **9D Pose 标注功能完善**：
   - Mesh 上传器拆分为 Mesh 和 Depth 两个独立模块，不同背景色区分

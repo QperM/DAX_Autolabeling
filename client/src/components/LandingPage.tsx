@@ -760,7 +760,7 @@ const LandingPage: React.FC = () => {
       <div className="landing-content">
         <header className="landing-header">
           <h1>智能图像标注系统</h1>
-          <p className="subtitle">V1.0</p>
+          <p className="subtitle">V2.1</p>
         </header>
 
         {/* 顶部：项目管理区域（始终展示） */}

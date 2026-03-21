@@ -1,7 +1,7 @@
 # 智能图像标注系统
 
-**版本：V2.1**  
-**最后更新：2026年3月20日**
+**版本：V2.3**  
+**最后更新：2026年3月22日**
 
 ## 项目概述
 
@@ -48,14 +48,12 @@
 - ✅ Mesh 资源包兼容：解析 OBJ 内 `mtllib`，并加载同目录 MTL/贴图资源
 - ✅ 3D 预览：基于 Three.js 的交互预览（OrbitControls、光照/网格、自动居中与缩放）
 - ✅ Mesh 缩略图：列表中静态截图预览（自动取景 + 可调视角偏移/拉远）
-- ✅ 点云显示：已具备点云显示的前端能力（用于 9D Pose 工作流可视化基础）
 - ✅ **Mesh 上传器优化**：拆分为 Mesh 和 Depth 两个独立上传模块，不同背景色区分
-- ✅ **9D Pose 标注功能**：
-  - 支持多 Mesh 在同一图片中的位置标注（位置、旋转、缩放）
-  - 9D Pose 数据按图片和 Mesh 正确保存和加载
-  - 支持在 3D 预览中点击选择 Mesh 进行编辑
-  - TransformControls 交互优化，修复 scale 异常变化问题
-  - 手动保存时显示成功提示
+- ✅ **Diff-DOPE 6D 姿态接入（单 Mesh）**：
+  - Pose 入口页支持单图触发 `AI 6D姿态标注`
+  - 以当前图片的 mask + mesh 匹配结果执行 Diff-DOPE 两阶段优化（粗定位 + 精修）
+  - 拟合结果图会写入项目目录并在人工标注页“拟合图层”中叠加展示
+  - 当前已支持单个 Mesh 的 6D 姿态标注流程
 - ✅ **深度数据管理**：支持 PNG/TIFF/NPY 格式深度数据上传和管理
 
 #### 3. 标注工作界面
@@ -66,7 +64,7 @@
 - ✅ **图层切换功能**：支持背景图层 / 标注图层（Mask+BoundingBox） / 仅 BoundingBox 图层三种模式切换
 - ✅ AI 分割 Mask 图层切换展示（背景图层 / 标注图层）
 - ✅ **图层切换优化**：
-  - 切换图片时自动加载对应的深度数据和点云图层
+  - 切换图片时自动加载当前图片对应的图层数据
   - Mask 图层切换时正确加载和显示 2D 标注数据
   - 修复图层切换时的数据加载竞态问题
 
@@ -142,25 +140,19 @@ DAX_Autolabeling/
 │   │   ├── components/    # 组件目录
 │   │   │   ├── AnnotationCanvas.tsx  # 标注画布组件
 │   │   │   ├── AnnotationPage.tsx     # 标注页面组件
-│   │   │   ├── PoseAnnotationPage.tsx # 9D Pose 标注页面（Mesh/点云等）
+│   │   │   ├── PoseAnnotationPage.tsx # 9D Pose 标注页面（Mesh/图片预览）
 │   │   │   ├── ImageList.tsx         # 图像列表组件
 │   │   │   ├── ImageUploader.tsx     # 图像上传组件
 │   │   │   ├── LandingPage.tsx       # 首页导览组件
 │   │   │   ├── ManualAnnotation.tsx  # 手动标注组件
-│   │   │   ├── DepthUploader.tsx     # Depth/点云上传组件
-│   │   │   ├── AxisGizmo.tsx         # 3D 坐标轴 Gizmo 构建
+│   │   │   ├── DepthUploader.tsx     # Depth 上传组件
 │   │   │   ├── MeshUploader.tsx      # Mesh 上传组件（OBJ/资源）
 │   │   │   ├── MeshPreview3D.tsx     # 3D Mesh 预览组件（Three.js）
 │   │   │   ├── MeshThumbnail.tsx     # Mesh 缩略图组件（静态截图）
-│   │   │   ├── PoseInitialPoseButton.tsx # 初始位姿计算/入库按钮
-│   │   │   ├── Pose6dEstimateButton.tsx   # Diff-DOPE 6D 姿态推测按钮
-│   │   │   ├── InitialPoseFitOverlay.tsx  # 拟合图层（bbox 投影）显示
-│   │   │   └── PointCloudMeshInteraction.tsx # 3D 点云/mesh 交互逻辑（hook）
 │   │   │   └── *.css                 # 样式文件
 │   │   ├── services/      # API服务
 │   │   │   └── api.ts                # 后端API接口
-│   │   ├── diffdopeOverlayCache.ts # Diff-DOPE overlay 缓存工具
-│   │   ├── poseAutoOpen3D.ts       # 3D 场景自动打开工具
+│   │   ├── poseAutoOpen3D.ts       # Pose 页面状态辅助工具
 │   │   ├── store/         # 状态管理
 │   │   │   ├── annotationSlice.ts    # 标注状态切片
 │   │   │   └── index.ts              # Store配置

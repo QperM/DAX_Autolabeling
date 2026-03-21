@@ -2,12 +2,16 @@ function makePose9dRepo(db) {
   return {
     savePose9D: (imageId, meshId, poseJson, callback) => {
       const meshIdVal = meshId == null ? null : Number(meshId);
-      const payload = typeof poseJson === 'string' ? poseJson : JSON.stringify(poseJson || {});
+      let poseObj = poseJson || {};
+      if (typeof poseJson === 'string') {
+        try { poseObj = JSON.parse(poseJson || '{}'); } catch (_) { poseObj = {}; }
+      }
+      const payload = JSON.stringify({ pose: poseObj });
       const sql = `
-        INSERT INTO pose9d_annotations (image_id, mesh_id, pose_json, updated_at)
+        INSERT INTO pose9d_annotations (image_id, mesh_id, diffdope_json, updated_at)
         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(image_id, mesh_id) DO UPDATE SET
-          pose_json = excluded.pose_json,
+          diffdope_json = excluded.diffdope_json,
           updated_at = CURRENT_TIMESTAMP
       `;
       db.run(sql, [imageId, meshIdVal, payload], function (err) {
@@ -17,41 +21,24 @@ function makePose9dRepo(db) {
     },
 
     updatePose9DInitialPose: (imageId, meshId, initialPoseJson, callback) => {
-      const meshIdVal = meshId == null ? null : Number(meshId);
-      const payload =
-        initialPoseJson == null
-          ? null
-          : (typeof initialPoseJson === 'string' ? initialPoseJson : JSON.stringify(initialPoseJson || {}));
-      const sql = `
-        UPDATE pose9d_annotations
-        SET initial_pose_json = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE image_id = ? AND mesh_id ${meshIdVal == null ? 'IS NULL' : '= ?'}
-      `;
-      const params = meshIdVal == null ? [payload, imageId] : [payload, imageId, meshIdVal];
-      db.run(sql, params, function (err) {
-        if (err && String(err?.message || '').includes('no such column: initial_pose_json')) {
-          if (callback) return callback(null, 0);
-          return;
-        }
-        if (callback) callback(err, this.changes || 0);
-      });
+      // Diff-DOPE 专用表：不再单独维护 initial pose 列
+      if (callback) callback(null, 0);
     },
 
-    updatePose9DDiffDope: (imageId, meshId, diffdopeJson, callback) => {
+    updatePose9DDiffDope: (imageId, meshId, diffdopeJson, fitOverlayPath, callback) => {
       const meshIdVal = meshId == null ? null : Number(meshId);
       const payload =
         diffdopeJson == null ? null : (typeof diffdopeJson === 'string' ? diffdopeJson : JSON.stringify(diffdopeJson || {}));
       const sql = `
-        UPDATE pose9d_annotations
-        SET diffdope_json = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE image_id = ? AND mesh_id ${meshIdVal == null ? 'IS NULL' : '= ?'}
+        INSERT INTO pose9d_annotations (image_id, mesh_id, diffdope_json, fit_overlay_path, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(image_id, mesh_id) DO UPDATE SET
+          diffdope_json = excluded.diffdope_json,
+          fit_overlay_path = excluded.fit_overlay_path,
+          updated_at = CURRENT_TIMESTAMP
       `;
-      const params = meshIdVal == null ? [payload, imageId] : [payload, imageId, meshIdVal];
+      const params = [imageId, meshIdVal, payload || '{}', fitOverlayPath];
       db.run(sql, params, function (err) {
-        if (err && String(err?.message || '').includes('no such column: diffdope_json')) {
-          if (callback) return callback(null, 0);
-          return;
-        }
         if (callback) callback(err, this.changes || 0);
       });
     },
@@ -59,7 +46,7 @@ function makePose9dRepo(db) {
     getPose9D: (imageId, meshId, callback) => {
       const meshIdVal = meshId == null ? null : Number(meshId);
       const baseSql = `
-        SELECT id, image_id, mesh_id, pose_json, initial_pose_json, diffdope_json, created_at, updated_at
+        SELECT id, image_id, mesh_id, diffdope_json, fit_overlay_path, created_at, updated_at
         FROM pose9d_annotations
         WHERE image_id = ?
       `;
@@ -71,16 +58,18 @@ function makePose9dRepo(db) {
       db.get(sql, params, (err, row) => {
         if (err) return callback(err, null);
         if (!row) return callback(null, null);
-        try { row.pose = JSON.parse(row.pose_json || '{}'); } catch (_) { row.pose = null; }
-        try { row.initialPose = row.initial_pose_json ? JSON.parse(row.initial_pose_json) : null; } catch (_) { row.initialPose = null; }
+        row.pose = null;
+        row.initialPose = null;
         try { row.diffdope = row.diffdope_json ? JSON.parse(row.diffdope_json) : null; } catch (_) { row.diffdope = null; }
+        row.fitOverlayPath = row.fit_overlay_path || null;
+        if (row.diffdope && row.diffdope.pose) row.pose = row.diffdope.pose;
         callback(null, row);
       });
     },
 
     listPose9DByImageId: (imageId, callback) => {
       const sql = `
-        SELECT id, image_id, mesh_id, pose_json, initial_pose_json, diffdope_json, created_at, updated_at
+        SELECT id, image_id, mesh_id, diffdope_json, fit_overlay_path, created_at, updated_at
         FROM pose9d_annotations
         WHERE image_id = ?
         ORDER BY updated_at DESC
@@ -89,9 +78,11 @@ function makePose9dRepo(db) {
         if (err) return callback(err, []);
         const formatted = (rows || []).map((row) => {
           const r = { ...row };
-          try { r.pose = JSON.parse(row.pose_json || '{}'); } catch (_) { r.pose = null; }
-          try { r.initialPose = row.initial_pose_json ? JSON.parse(row.initial_pose_json) : null; } catch (_) { r.initialPose = null; }
+          r.pose = null;
+          r.initialPose = null;
           try { r.diffdope = row.diffdope_json ? JSON.parse(row.diffdope_json) : null; } catch (_) { r.diffdope = null; }
+          r.fitOverlayPath = row.fit_overlay_path || null;
+          if (r.diffdope && r.diffdope.pose) r.pose = r.diffdope.pose;
           return r;
         });
         callback(null, formatted);

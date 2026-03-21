@@ -52,6 +52,80 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   const [pendingRenameMaskId, setPendingRenameMaskId] = useState<string | null>(null);
   const [renameTargetMaskIds, setRenameTargetMaskIds] = useState<string[]>([]);
 
+  // 基于与“重命名”一致的 IoU 规则，为一组 mask 找到一一对应的 bbox 下标
+  const getMatchedBoundingBoxIndicesByMaskIds = (maskIds: string[]): Set<number> => {
+    const selectedMaskIdSet = new Set(maskIds);
+    const selectedMasks = masks.filter((m) => selectedMaskIdSet.has(m.id));
+    const maskBoxById = new Map<string, { x1: number; y1: number; x2: number; y2: number }>();
+    selectedMasks.forEach((m) => {
+      if (!m.points || m.points.length < 2) return;
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (let i = 0; i < m.points.length; i += 2) {
+        const x = Number(m.points[i]);
+        const y = Number(m.points[i + 1]);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+      if (![minX, minY, maxX, maxY].every((v) => Number.isFinite(v))) return;
+      maskBoxById.set(m.id, { x1: minX, y1: minY, x2: maxX, y2: maxY });
+    });
+
+    const iou = (a: { x1: number; y1: number; x2: number; y2: number }, b: { x1: number; y1: number; x2: number; y2: number }) => {
+      const ix1 = Math.max(a.x1, b.x1);
+      const iy1 = Math.max(a.y1, b.y1);
+      const ix2 = Math.min(a.x2, b.x2);
+      const iy2 = Math.min(a.y2, b.y2);
+      const iw = ix2 - ix1;
+      const ih = iy2 - iy1;
+      if (iw <= 0 || ih <= 0) return 0;
+      const inter = iw * ih;
+      const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
+      const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+      const union = areaA + areaB - inter;
+      if (union <= 0) return 0;
+      return inter / union;
+    };
+
+    const candidates = selectedMasks
+      .map((m) => {
+        const mb = maskBoxById.get(m.id);
+        if (!mb) return null;
+        let bestIdx = -1;
+        let bestIoU = 0;
+        for (let i = 0; i < boundingBoxes.length; i++) {
+          const bb = boundingBoxes[i];
+          const bbBox = { x1: bb.x, y1: bb.y, x2: bb.x + bb.width, y2: bb.y + bb.height };
+          const s = iou(mb, bbBox);
+          if (s > bestIoU) {
+            bestIoU = s;
+            bestIdx = i;
+          }
+        }
+        return { bestIdx, bestIoU };
+      })
+      .filter(Boolean) as Array<{ bestIdx: number; bestIoU: number }>;
+
+    candidates.sort((a, b) => b.bestIoU - a.bestIoU);
+
+    const usedBboxIdx = new Set<number>();
+    const selectedBboxIdx = new Set<number>();
+    const MIN_IOU = 0.01;
+    for (const c of candidates) {
+      if (c.bestIdx < 0) continue;
+      if (c.bestIoU < MIN_IOU) continue;
+      if (usedBboxIdx.has(c.bestIdx)) continue;
+      usedBboxIdx.add(c.bestIdx);
+      selectedBboxIdx.add(c.bestIdx);
+    }
+    return selectedBboxIdx;
+  };
+
   // 键盘快捷键（点编辑模式）：Delete 删除点，I 插入新点
   useEffect(() => {
     if (toolMode !== 'select') return;
@@ -154,6 +228,13 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
       // 删除整块 Mask
       if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (onBoundingBoxUpdate) {
+          const selectedBboxIdx = getMatchedBoundingBoxIndicesByMaskIds(selectedMaskIds);
+          if (selectedBboxIdx.size > 0) {
+            const updatedBBoxes = boundingBoxes.filter((_, idx) => !selectedBboxIdx.has(idx));
+            onBoundingBoxUpdate(updatedBBoxes);
+          }
+        }
         const updatedMasks = masks.filter(mask => !selectedMaskIds.includes(mask.id));
         onMaskUpdate(updatedMasks);
         setSelectedMaskIds([]);
@@ -210,7 +291,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [toolMode, selectedMaskIds, masks, onMaskUpdate, imageScale]);
+  }, [toolMode, selectedMaskIds, masks, onMaskUpdate, onBoundingBoxUpdate, boundingBoxes, imageScale]);
 
   // 处理R键改名弹窗的确认
   const handleRenameConfirm = () => {
@@ -374,77 +455,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     // - 与所有 bbox 计算 IoU，选择 IoU 最大的那个作为“对应 bbox”
     // - 多选时尽量避免多个 mask 指向同一个 bbox（贪心去重）
     if (onBoundingBoxUpdate) {
-      const selectedMaskIdSet = new Set(renameTargetMaskIds);
-      const selectedMasks = masks.filter((m) => selectedMaskIdSet.has(m.id));
-      const maskBoxById = new Map<string, { x1: number; y1: number; x2: number; y2: number }>();
-      selectedMasks.forEach((m) => {
-        if (!m.points || m.points.length < 2) return;
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (let i = 0; i < m.points.length; i += 2) {
-          const x = Number(m.points[i]);
-          const y = Number(m.points[i + 1]);
-          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-          if (x < minX) minX = x;
-          if (y < minY) minY = y;
-          if (x > maxX) maxX = x;
-          if (y > maxY) maxY = y;
-        }
-        if (![minX, minY, maxX, maxY].every((v) => Number.isFinite(v))) return;
-        maskBoxById.set(m.id, { x1: minX, y1: minY, x2: maxX, y2: maxY });
-      });
-
-      const iou = (a: { x1: number; y1: number; x2: number; y2: number }, b: { x1: number; y1: number; x2: number; y2: number }) => {
-        const ix1 = Math.max(a.x1, b.x1);
-        const iy1 = Math.max(a.y1, b.y1);
-        const ix2 = Math.min(a.x2, b.x2);
-        const iy2 = Math.min(a.y2, b.y2);
-        const iw = ix2 - ix1;
-        const ih = iy2 - iy1;
-        if (iw <= 0 || ih <= 0) return 0;
-        const inter = iw * ih;
-        const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
-        const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
-        const union = areaA + areaB - inter;
-        if (union <= 0) return 0;
-        return inter / union;
-      };
-
-      // 先为每个 mask 找到 best bbox（按 IoU），再做去重分配
-      const candidates = selectedMasks
-        .map((m) => {
-          const mb = maskBoxById.get(m.id);
-          if (!mb) return null;
-          let bestIdx = -1;
-          let bestIoU = 0;
-          for (let i = 0; i < boundingBoxes.length; i++) {
-            const bb = boundingBoxes[i];
-            const bbBox = { x1: bb.x, y1: bb.y, x2: bb.x + bb.width, y2: bb.y + bb.height };
-            const s = iou(mb, bbBox);
-            if (s > bestIoU) {
-              bestIoU = s;
-              bestIdx = i;
-            }
-          }
-          return { maskId: m.id, bestIdx, bestIoU };
-        })
-        .filter(Boolean) as Array<{ maskId: string; bestIdx: number; bestIoU: number }>;
-
-      // IoU 大的优先占用 bbox
-      candidates.sort((a, b) => b.bestIoU - a.bestIoU);
-
-      const usedBboxIdx = new Set<number>();
-      const selectedBboxIdx = new Set<number>();
-
-      // 阈值：太小则认为“没有对应 bbox”，不改 bbox
-      const MIN_IOU = 0.01;
-      for (const c of candidates) {
-        if (c.bestIdx < 0) continue;
-        if (c.bestIoU < MIN_IOU) continue;
-        if (usedBboxIdx.has(c.bestIdx)) continue;
-        usedBboxIdx.add(c.bestIdx);
-        selectedBboxIdx.add(c.bestIdx);
-      }
-
+      const selectedBboxIdx = getMatchedBoundingBoxIndicesByMaskIds(renameTargetMaskIds);
       if (selectedBboxIdx.size > 0) {
         const updatedBBoxes = boundingBoxes.map((bb, idx) => {
           if (!selectedBboxIdx.has(idx)) return bb;

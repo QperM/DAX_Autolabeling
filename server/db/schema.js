@@ -13,93 +13,6 @@ function deleteProjectFolder(projectId) {
   }
 }
 
-function repairPose9dForeignKeyIfPointsToMeshesOld(db) {
-  db.serialize(() => {
-    db.all('PRAGMA foreign_key_list(pose9d_annotations)', (err, rows) => {
-      if (err) return;
-      const fkRows = Array.isArray(rows) ? rows : [];
-      const pointsToMeshesOld = fkRows.some((r) => String(r?.table || '') === 'meshes_old');
-      if (!pointsToMeshesOld) return;
-
-      console.warn('[DB] 检测到 pose9d_annotations 外键指向 meshes_old，开始重建修复...');
-
-      db.run('PRAGMA foreign_keys = OFF', () => {
-        db.run('BEGIN TRANSACTION', (beginErr) => {
-          if (beginErr) {
-            db.run('PRAGMA foreign_keys = ON', () => {});
-            return;
-          }
-
-          db.run('ALTER TABLE pose9d_annotations RENAME TO pose9d_annotations_old', (renameErr) => {
-            if (renameErr) {
-              db.run('ROLLBACK', () => db.run('PRAGMA foreign_keys = ON', () => {}));
-              return;
-            }
-
-            db.run(
-              `
-              CREATE TABLE IF NOT EXISTS pose9d_annotations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                image_id INTEGER NOT NULL,
-                mesh_id INTEGER,
-                pose_json TEXT NOT NULL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                initial_pose_json TEXT,
-                diffdope_json TEXT,
-                FOREIGN KEY (image_id) REFERENCES images (id) ON DELETE CASCADE,
-                FOREIGN KEY (mesh_id) REFERENCES meshes (id) ON DELETE SET NULL,
-                UNIQUE(image_id, mesh_id)
-              )
-              `,
-              (createErr) => {
-                if (createErr) {
-                  db.run('ROLLBACK', () => db.run('PRAGMA foreign_keys = ON', () => {}));
-                  return;
-                }
-
-                const copySql = `
-                  INSERT INTO pose9d_annotations (
-                    id, image_id, mesh_id, pose_json, created_at, updated_at,
-                    initial_pose_json, diffdope_json
-                  )
-                  SELECT
-                    id, image_id, mesh_id, pose_json, created_at, updated_at,
-                    NULLIF(initial_pose_json, '') AS initial_pose_json,
-                    NULLIF(diffdope_json, '') AS diffdope_json
-                  FROM pose9d_annotations_old
-                `;
-
-                db.run(copySql, (copyErr) => {
-                  if (copyErr) {
-                    db.run('ROLLBACK', () => db.run('PRAGMA foreign_keys = ON', () => {}));
-                    return;
-                  }
-
-                  db.run('DROP TABLE pose9d_annotations_old', (dropErr) => {
-                    if (dropErr) {
-                      db.run('ROLLBACK', () => db.run('PRAGMA foreign_keys = ON', () => {}));
-                      return;
-                    }
-
-                    db.run('CREATE INDEX IF NOT EXISTS idx_pose9d_image_id ON pose9d_annotations(image_id)', () => {
-                      db.run('COMMIT', (commitErr) => {
-                        db.run('PRAGMA foreign_keys = ON', () => {});
-                        if (commitErr) return;
-                        console.warn('[DB] pose9d_annotations 外键修复完成（已恢复引用 meshes）');
-                      });
-                    });
-                  });
-                });
-              },
-            );
-          });
-        });
-      });
-    });
-  });
-}
-
 function initializeSchema(db) {
   // projects
   db.run(`
@@ -205,27 +118,32 @@ function initializeSchema(db) {
     if (err && !err.message.includes('duplicate column name')) console.warn('为 meshes 表添加 bbox_json 列失败:', err.message);
   });
 
-  // pose9d_annotations (6D)
+  // pose9d_annotations (Diff-DOPE only)
+  // 注意：按当前需求，重建为最小表结构（仅保留 Diff-DOPE 相关数据）
+  db.run('DROP TABLE IF EXISTS pose9d_annotations', (err) => {
+    if (err) console.warn('[DB] DROP pose9d_annotations 失败:', err.message);
+  });
   db.run(`
     CREATE TABLE IF NOT EXISTS pose9d_annotations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       image_id INTEGER NOT NULL,
       mesh_id INTEGER,
-      pose_json TEXT NOT NULL,
+      diffdope_json TEXT NOT NULL,
+      fit_overlay_path TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (image_id) REFERENCES images (id) ON DELETE CASCADE,
       FOREIGN KEY (mesh_id) REFERENCES meshes (id) ON DELETE SET NULL,
       UNIQUE(image_id, mesh_id)
     )
-  `);
-  db.run('CREATE INDEX IF NOT EXISTS idx_pose9d_image_id ON pose9d_annotations(image_id)');
-  repairPose9dForeignKeyIfPointsToMeshesOld(db);
-  db.run('ALTER TABLE pose9d_annotations ADD COLUMN initial_pose_json TEXT', (err) => {
-    if (err && !err.message.includes('duplicate column name')) console.warn('为 pose9d_annotations 表添加 initial_pose_json 列失败:', err.message);
-  });
-  db.run('ALTER TABLE pose9d_annotations ADD COLUMN diffdope_json TEXT', (err) => {
-    if (err && !err.message.includes('duplicate column name')) console.warn('为 pose9d_annotations 表添加 diffdope_json 列失败:', err.message);
+  `, (err) => {
+    if (err) {
+      console.warn('[DB] CREATE pose9d_annotations 失败:', err.message);
+      return;
+    }
+    db.run('CREATE INDEX IF NOT EXISTS idx_pose9d_image_id ON pose9d_annotations(image_id)', (idxErr) => {
+      if (idxErr) console.warn('[DB] CREATE INDEX idx_pose9d_image_id 失败:', idxErr.message);
+    });
   });
 
   // cameras (intrinsics)

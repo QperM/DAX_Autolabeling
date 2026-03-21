@@ -396,6 +396,21 @@
   overflow-y: auto;
 }
 
+/* Make number inputs readable (some axis-themed inputs use tinted backgrounds). */
+.annotation-right-panel input {
+  color: #111111;
+}
+
+/* Hide the number spinner (right-side small scrollbar) to save horizontal space. */
+.annotation-right-panel input[type='number']::-webkit-outer-spin-button,
+.annotation-right-panel input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.annotation-right-panel input[type='number'] {
+  -moz-appearance: textfield;
+}
+
 .properties-panel {
   padding: 1.5rem;
 }

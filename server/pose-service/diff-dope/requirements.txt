@@ -10,6 +10,6 @@ opencv-python
 pillow
 pyglet==1.5.27
 pyrr
-tqdm
+tdqm
 torch
 trimesh[easy]==3.21.5
