@@ -1638,6 +1638,8 @@ class DiffDope:
 
         self.losses_values = {}
         self.optimization_results = []
+        self.loss_history_scalar = []
+        self.final_loss_scalar = None
 
         self.optimizer = torch.optim.SGD(
             self.object3d.parameters(), lr=self.cfg.hyperparameters.learning_rate_base
@@ -1652,6 +1654,17 @@ class DiffDope:
 
 
         pbar = tqdm(range(self.cfg.hyperparameters.nb_iterations + 1))
+
+        # Optional early-stop threshold. If configured and current total loss
+        # is already below threshold, stop this stage immediately.
+        early_stop_loss = None
+        try:
+            early_stop_loss = self.cfg.hyperparameters.get("early_stop_loss", None)
+        except Exception:
+            try:
+                early_stop_loss = getattr(self.cfg.hyperparameters, "early_stop_loss", None)
+            except Exception:
+                early_stop_loss = None
 
         for iteration_now in pbar:
             itf = iteration_now / self.cfg.hyperparameters.nb_iterations + 1
@@ -1709,9 +1722,15 @@ class DiffDope:
                 if l is None:
                     continue
                 loss += l
-            pbar.set_description(f"loss: {loss.item():.4f}")
+            loss_now = float(loss.item())
+            self.loss_history_scalar.append(loss_now)
+            self.final_loss_scalar = loss_now
+            pbar.set_description(f"loss: {loss_now:.4f}")
             loss.backward()
             self.optimizer.step()
+            if early_stop_loss is not None and loss_now <= float(early_stop_loss):
+                pbar.set_description(f"loss: {loss_now:.4f} (early stop)")
+                break
 
     def cuda(self):
         """

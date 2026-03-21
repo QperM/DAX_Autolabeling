@@ -40,6 +40,8 @@ class Estimate6DRequest(BaseModel):
     meshPath: str
     maskFlatPoints: List[float]
     init: Optional[InitPose] = None
+    stage1Iters: Optional[int] = None
+    stage2Iters: Optional[int] = None
     iters: int = 60
     batchSize: int = 8
     lrLow: float = 0.01
@@ -52,6 +54,14 @@ class Estimate6DRequest(BaseModel):
     weightMask: float = 1.0
     weightRgb: float = 0.7
     weightDepth: float = 1.0
+    stage1WeightMask: Optional[float] = None
+    stage2WeightMask: Optional[float] = None
+    stage2WeightDepth: Optional[float] = None
+    stage1EarlyStopLoss: Optional[float] = None
+    stage2EarlyStopLoss: Optional[float] = None
+    stage2BaseLr: Optional[float] = None
+    stage2LrDecay: Optional[float] = None
+    maxAllowedFinalLoss: Optional[float] = None
     returnDebugImages: bool = True
     debug: bool = False
 
@@ -193,7 +203,7 @@ def estimate6d(req: Estimate6DRequest):
 
             # 严格对齐 demo：默认 8 batch / 两轮 80 + 120 次
             cfg.hyperparameters.nb_iterations = 80
-            cfg.hyperparameters.batchsize = 8
+            cfg.hyperparameters.batchsize = int(max(1, min(64, req.batchSize or 8)))
 
             cfg.losses.l1_mask = bool(req.useMaskLoss)
             cfg.losses.l1_depth_with_mask = bool(req.useDepthLoss)
@@ -238,27 +248,136 @@ def estimate6d(req: Estimate6DRequest):
             # 两阶段优化（严格对齐 run_mine_demo_no_video.py）：
             # Stage-1: mask 粗定位
             # Stage-2: mask + depth 精修
-            stage1_iters = 80
-            stage2_iters = 120
+            stage1_iters = int(max(1, min(500, req.stage1Iters if req.stage1Iters is not None else 80)))
+            stage2_iters = int(max(1, min(500, req.stage2Iters if req.stage2Iters is not None else 120)))
+            stage1_weight_mask = float(max(0.0, req.stage1WeightMask if req.stage1WeightMask is not None else 1.0))
+            stage2_weight_mask = float(max(0.0, req.stage2WeightMask if req.stage2WeightMask is not None else 0.5))
+            stage2_weight_depth = float(max(0.0, req.stage2WeightDepth if req.stage2WeightDepth is not None else 1.0))
+            stage2_use_rgb = bool(req.useRgbLoss)
+            stage2_weight_rgb = float(max(0.0, req.weightRgb))
+            stage2_base_lr = float(max(0.01, min(200.0, req.stage2BaseLr if req.stage2BaseLr is not None else 20.0)))
+            stage2_lr_decay = float(max(0.001, min(1.0, req.stage2LrDecay if req.stage2LrDecay is not None else 0.1)))
+            stage1_early_stop = (
+                float(req.stage1EarlyStopLoss)
+                if req.stage1EarlyStopLoss is not None and float(req.stage1EarlyStopLoss) > 0
+                else None
+            )
+            stage2_early_stop = (
+                float(req.stage2EarlyStopLoss)
+                if req.stage2EarlyStopLoss is not None and float(req.stage2EarlyStopLoss) > 0
+                else None
+            )
 
             ddope.cfg.losses.l1_mask = True
-            ddope.cfg.losses.weight_mask = 1.0
+            ddope.cfg.losses.weight_mask = stage1_weight_mask
             ddope.cfg.losses.l1_depth_with_mask = False
             ddope.cfg.losses.l1_rgb_with_mask = False
             ddope.cfg.hyperparameters.nb_iterations = stage1_iters
+            ddope.cfg.hyperparameters.early_stop_loss = stage1_early_stop
             ddope.loss_functions = [dd.l1_mask]
             ddope.run_optimization()
 
             ddope.cfg.losses.l1_mask = True
-            ddope.cfg.losses.weight_mask = 0.5
+            ddope.cfg.losses.weight_mask = stage2_weight_mask
             ddope.cfg.losses.l1_depth_with_mask = True
-            ddope.cfg.losses.weight_depth = 1.0
-            ddope.cfg.losses.l1_rgb_with_mask = False
+            ddope.cfg.losses.weight_depth = stage2_weight_depth
+            ddope.cfg.losses.l1_rgb_with_mask = stage2_use_rgb
+            ddope.cfg.losses.weight_rgb = stage2_weight_rgb
             ddope.cfg.hyperparameters.nb_iterations = stage2_iters
-            ddope.loss_functions = [dd.l1_mask, dd.l1_depth_with_mask]
+            ddope.cfg.hyperparameters.early_stop_loss = stage2_early_stop
+            ddope.cfg.hyperparameters.base_lr = stage2_base_lr
+            ddope.cfg.hyperparameters.lr_decay = stage2_lr_decay
+            ddope.loss_functions = [dd.l1_mask, dd.l1_depth_with_mask] + ([dd.l1_rgb_with_mask] if stage2_use_rgb else [])
             ddope.run_optimization()
+            stage2_scalar_loss = (
+                float(ddope.final_loss_scalar)
+                if getattr(ddope, "final_loss_scalar", None) is not None
+                else None
+            )
 
             argmin = int(ddope.get_argmin())
+            # 第二阶段最终 loss 统计（三套口径）：
+            # 0) stage2ScalarLoss：优化循环真实标量 loss（与进度条完全同口径，quality gate 用这个）
+            # 1) argminLoss：最优候选的最终 loss（用于诊断）
+            # 2) stage2BatchMeanLoss：全 batch 最终均值 loss 之和（与进度条/“是否爆炸”更一致）
+            final_argmin_terms: List[float] = []
+            final_argmin_terms_by_key: Dict[str, float] = {}
+            final_batch_mean_terms: List[float] = []
+            final_batch_mean_terms_by_key: Dict[str, float] = {}
+            for key, tensor in ddope.losses_values.items():
+                try:
+                    v_argmin = float(tensor[-1][argmin].item())
+                    final_argmin_terms.append(v_argmin)
+                    final_argmin_terms_by_key[str(key)] = v_argmin
+                except Exception:
+                    pass
+                try:
+                    v_batch_mean = float(torch.mean(tensor[-1]).item())
+                    final_batch_mean_terms.append(v_batch_mean)
+                    final_batch_mean_terms_by_key[str(key)] = v_batch_mean
+                except Exception:
+                    pass
+            final_total_loss_argmin = float(np.sum(final_argmin_terms)) if final_argmin_terms else None
+            stage2_batch_mean_loss = float(np.sum(final_batch_mean_terms)) if final_batch_mean_terms else None
+            max_allowed_final_loss = (
+                float(req.maxAllowedFinalLoss)
+                if req.maxAllowedFinalLoss is not None and float(req.maxAllowedFinalLoss) > 0
+                else None
+            )
+            quality_gate_passed = (
+                True
+                if (max_allowed_final_loss is None or stage2_scalar_loss is None)
+                else (stage2_scalar_loss <= max_allowed_final_loss)
+            )
+            # 始终打印质量门槛诊断，便于排查“为何没有报错”
+            print(
+                "[pose-service][quality-gate]",
+                {
+                    "imageId": req.imageId,
+                    "meshId": req.meshId,
+                    "stage2ScalarLoss": stage2_scalar_loss,
+                    "stage2BatchMeanLoss": stage2_batch_mean_loss,
+                    "finalArgminLoss": final_total_loss_argmin,
+                    "maxAllowedFinalLoss": max_allowed_final_loss,
+                    "passed": quality_gate_passed,
+                    "lossTermsBatchMean": final_batch_mean_terms_by_key,
+                    "lossTermsArgmin": final_argmin_terms_by_key,
+                },
+            )
+            if (
+                max_allowed_final_loss is not None
+                and stage2_scalar_loss is not None
+                and stage2_scalar_loss > max_allowed_final_loss
+            ):
+                # 质量门槛未通过时，主动清理对应 overlay，避免前端看到历史旧图误判为“本次成功产物”。
+                if req.projectId and req.imageId and req.meshId:
+                    stale_overlay = (
+                        ROOT.parent
+                        / "uploads"
+                        / f"project_{int(req.projectId)}"
+                        / "pose-fit-overlays"
+                        / f"fit_image_{int(req.imageId)}_mesh_{int(req.meshId)}.png"
+                    )
+                    try:
+                        if stale_overlay.exists():
+                            stale_overlay.unlink()
+                    except Exception:
+                        pass
+                return {
+                    "success": False,
+                    "error": f"第二阶段 loss={stage2_scalar_loss:.4f} 超过阈值 {max_allowed_final_loss:.4f}",
+                    "code": "LOSS_EXCEEDS_THRESHOLD",
+                    "timingSec": round(float(time.time() - t0), 4),
+                    "meta": {
+                        "stage2ScalarLoss": stage2_scalar_loss,
+                        "stage2BatchMeanLoss": stage2_batch_mean_loss,
+                        "finalArgminLoss": final_total_loss_argmin,
+                        "maxAllowedFinalLoss": max_allowed_final_loss,
+                        "passed": False,
+                        "lossTermsBatchMean": final_batch_mean_terms_by_key,
+                        "lossTermsArgmin": final_argmin_terms_by_key,
+                    },
+                }
             pose44 = ddope.get_pose(batch_index=argmin).tolist()
             overlay = ddope.render_img(batch_index=argmin, render_selection="rgb")
             overlay_b64 = _as_png_b64(overlay) if req.returnDebugImages else None
@@ -267,10 +386,10 @@ def estimate6d(req: Estimate6DRequest):
             if overlay is not None and req.projectId:
                 fit_dir = ROOT.parent / "uploads" / f"project_{int(req.projectId)}" / "pose-fit-overlays"
                 fit_dir.mkdir(parents=True, exist_ok=True)
-                ts = int(time.time() * 1000)
                 img_id = int(req.imageId or 0)
                 mesh_id = int(req.meshId or 0)
-                filename = f"fit_image_{img_id}_mesh_{mesh_id}_{ts}.png"
+                # 固定命名：同一 imageId + meshId 重复推理时覆盖旧文件，避免目录膨胀
+                filename = f"fit_image_{img_id}_mesh_{mesh_id}.png"
                 abs_path = fit_dir / filename
                 cv2.imwrite(str(abs_path), overlay)
                 fit_overlay_rel_path = f"/uploads/project_{int(req.projectId)}/pose-fit-overlays/{filename}"
@@ -312,7 +431,30 @@ def estimate6d(req: Estimate6DRequest):
                             "name": "mask-depth-refine",
                             "iterations": stage2_iters,
                             "useDepthLoss": True,
-                            "useRgbLoss": False,
+                            "useRgbLoss": stage2_use_rgb,
+                        },
+                        "weights": {
+                            "stage1Mask": stage1_weight_mask,
+                            "stage2Mask": stage2_weight_mask,
+                            "stage2Depth": stage2_weight_depth,
+                            "stage2Rgb": stage2_weight_rgb,
+                        },
+                        "learningRate": {
+                            "stage2BaseLr": stage2_base_lr,
+                            "stage2LrDecay": stage2_lr_decay,
+                        },
+                        "earlyStopLoss": {
+                            "stage1": stage1_early_stop,
+                            "stage2": stage2_early_stop,
+                        },
+                        "qualityGate": {
+                            "stage2ScalarLoss": stage2_scalar_loss,
+                            "stage2BatchMeanLoss": stage2_batch_mean_loss,
+                            "finalArgminLoss": final_total_loss_argmin,
+                            "maxAllowedFinalLoss": max_allowed_final_loss,
+                            "passed": quality_gate_passed,
+                            "lossTermsBatchMean": final_batch_mean_terms_by_key,
+                            "lossTermsArgmin": final_argmin_terms_by_key,
                         },
                     },
                     "debugArtifacts": debug_paths if req.debug else None,

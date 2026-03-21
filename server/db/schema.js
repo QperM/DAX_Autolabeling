@@ -119,10 +119,7 @@ function initializeSchema(db) {
   });
 
   // pose9d_annotations (Diff-DOPE only)
-  // 注意：按当前需求，重建为最小表结构（仅保留 Diff-DOPE 相关数据）
-  db.run('DROP TABLE IF EXISTS pose9d_annotations', (err) => {
-    if (err) console.warn('[DB] DROP pose9d_annotations 失败:', err.message);
-  });
+  // 注意：不要在启动时 DROP，避免重启导致数据丢失。
   db.run(`
     CREATE TABLE IF NOT EXISTS pose9d_annotations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

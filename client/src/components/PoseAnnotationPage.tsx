@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { setCurrentImage, setError, setImages, setLoading } from '../store/annotationSlice';
-import { authApi, imageApi, meshApi, pose6dApi } from '../services/api';
+import { authApi, imageApi, meshApi, pose6dApi, pose9dApi } from '../services/api';
 import type { Image } from '../types';
 import { clearStoredCurrentProject, getStoredCurrentProject } from '../tabStorage';
 import { toAbsoluteUrl } from '../utils/urls';
@@ -13,6 +13,22 @@ import MeshPreview3D from './MeshPreview3D';
 // @ts-ignore: MeshThumbnail is a TSX React component resolved by bundler
 import MeshThumbnail from './MeshThumbnail';
 import './AnnotationPage.css';
+
+const DEFAULT_DIFFDOPE_PARAMS = {
+  stage1Iters: 80,
+  stage2Iters: 120,
+  batchSize: 4,
+  maxAllowedFinalLoss: 100,
+  stage1WeightMask: 1,
+  stage1EarlyStopLoss: 0,
+  stage2WeightMask: 0.5,
+  stage2WeightDepth: 1,
+  useRgbLoss: false,
+  weightRgb: 0.7,
+  stage2EarlyStopLoss: 0,
+  stage2BaseLr: 20,
+  stage2LrDecay: 0.1,
+};
 
 const PoseAnnotationPage: React.FC = () => {
   const dispatch = useDispatch();
@@ -52,6 +68,19 @@ const PoseAnnotationPage: React.FC = () => {
   const [meshPreviewDims, setMeshPreviewDims] = useState<{ x: number; y: number; z: number } | null>(null);
   const [projectLabelOptions, setProjectLabelOptions] = useState<Array<{ label: string; color: string }>>([]);
   const [estimating6d, setEstimating6d] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{
+    running: boolean;
+    total: number;
+    current: number;
+    success: number;
+    failed: number;
+    timeout: number;
+  } | null>(null);
+  const [previewDisplayMode, setPreviewDisplayMode] = useState<'image' | 'fit'>('image');
+  const [previewFitOverlayUrl, setPreviewFitOverlayUrl] = useState<string | null>(null);
+  const [previewFitLoading, setPreviewFitLoading] = useState(false);
+  const [showDiffDopeParamModal, setShowDiffDopeParamModal] = useState(false);
+  const [diffDopeParams, setDiffDopeParams] = useState(() => ({ ...DEFAULT_DIFFDOPE_PARAMS }));
   // 从 2D 的 “Mask Label 对照表” 复用项目级 label 列表（localStorage: labelColorMap:${projectId}）
   useEffect(() => {
     if (!currentProject?.id) return;
@@ -234,6 +263,42 @@ const PoseAnnotationPage: React.FC = () => {
   }, [bottomViewMode]);
 
   useEffect(() => {
+    if (!selectedPreviewImage?.id) {
+      setPreviewDisplayMode('image');
+      setPreviewFitOverlayUrl(null);
+      setPreviewFitLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setPreviewFitLoading(true);
+    (async () => {
+      try {
+        const resp = await pose9dApi.listPose9D(selectedPreviewImage.id);
+        const rows = Array.isArray(resp?.poses) ? resp.poses : [];
+        const withOverlay = rows.filter((p: any) => p?.fitOverlayPath);
+        const pick = withOverlay
+          .slice()
+          .sort((a: any, b: any) => String(b?.updatedAt || '').localeCompare(String(a?.updatedAt || '')))[0];
+        const u = pick?.fitOverlayPath ? (toAbsoluteUrl(pick.fitOverlayPath) || pick.fitOverlayPath) : null;
+        if (!cancelled) {
+          setPreviewFitOverlayUrl(u);
+          if (!u) setPreviewDisplayMode('image');
+        }
+      } catch (_) {
+        if (!cancelled) {
+          setPreviewFitOverlayUrl(null);
+          setPreviewDisplayMode('image');
+        }
+      } finally {
+        if (!cancelled) setPreviewFitLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPreviewImage?.id, imageCacheBust]);
+
+  useEffect(() => {
     // 缩略图容器是条件渲染的，所以这里在依赖变化时重试挂载
     const scrollEl = thumbScrollElRef.current || thumbnailsScrollRef.current;
     const measureEl = thumbMeasureElRef.current || thumbnailsMeasureRef.current;
@@ -329,26 +394,177 @@ const PoseAnnotationPage: React.FC = () => {
     if (!selectedPreviewImage?.id || !currentProject?.id || estimating6d) return;
     try {
       setEstimating6d(true);
-      const resp = await pose6dApi.diffdopeEstimate(selectedPreviewImage.id, {
-        projectId: currentProject.id,
-        onlyUniqueMasks: false,
-        returnDebugImages: true,
-      });
+      const runOne = async (imageId: number | string) => {
+        return await Promise.race([
+          pose6dApi.diffdopeEstimate(imageId, {
+            projectId: currentProject.id,
+            onlyUniqueMasks: false,
+            returnDebugImages: true,
+            ...diffDopeParams,
+          }),
+          new Promise((_, reject) => window.setTimeout(() => reject(new Error('IMAGE_TIMEOUT_5MIN')), 5 * 60 * 1000)),
+        ]);
+      };
+      const resp: any = await runOne(selectedPreviewImage.id);
       const results = Array.isArray(resp?.results) ? resp.results : [];
       const failures = Array.isArray(resp?.failures) ? resp.failures : [];
-      alert(
-        [
-          `AI 6D 姿态标注完成：成功 ${results.length} 条。`,
-          failures.length ? `\n失败/跳过：\n- ${failures.join('\n- ')}` : '',
-          '\n可在“开始人工标注”页面打开“拟合图层”查看效果图。',
-        ].join(''),
-      );
+      if (results.length === 0 && failures.length > 0) {
+        alert(`AI 6D 姿态标注失败：\n- ${failures.join('\n- ')}`);
+      } else {
+        alert(
+          [
+            `AI 6D 姿态标注完成：成功 ${results.length} 条。`,
+            failures.length ? `\n失败/跳过：\n- ${failures.join('\n- ')}` : '',
+            '\n可在“开始人工标注”页面打开“拟合图层”查看效果图。',
+          ].join(''),
+        );
+      }
     } catch (e: any) {
-      alert(e?.response?.data?.message || e?.message || 'AI 6D 姿态标注失败');
+      const msg = String(e?.message || '');
+      if (msg.includes('IMAGE_TIMEOUT_5MIN') || e?.code === 'ECONNABORTED') {
+        alert('AI 6D 姿态标注失败：当前图片处理超时（5分钟）');
+      } else {
+        alert(e?.response?.data?.message || e?.message || 'AI 6D 姿态标注失败');
+      }
     } finally {
       setEstimating6d(false);
     }
   };
+
+  const handleBatchEstimate6D = async () => {
+    if (!currentProject?.id || estimating6d) return;
+    if (!images.length) {
+      alert('当前项目没有可处理的图片。');
+      return;
+    }
+    try {
+      setEstimating6d(true);
+      setBatchProgress({
+        running: true,
+        total: images.length,
+        current: 0,
+        success: 0,
+        failed: 0,
+        timeout: 0,
+      });
+      const runOne = async (imageId: number | string) => {
+        return await Promise.race([
+          pose6dApi.diffdopeEstimate(imageId, {
+            projectId: currentProject.id,
+            onlyUniqueMasks: false,
+            returnDebugImages: true,
+            ...diffDopeParams,
+          }),
+          new Promise((_, reject) => window.setTimeout(() => reject(new Error('IMAGE_TIMEOUT_5MIN')), 5 * 60 * 1000)),
+        ]);
+      };
+      const refreshImages = async () => {
+        try {
+          const loadedImages = await imageApi.getImages(currentProject.id);
+          dispatch(setImages(loadedImages));
+          setImageCacheBust((v) => (v + 1) % 1_000_000);
+        } catch (_) {}
+      };
+
+      let imageSuccess = 0;
+      let imageTimeout = 0;
+      let imageFailed = 0;
+      const failedNotes: string[] = [];
+
+      for (const img of images) {
+        setSelectedPreviewImage(img);
+        try {
+          const resp: any = await runOne(img.id);
+          const results = Array.isArray(resp?.results) ? resp.results : [];
+          const failures = Array.isArray(resp?.failures) ? resp.failures : [];
+          if (results.length > 0) imageSuccess += 1;
+          else imageFailed += 1;
+          if (failures.length > 0) {
+            failedNotes.push(`[${img.originalName || img.filename}] ${failures.join('；')}`);
+          }
+          setBatchProgress({
+            running: true,
+            total: images.length,
+            current: imageSuccess + imageFailed + imageTimeout,
+            success: imageSuccess,
+            failed: imageFailed,
+            timeout: imageTimeout,
+          });
+        } catch (e: any) {
+          const msg = String(e?.message || '');
+          if (msg.includes('IMAGE_TIMEOUT_5MIN') || e?.code === 'ECONNABORTED') {
+            imageTimeout += 1;
+            failedNotes.push(`[${img.originalName || img.filename}] 超时（5分钟），已跳过并刷新`);
+            setBatchProgress({
+              running: true,
+              total: images.length,
+              current: imageSuccess + imageFailed + imageTimeout,
+              success: imageSuccess,
+              failed: imageFailed,
+              timeout: imageTimeout,
+            });
+            await refreshImages();
+            continue;
+          }
+          imageFailed += 1;
+          failedNotes.push(`[${img.originalName || img.filename}] ${e?.response?.data?.message || e?.message || '处理失败'}`);
+          setBatchProgress({
+            running: true,
+            total: images.length,
+            current: imageSuccess + imageFailed + imageTimeout,
+            success: imageSuccess,
+            failed: imageFailed,
+            timeout: imageTimeout,
+          });
+        }
+      }
+
+      setBatchProgress({
+        running: false,
+        total: images.length,
+        current: images.length,
+        success: imageSuccess,
+        failed: imageFailed,
+        timeout: imageTimeout,
+      });
+
+      alert(
+        [
+          `批量AI标注完成：共 ${images.length} 张`,
+          `成功：${imageSuccess} 张`,
+          `失败：${imageFailed} 张`,
+          `超时：${imageTimeout} 张`,
+          failedNotes.length ? `\n详情：\n- ${failedNotes.join('\n- ')}` : '',
+        ].join('\n'),
+      );
+    } finally {
+      setEstimating6d(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentProject?.id) return;
+    const key = `diffDopeParams:${currentProject.id}`;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const js = JSON.parse(raw);
+      setDiffDopeParams((prev) => {
+        const merged = { ...prev, ...js } as any;
+        // 第二轮专属质量门槛：固定在 10~200 范围内。
+        const gate = Number(merged.maxAllowedFinalLoss);
+        merged.maxAllowedFinalLoss = Number.isFinite(gate) ? Math.min(200, Math.max(10, gate)) : DEFAULT_DIFFDOPE_PARAMS.maxAllowedFinalLoss;
+        const s2lr = Number(merged.stage2BaseLr);
+        merged.stage2BaseLr = Number.isFinite(s2lr) ? Math.min(200, Math.max(0.01, s2lr)) : DEFAULT_DIFFDOPE_PARAMS.stage2BaseLr;
+        const s2decay = Number(merged.stage2LrDecay);
+        merged.stage2LrDecay = Number.isFinite(s2decay) ? Math.min(1, Math.max(0.001, s2decay)) : DEFAULT_DIFFDOPE_PARAMS.stage2LrDecay;
+        merged.useRgbLoss = !!merged.useRgbLoss;
+        const wrgb = Number(merged.weightRgb);
+        merged.weightRgb = Number.isFinite(wrgb) ? Math.min(2, Math.max(0, wrgb)) : DEFAULT_DIFFDOPE_PARAMS.weightRgb;
+        return merged;
+      });
+    } catch (_) {}
+  }, [currentProject?.id]);
 
   return (
     <div className="annotation-page">
@@ -409,12 +625,34 @@ const PoseAnnotationPage: React.FC = () => {
                     <div className="ai-controls">
                       <button
                         type="button"
-                        className="ai-annotation-btn"
-                        onClick={() => alert('TODO：批量AI标注（Pose 页面占位）')}
-                        title="占位：后续接入批量 Pose AI 标注流程"
+                        className="ai-model-config-btn"
+                        onClick={() => setShowDiffDopeParamModal(true)}
                       >
-                        🤖 批量AI标注
+                        调整拟合参数
                       </button>
+                      <button
+                        type="button"
+                        className="ai-annotation-btn"
+                        onClick={handleBatchEstimate6D}
+                        disabled={estimating6d}
+                        title="按图片顺序执行 AI 6D 标注；单张超时 5 分钟后跳过并继续下一张"
+                      >
+                        {estimating6d ? '🤖 批量AI标注进行中...' : '🤖 批量AI标注'}
+                      </button>
+                      {batchProgress && (
+                        <div className="batch-progress-panel">
+                          <div className="batch-progress-text">
+                            {batchProgress.running ? '批量进度' : '批量结果'}：{batchProgress.current}/{batchProgress.total}
+                            （成功 {batchProgress.success} / 失败 {batchProgress.failed} / 超时 {batchProgress.timeout}）
+                          </div>
+                          <div className="batch-progress-track">
+                            <div
+                              className="batch-progress-fill"
+                              style={{ width: `${Math.min(100, Math.max(0, batchProgress.total > 0 ? (batchProgress.current / batchProgress.total) * 100 : 0))}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
                       <div className="import-export-buttons">
                         <button
                           type="button"
@@ -627,9 +865,32 @@ const PoseAnnotationPage: React.FC = () => {
                     </button>
                   </div>
                   <div className="image-preview-wrapper" style={{ position: 'relative' }}>
+                    <div className="preview-floating-panel">
+                      <button
+                        type="button"
+                        className={`preview-mode-btn ${previewDisplayMode === 'image' ? 'active' : ''}`}
+                        onClick={() => setPreviewDisplayMode('image')}
+                      >
+                        原图
+                      </button>
+                      <button
+                        type="button"
+                        className={`preview-mode-btn ${previewDisplayMode === 'fit' ? 'active' : ''}`}
+                        onClick={() => setPreviewDisplayMode('fit')}
+                        disabled={!previewFitOverlayUrl}
+                        title={previewFitOverlayUrl ? '显示拟合图' : '当前图片暂无拟合图'}
+                      >
+                        拟合图
+                      </button>
+                      {previewFitLoading && <span className="preview-mode-loading">加载中...</span>}
+                    </div>
                     <div className="preview-image-layer" style={{ position: 'relative' }}>
                       <img
-                        src={`${(toAbsoluteUrl(selectedPreviewImage.url) || selectedPreviewImage.url)}?v=${imageCacheBust}`}
+                        src={
+                          previewDisplayMode === 'fit' && previewFitOverlayUrl
+                            ? `${previewFitOverlayUrl}?v=${imageCacheBust}`
+                            : `${(toAbsoluteUrl(selectedPreviewImage.url) || selectedPreviewImage.url)}?v=${imageCacheBust}`
+                        }
                         alt={selectedPreviewImage.originalName || selectedPreviewImage.filename}
                         className="preview-image"
                       />
@@ -842,6 +1103,128 @@ const PoseAnnotationPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {showDiffDopeParamModal && (
+        <div className="ai-prompt-modal-backdrop" onClick={() => setShowDiffDopeParamModal(false)}>
+          <div className="ai-prompt-modal" style={{ width: 'min(720px, 94vw)' }} onClick={(e) => e.stopPropagation()}>
+            <h3 className="ai-prompt-modal-title">调整拟合参数</h3>
+            <p className="ai-prompt-modal-desc">这些参数用于控制优化过程的速度、稳定性与结果质量。</p>
+            <div className="ai-prompt-modal-body">
+              <div className="model-param-layout">
+                <div className="model-param-group model-param-group-common">
+                  <div className="model-param-group-title">通用参数（两轮共用）</div>
+                  <div className="model-param-row">
+                    <div className="model-param-label"><span>batchSize</span><span className="model-param-value">{diffDopeParams.batchSize}</span></div>
+                    <input type="range" min={1} max={16} step={1} value={diffDopeParams.batchSize} onChange={(e) => setDiffDopeParams((p) => ({ ...p, batchSize: Number(e.target.value) }))} />
+                    <div className="model-param-hint">并行候选数量。数值越大，搜索覆盖更广，但资源开销也会增加。</div>
+                  </div>
+                  <div className="model-param-row">
+                    <div className="model-param-label"><span>启用 RGB 纹理辅助</span><span className="model-param-value">{diffDopeParams.useRgbLoss ? '开启' : '关闭'}</span></div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', color: '#374151' }}>
+                      <input
+                        type="checkbox"
+                        checked={!!diffDopeParams.useRgbLoss}
+                        onChange={(e) => setDiffDopeParams((p) => ({ ...p, useRgbLoss: e.target.checked }))}
+                      />
+                      使用纹理/RGB一致性作为额外约束（第二轮生效）
+                    </label>
+                    <div className="model-param-hint">开启后将引入 RGB 约束；关闭时仅使用 mask 与 depth。</div>
+                  </div>
+                  {diffDopeParams.useRgbLoss && (
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>RGB 权重</span><span className="model-param-value">{diffDopeParams.weightRgb.toFixed(2)}</span></div>
+                      <input type="range" min={0} max={2} step={0.05} value={diffDopeParams.weightRgb} onChange={(e) => setDiffDopeParams((p) => ({ ...p, weightRgb: Number(e.target.value) }))} />
+                      <div className="model-param-hint">RGB 约束强度。提高后更强调纹理一致性。</div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="model-param-columns">
+                  <div className="model-param-group">
+                    <div className="model-param-group-title">第一轮（粗定位）</div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>迭代次数</span><span className="model-param-value">{diffDopeParams.stage1Iters}</span></div>
+                      <input type="range" min={20} max={240} step={1} value={diffDopeParams.stage1Iters} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage1Iters: Number(e.target.value) }))} />
+                      <div className="model-param-hint">当前阶段的优化步数。数值越大通常拟合更充分，但耗时会增加。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>mask 权重</span><span className="model-param-value">{diffDopeParams.stage1WeightMask.toFixed(2)}</span></div>
+                      <input type="range" min={0} max={2} step={0.05} value={diffDopeParams.stage1WeightMask} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage1WeightMask: Number(e.target.value) }))} />
+                      <div className="model-param-hint">轮廓约束强度。提高后会更强调边界一致性，过高可能引入波动。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>早停阈值（loss）</span><span className="model-param-value">{diffDopeParams.stage1EarlyStopLoss > 0 ? diffDopeParams.stage1EarlyStopLoss.toFixed(2) : '关闭'}</span></div>
+                      <input type="range" min={0} max={10} step={0.05} value={diffDopeParams.stage1EarlyStopLoss} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage1EarlyStopLoss: Number(e.target.value) }))} />
+                      <div className="model-param-hint">当前阶段 loss 低于该值时提前停止，用于节省计算时间。0 表示关闭。</div>
+                    </div>
+                  </div>
+
+                  <div className="model-param-group">
+                    <div className="model-param-group-title">第二轮（精修）</div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>迭代次数</span><span className="model-param-value">{diffDopeParams.stage2Iters}</span></div>
+                      <input type="range" min={40} max={320} step={1} value={diffDopeParams.stage2Iters} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2Iters: Number(e.target.value) }))} />
+                      <div className="model-param-hint">当前阶段的优化步数。数值越大通常拟合更充分，但耗时会增加。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>mask 权重</span><span className="model-param-value">{diffDopeParams.stage2WeightMask.toFixed(2)}</span></div>
+                      <input type="range" min={0} max={2} step={0.05} value={diffDopeParams.stage2WeightMask} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2WeightMask: Number(e.target.value) }))} />
+                      <div className="model-param-hint">轮廓约束强度。用于平衡边界对齐与优化稳定性。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>depth 权重</span><span className="model-param-value">{diffDopeParams.stage2WeightDepth.toFixed(2)}</span></div>
+                      <input type="range" min={0} max={2} step={0.05} value={diffDopeParams.stage2WeightDepth} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2WeightDepth: Number(e.target.value) }))} />
+                      <div className="model-param-hint">深度约束强度。用于平衡深度一致性与鲁棒性。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>早停阈值（loss）</span><span className="model-param-value">{diffDopeParams.stage2EarlyStopLoss > 0 ? diffDopeParams.stage2EarlyStopLoss.toFixed(2) : '关闭'}</span></div>
+                      <input type="range" min={0} max={10} step={0.05} value={diffDopeParams.stage2EarlyStopLoss} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2EarlyStopLoss: Number(e.target.value) }))} />
+                      <div className="model-param-hint">当前阶段 loss 低于该值时提前停止，用于节省计算时间。0 表示关闭。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>第二轮学习率基值（base_lr）</span><span className="model-param-value">{diffDopeParams.stage2BaseLr.toFixed(2)}</span></div>
+                      <input type="range" min={0.01} max={60} step={0.01} value={diffDopeParams.stage2BaseLr} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2BaseLr: Number(e.target.value) }))} />
+                      <div className="model-param-hint">学习率主参数。提高后更新更快，但也更容易震荡。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>第二轮学习率衰减（lr_decay）</span><span className="model-param-value">{diffDopeParams.stage2LrDecay.toFixed(3)}</span></div>
+                      <input type="range" min={0.01} max={1} step={0.01} value={diffDopeParams.stage2LrDecay} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2LrDecay: Number(e.target.value) }))} />
+                      <div className="model-param-hint">学习率衰减强度。数值越小衰减越快，优化更稳但后期更新更慢。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>第二轮最大允许 loss</span><span className="model-param-value">{diffDopeParams.maxAllowedFinalLoss.toFixed(0)}</span></div>
+                      <input type="range" min={10} max={200} step={1} value={diffDopeParams.maxAllowedFinalLoss} onChange={(e) => setDiffDopeParams((p) => ({ ...p, maxAllowedFinalLoss: Number(e.target.value) }))} />
+                      <div className="model-param-hint">结果质量阈值。超过阈值将判定失败，并跳过结果落盘。</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="ai-prompt-modal-actions">
+              <button type="button" className="ai-prompt-modal-btn secondary" onClick={() => setShowDiffDopeParamModal(false)}>取消</button>
+              <button
+                type="button"
+                className="ai-prompt-modal-btn secondary"
+                onClick={() => setDiffDopeParams({ ...DEFAULT_DIFFDOPE_PARAMS })}
+              >
+                恢复默认值
+              </button>
+              <button
+                type="button"
+                className="ai-prompt-modal-btn primary"
+                onClick={() => {
+                  if (currentProject?.id) {
+                    localStorage.setItem(`diffDopeParams:${currentProject.id}`, JSON.stringify(diffDopeParams));
+                  }
+                  setShowDiffDopeParamModal(false);
+                }}
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

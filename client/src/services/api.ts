@@ -369,6 +369,8 @@ export const pose6dApi = {
     payload?: {
       projectId?: number | string | null;
       onlyUniqueMasks?: boolean;
+      stage1Iters?: number;
+      stage2Iters?: number;
       iters?: number;
       batchSize?: number;
       lrLow?: number;
@@ -381,12 +383,20 @@ export const pose6dApi = {
       weightMask?: number;
       weightRgb?: number;
       weightDepth?: number;
+      stage1WeightMask?: number;
+      stage2WeightMask?: number;
+      stage2WeightDepth?: number;
+      stage1EarlyStopLoss?: number | null;
+      stage2EarlyStopLoss?: number | null;
+      stage2BaseLr?: number;
+      stage2LrDecay?: number;
+      maxAllowedFinalLoss?: number | null;
       returnDebugImages?: boolean;
       /** 打开端到端调试日志（前端/Node/pose-service 都会输出更多信息） */
       debug?: boolean;
     },
   ): Promise<any> => {
-    const response = await apiClient.post(`/pose6d/${imageId}/diffdope-estimate`, payload || {});
+    const response = await apiClient.post(`/pose6d/${imageId}/diffdope-estimate`, payload || {}, { timeout: 5 * 60 * 1000 });
     return response.data;
   },
 };
