@@ -167,6 +167,10 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
     let transform: TransformControls | null = null;
     let orbit: OrbitControls | null = controls;
     let meshObj: THREE.Object3D | null = null;
+    const selectableRoots: THREE.Object3D[] = [];
+    const pickTargets: THREE.Object3D[] = [];
+    const pickTargetToRoot = new Map<string, THREE.Object3D>();
+    let onPointerDown: ((ev: PointerEvent) => void) | null = null;
 
     const renderLoop = () => {
       frameId = requestAnimationFrame(renderLoop);
@@ -322,6 +326,7 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
             }
           } catch (_) {}
           obj = await new Promise<THREE.Group>((resolve, reject) => loader.load(meshUrl, resolve, undefined, reject));
+          (obj as any).userData = { ...(obj as any).userData, meshId: Number(meshId) };
 
           obj.traverse((c: any) => {
             if (c?.isMesh) {
@@ -336,6 +341,8 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
               c.material = renderTextured ? textured : wire;
               c.renderOrder = 10;
               allMaterialEntries.push({ mesh: c as THREE.Mesh, textured, wire });
+              pickTargets.push(c as THREE.Object3D);
+              pickTargetToRoot.set((c as THREE.Object3D).uuid, obj);
             }
           });
 
@@ -350,6 +357,7 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
           obj.updateMatrix();
           obj.updateMatrixWorld(true);
           scene.add(obj);
+          selectableRoots.push(obj);
 
           const bb = new THREE.Box3().setFromObject(obj);
           const sz = new THREE.Vector3();
@@ -386,6 +394,30 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
         });
         scene.add(transform.getHelper());
         setMatrixValues(lastObj.matrix.toArray());
+        onPointerDown = (ev: PointerEvent) => {
+          if (!renderer?.domElement || !transform) return;
+          const rect = renderer.domElement.getBoundingClientRect();
+          const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+          const y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+          const raycaster = new THREE.Raycaster();
+          raycaster.setFromCamera({ x, y }, camera);
+          const hits = raycaster.intersectObjects(pickTargets, true);
+          if (!hits || hits.length === 0) return;
+          const hitObj = hits[0].object as THREE.Object3D;
+          const root =
+            pickTargetToRoot.get(hitObj.uuid) ||
+            selectableRoots.find((r) => r === hitObj || r.children.includes(hitObj)) ||
+            null;
+          if (!root) return;
+          transform.attach(root);
+          meshObj = root;
+          meshObjRef.current = root;
+          const mid = Number((root as any)?.userData?.meshId ?? 0);
+          if (Number.isFinite(mid) && mid > 0) setActiveMeshId(mid);
+          setMatrixValues(root.matrix.toArray());
+          setStatus(`已选中 Mesh #${Number.isFinite(mid) && mid > 0 ? mid : 'unknown'}（可拖拽编辑）`);
+        };
+        renderer.domElement.addEventListener('pointerdown', onPointerDown);
         setStatus(
           `点云场景就绪（单位: cm，W: 平移 / E或R: 旋转） | meshes=${targetMeshIds.length} | activeSize=(${lastMeshSize.x.toFixed(2)}, ${lastMeshSize.y.toFixed(2)}, ${lastMeshSize.z.toFixed(2)})`,
         );
@@ -427,6 +459,11 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
       window.removeEventListener('resize', onResize);
       window.removeEventListener('keydown', onKey);
       if (frameId) cancelAnimationFrame(frameId);
+      if (onPointerDown) {
+        try {
+          renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+        } catch (_) {}
+      }
       transform?.dispose();
       transformRef.current = null;
       meshObjRef.current = null;
