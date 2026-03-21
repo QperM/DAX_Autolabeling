@@ -1,7 +1,7 @@
 # 智能图像标注系统
 
-**版本：V2.4**  
-**最后更新：2026年3月21日**
+**版本：V2.5**  
+**最后更新：2026年3月22日**
 
 ## 项目概述
 
@@ -59,6 +59,12 @@
   - 拟合结果图采用固定命名覆盖写入（同 image+mesh 不产生重复文件）
   - Pose 预览区支持左上角切换 `原图 / 拟合图` 进行结果比对
 - ✅ **深度数据管理**：支持 PNG/TIFF/NPY 格式深度数据上传和管理
+- ✅ **点云预览（PoseManualAnnotation）**：
+  - 支持 `depth_raw(.npy) + intrinsics(.json)` 构建点云并在 3D 场景实时预览
+  - 支持多 Mesh 叠加：通过“添加 Mesh”弹窗把多个模型加入同一张图的场景
+  - 支持显示模式切换：真实贴图 / 骨架线框（wireframe）
+  - 支持 TransformControls 交互（W 平移 / E,R 旋转）与矩阵实时查看
+  - 支持将当前激活 Mesh 的 `pose44` 保存回数据库（右侧“保存位置”按钮）
 
 #### 3. 标注工作界面
 - ✅ 实时图像预览窗口
@@ -153,6 +159,8 @@ DAX_Autolabeling/
 │   │   │   ├── MeshUploader.tsx      # Mesh 上传组件（OBJ/资源）
 │   │   │   ├── MeshPreview3D.tsx     # 3D Mesh 预览组件（Three.js）
 │   │   │   ├── MeshThumbnail.tsx     # Mesh 缩略图组件（静态截图）
+│   │   │   ├── PosePointCloudLayer.tsx # Pose 点云图层（点云+多Mesh+姿态编辑）
+│   │   │   ├── PoseFitLayer.tsx      # Diff-DOPE 拟合图层（2D overlay）
 │   │   │   └── *.css                 # 样式文件
 │   │   ├── services/      # API服务
 │   │   │   └── api.ts                # 后端API接口

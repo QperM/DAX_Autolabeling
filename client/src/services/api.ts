@@ -360,6 +360,14 @@ export const pose9dApi = {
     const response = await apiClient.delete(`/pose9d/${imageId}`, { params: meshId != null ? { meshId } : undefined });
     return response.data;
   },
+  saveDiffdopePose44: async (
+    imageId: number | string,
+    meshId: number | string,
+    pose44: number[][],
+  ): Promise<any> => {
+    const response = await apiClient.post(`/pose9d/${imageId}/${meshId}/diffdope-pose44`, { pose44 });
+    return response.data;
+  },
 };
 
 // 6D Pose (Diff-DOPE) API

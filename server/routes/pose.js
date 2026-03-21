@@ -117,6 +117,37 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
     }
   });
 
+  router.post('/pose9d/:imageId/:meshId/diffdope-pose44', requireImageProjectAccess, (req, res) => {
+    try {
+      const imageId = Number(req.params.imageId);
+      const meshId = Number(req.params.meshId);
+      const pose44 = req.body?.pose44;
+      const valid =
+        Array.isArray(pose44) &&
+        pose44.length === 4 &&
+        pose44.every((r) => Array.isArray(r) && r.length >= 4 && r.slice(0, 4).every((v) => Number.isFinite(Number(v))));
+      if (!imageId || !meshId || !valid) {
+        return res.status(400).json({ success: false, message: 'pose44 非法，需为 4x4 数值矩阵' });
+      }
+      db.getPose9D(imageId, meshId, (err, row) => {
+        if (err) return res.status(500).json({ success: false, message: '读取现有姿态失败', error: err.message });
+        const prev = row?.diffdope && typeof row.diffdope === 'object' ? row.diffdope : {};
+        const next = {
+          ...prev,
+          method: 'diffdope',
+          pose44,
+          updatedAt: new Date().toISOString(),
+        };
+        db.updatePose9DDiffDope(imageId, meshId, next, row?.fitOverlayPath || null, (uErr) => {
+          if (uErr) return res.status(500).json({ success: false, message: '写入 pose44 失败', error: uErr.message });
+          return res.json({ success: true, message: 'pose44 已保存', imageId, meshId, pose44 });
+        });
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: '保存 pose44 失败', error: error?.message || String(error) });
+    }
+  });
+
   router.post('/pose6d/:imageId/diffdope-estimate', requireImageProjectAccess, async (req, res) => {
     try {
       const imageId = Number(req.params.imageId);

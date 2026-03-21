@@ -8,6 +8,7 @@ import { getStoredCurrentProject } from '../tabStorage';
 import { toAbsoluteUrl } from '../utils/urls';
 import './ManualAnnotation.css';
 import PoseFitLayer from './PoseFitLayer';
+import PosePointCloudLayer from './PosePointCloudLayer';
 
 type DepthInfo = {
   id: number;
@@ -28,6 +29,8 @@ const PoseManualAnnotation: React.FC = () => {
   const [showDepthLayer, setShowDepthLayer] = useState(false);
   const [showMaskLayer, setShowMaskLayer] = useState(false);
   const [showFitLayer, setShowFitLayer] = useState(false);
+  const [showPointCloudLayer, setShowPointCloudLayer] = useState(false);
+  const [pointCloudSaveRequestId, setPointCloudSaveRequestId] = useState(0);
 
   const [maskOverlayData, setMaskOverlayData] = useState<Mask[] | null>(null);
   const maskFetchReqIdRef = useRef(0);
@@ -231,10 +234,6 @@ const PoseManualAnnotation: React.FC = () => {
       </header>
 
       <div className="annotation-main">
-        <div className="annotation-left-panel">
-          <div className="tool-section" style={{ display: 'flex', alignItems: 'center' }} />
-        </div>
-
         <div className="annotation-center-panel">
           <div className="canvas-area">
             <div className="image-container" style={{ width: '100%', height: '100%' }}>
@@ -305,7 +304,7 @@ const PoseManualAnnotation: React.FC = () => {
                         opacity: Math.max(0, Math.min(1, depthOpacity)),
                         mixBlendMode: depthBlendMode,
                         pointerEvents: 'none',
-                        zIndex: 20,
+                        zIndex: 30,
                       }}
                     />
                   )}
@@ -319,6 +318,13 @@ const PoseManualAnnotation: React.FC = () => {
               </div>
             </div>
           </div>
+
+          <PosePointCloudLayer
+            visible={showPointCloudLayer}
+            projectId={projectId ? Number(projectId) : null}
+            imageId={currentImage?.id ? Number(currentImage.id) : null}
+            saveRequestId={pointCloudSaveRequestId}
+          />
         </div>
 
         <div className="annotation-right-panel">
@@ -328,24 +334,72 @@ const PoseManualAnnotation: React.FC = () => {
             <div className="property-section">
               <h4>图层管理</h4>
               <div className="layers">
-                <div className={`layer-item ${showRgbLayer ? 'active' : ''}`} onClick={() => setShowRgbLayer((v) => !v)} title="RGB 图层">
+                <div
+                  className={`layer-item ${showRgbLayer ? 'active' : ''}`}
+                  onClick={() => {
+                    setShowPointCloudLayer(false);
+                    setShowRgbLayer((v) => !v);
+                  }}
+                  title="RGB 图层"
+                >
                   <span>RGB 图层</span>
                   <span className="layer-visible">{showRgbLayer ? '👁️' : '🚫'}</span>
                 </div>
 
-                <div className={`layer-item ${showMaskLayer ? 'active' : ''}`} onClick={() => setShowMaskLayer((v) => !v)} title="Mask 图层">
+                <div
+                  className={`layer-item ${showMaskLayer ? 'active' : ''}`}
+                  onClick={() => {
+                    setShowPointCloudLayer(false);
+                    setShowMaskLayer((v) => !v);
+                  }}
+                  title="Mask 图层"
+                >
                   <span>Mask 图层</span>
                   <span className="layer-visible">{showMaskLayer ? '👁️' : '🚫'}</span>
                 </div>
 
-                <div className={`layer-item ${showDepthLayer ? 'active' : ''}`} onClick={() => setShowDepthLayer((v) => !v)} title="深度图层">
+                <div
+                  className={`layer-item ${showFitLayer ? 'active' : ''}`}
+                  onClick={() => {
+                    setShowPointCloudLayer(false);
+                    setShowFitLayer((v) => !v);
+                  }}
+                  title="拟合图层（Diff-DOPE）"
+                >
+                  <span>拟合图层</span>
+                  <span className="layer-visible">{showFitLayer ? '👁️' : '🚫'}</span>
+                </div>
+
+                <div
+                  className={`layer-item ${showDepthLayer ? 'active' : ''}`}
+                  onClick={() => {
+                    setShowPointCloudLayer(false);
+                    setShowDepthLayer((v) => !v);
+                  }}
+                  title="深度图层"
+                >
                   <span>深度图层</span>
                   <span className="layer-visible">{showDepthLayer ? '👁️' : '🚫'}</span>
                 </div>
 
-                <div className={`layer-item ${showFitLayer ? 'active' : ''}`} onClick={() => setShowFitLayer((v) => !v)} title="拟合图层（Diff-DOPE）">
-                  <span>拟合图层</span>
-                  <span className="layer-visible">{showFitLayer ? '👁️' : '🚫'}</span>
+                <div
+                  className={`layer-item ${showPointCloudLayer ? 'active' : ''}`}
+                  onClick={() => {
+                    setShowPointCloudLayer((prev) => {
+                      const next = !prev;
+                      if (next) {
+                        setShowRgbLayer(false);
+                        setShowMaskLayer(false);
+                        setShowDepthLayer(false);
+                        setShowFitLayer(false);
+                      }
+                      return next;
+                    });
+                  }}
+                  title="点云图层（深度点云 + Mesh）"
+                >
+                  <span>点云图层</span>
+                  <span className="layer-visible">{showPointCloudLayer ? '👁️' : '🚫'}</span>
                 </div>
               </div>
 
@@ -380,6 +434,22 @@ const PoseManualAnnotation: React.FC = () => {
                 </div>
               )}
             </div>
+
+            {showPointCloudLayer && (
+              <div className="property-section">
+                <h4>点云操作</h4>
+                <div className="save-row">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => setPointCloudSaveRequestId((v) => v + 1)}
+                    title="保存当前点云窗口中的 Mesh 位姿矩阵到数据库"
+                  >
+                    保存位置
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

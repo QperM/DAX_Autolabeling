@@ -124,6 +124,184 @@
   display: inline-flex;
 }
 
+.pose-pointcloud-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 30;
+  background: #0b1220;
+  border: 1px solid #1f2937;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.pose-pointcloud-toolbar {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0 0.75rem;
+  border-bottom: 1px solid #1f2937;
+  color: #e5e7eb;
+}
+
+.pose-pointcloud-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.pose-pointcloud-title-btn {
+  border: 1px solid #334155;
+  background: #111827;
+  color: #e5e7eb;
+  border-radius: 8px;
+  padding: 0.25rem 0.65rem;
+  cursor: pointer;
+}
+
+.pose-pointcloud-meta {
+  font-size: 0.8rem;
+  color: #9ca3af;
+}
+
+.pose-pointcloud-close {
+  margin-left: auto;
+  border: 1px solid #334155;
+  background: #111827;
+  color: #e5e7eb;
+  border-radius: 8px;
+  padding: 0.25rem 0.65rem;
+  cursor: pointer;
+}
+
+.pose-pointcloud-status {
+  font-size: 0.78rem;
+  color: #93c5fd;
+  padding: 0.35rem 0.75rem;
+}
+
+.pose-pointcloud-picker-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.55);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pose-pointcloud-picker {
+  width: min(560px, 86%);
+  max-height: 72%;
+  overflow: auto;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: #0f172a;
+  box-shadow: 0 10px 30px rgba(2, 6, 23, 0.45);
+  padding: 0.75rem;
+}
+
+.pose-pointcloud-picker-title {
+  color: #e5e7eb;
+  font-size: 0.9rem;
+  font-weight: 700;
+  margin-bottom: 0.6rem;
+}
+
+.pose-pointcloud-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.pose-pointcloud-picker-item,
+.pose-pointcloud-picker-item-btn {
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #111827;
+  color: #e5e7eb;
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  font-size: 0.82rem;
+}
+
+.pose-pointcloud-picker-item-btn {
+  cursor: pointer;
+}
+
+.pose-pointcloud-canvas {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 240px;
+}
+
+.pose-pointcloud-canvas-wrap {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 240px;
+}
+
+.pose-pointcloud-matrix {
+  width: 100%;
+  min-height: 78px;
+  max-height: 120px;
+  resize: vertical;
+  border: 0;
+  border-top: 1px solid #1f2937;
+  background: #020617;
+  color: #cbd5e1;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  font-family: Consolas, Menlo, Monaco, monospace;
+}
+
+.pose-pointcloud-matrix-panel.floating {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: min(560px, 62%);
+  min-height: 140px;
+  max-height: 320px;
+  z-index: 40;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(2, 6, 23, 0.45);
+  background: rgba(2, 6, 23, 0.86);
+  backdrop-filter: blur(2px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.pose-pointcloud-matrix-drag-handle {
+  cursor: move;
+  user-select: none;
+  padding: 0.28rem 0.5rem;
+  font-size: 0.72rem;
+  color: #93c5fd;
+  border-bottom: 1px solid #334155;
+  background: rgba(15, 23, 42, 0.85);
+}
+
+.pose-pointcloud-matrix-text {
+  width: 100%;
+  min-height: 116px;
+  flex: 1;
+  resize: none;
+  border: 0;
+  background: transparent;
+  color: #cbd5e1;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.75rem;
+  font-family: Consolas, Menlo, Monaco, monospace;
+}
+
 .tool-section h3 {
   display: none;
 }
@@ -346,6 +524,7 @@
   padding: 2rem;
   overflow: hidden;
   min-height: 0; /* 重要：允许 flex 子元素缩小 */
+  position: relative;
 }
 
 .canvas-area {

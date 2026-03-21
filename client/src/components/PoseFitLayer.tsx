@@ -32,7 +32,7 @@ const PoseFitLayer: React.FC<Props> = ({ enabled, overlayUrl, imageDisplayRect, 
         objectFit: 'fill',
         opacity,
         pointerEvents: 'none',
-        zIndex: 30,
+        zIndex: 20,
       }}
     />
   );
