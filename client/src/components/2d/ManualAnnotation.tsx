@@ -1,12 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+﻿import React, { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
-import { setCurrentImage } from '../store/annotationSlice';
-import type { Image, Mask, BoundingBox, Polygon } from '../types';
-import { annotationApi, authApi } from '../services/api';
+import { setCurrentImage } from '../../store/annotationSlice';
+import type { Image, Mask, BoundingBox, Polygon } from '../../types';
+import { annotationApi, authApi } from '../../services/api';
 import AnnotationCanvas from './AnnotationCanvas';
-import { getStoredCurrentProject } from '../tabStorage';
-import { toAbsoluteUrl } from '../utils/urls';
+import { getStoredCurrentProject } from '../../tabStorage';
+import { toAbsoluteUrl } from '../../utils/urls';
 import './ManualAnnotation.css';
 
 const ManualAnnotation: React.FC = () => {

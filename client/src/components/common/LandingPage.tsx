@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { projectApi, authApi, adminApi } from '../services/api';
+import { projectApi, authApi, adminApi } from '../../services/api';
 import {
   clearStoredCurrentProject,
   clearStoredSelectedModules,
@@ -8,7 +8,7 @@ import {
   getStoredSelectedModules,
   setStoredCurrentProject,
   setStoredSelectedModules,
-} from '../tabStorage';
+} from '../../tabStorage';
 import './LandingPage.css';
 
 async function copyToClipboard(text: string): Promise<boolean> {

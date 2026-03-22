@@ -1,12 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
-import type { Image, Mask } from '../types';
-import { setCurrentImage } from '../store/annotationSlice';
-import { authApi, depthApi, annotationApi, pose9dApi } from '../services/api';
-import { getStoredCurrentProject } from '../tabStorage';
-import { toAbsoluteUrl } from '../utils/urls';
-import './ManualAnnotation.css';
+import type { Image, Mask } from '../../types';
+import { setCurrentImage } from '../../store/annotationSlice';
+import { authApi, depthApi, annotationApi, pose9dApi } from '../../services/api';
+import { getStoredCurrentProject } from '../../tabStorage';
+import { toAbsoluteUrl } from '../../utils/urls';
+import '../2d/ManualAnnotation.css';
 import PoseFitLayer from './PoseFitLayer';
 import PosePointCloudLayer from './PosePointCloudLayer';
 

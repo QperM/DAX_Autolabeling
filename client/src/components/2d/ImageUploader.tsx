@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { useDispatch } from 'react-redux';
-import { imageApi, uploadJobApi } from '../services/api';
-import { addImage, setLoading, setError } from '../store/annotationSlice';
-import type { Image } from '../types';
+import { imageApi, uploadJobApi } from '../../services/api';
+import { addImage, setLoading, setError } from '../../store/annotationSlice';
+import type { Image } from '../../types';
 
 interface ImageUploaderProps {
   onUploadComplete?: (images: Image[]) => void;

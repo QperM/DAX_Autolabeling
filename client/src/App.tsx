@@ -2,11 +2,11 @@ import React from 'react';
 import { Provider } from 'react-redux';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { store } from './store';
-import LandingPage from './components/LandingPage';
-import AnnotationPage from './components/AnnotationPage';
-import ManualAnnotation from './components/ManualAnnotation';
-import PoseAnnotationPage from './components/PoseAnnotationPage';
-import PoseManualAnnotation from './components/PoseManualAnnotation';
+import LandingPage from './components/common/LandingPage';
+import AnnotationPage from './components/2d/AnnotationPage';
+import ManualAnnotation from './components/2d/ManualAnnotation';
+import PoseAnnotationPage from './components/9d/PoseAnnotationPage';
+import PoseManualAnnotation from './components/9d/PoseManualAnnotation';
 import './App.css';
 
 const AppContent: React.FC = () => {

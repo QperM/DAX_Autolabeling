@@ -1,6 +1,6 @@
 # 智能图像标注系统
 
-**版本：V2.5**  
+**版本：V2.6**  
 **最后更新：2026年3月22日**
 
 ## 项目概述
@@ -38,17 +38,19 @@
 - ✅ **标注数据导入导出**：支持将项目标注数据导出为 JSON 格式，并可导入 JSON 文件恢复标注（按图片名称匹配）
 
 #### 2. 模块化首页设计
-- ✅ 2D Bbox/Mask标注模块选择
-- ✅ 9D Pose标注模块入口（已开始开发）
+- ✅ 2D Bbox/Mask 标注模块选择
+- ✅ 9D Pose 标注模块入口
 - ✅ 项目选择和管理入口
 - ✅ 当前项目信息展示
 
-#### 2.1 9D Pose（开发中）
+#### 2.1 9D Pose（6D / Mesh 工作区）
 - ✅ Mesh（OBJ）导入与管理：支持按项目上传/列表展示
 - ✅ Mesh 资源包兼容：解析 OBJ 内 `mtllib`，并加载同目录 MTL/贴图资源
 - ✅ 3D 预览：基于 Three.js 的交互预览（OrbitControls、光照/网格、自动居中与缩放）
 - ✅ Mesh 缩略图：列表中静态截图预览（自动取景 + 可调视角偏移/拉远）
 - ✅ **Mesh 上传器优化**：拆分为 Mesh 和 Depth 两个独立上传模块，不同背景色区分
+- ✅ **Mesh Label 对照表**（`MeshLabelMappingModal`）：为每个 Mesh 绑定与 2D Mask 一致的 SKU/Label；选项来自项目级 `labelColorMap`（与 2D「Mask Label 对照表」同源），**仅从列表选择、不可手输**，下拉项带颜色色块；进入 Pose 项目后即加载 Mesh 列表，无需先切换到 Mesh 缩略图标签
+- ✅ **Pose 页导出**：`📥 导出标注数据` 导出 6D Pose 等为 ZIP（见按钮说明）
 - ✅ **Diff-DOPE 6D 姿态接入（单 Mesh / 批量）**：
   - Pose 入口页支持单图触发 `AI 6D姿态标注`
   - 支持 `🤖 批量AI标注`：按图片顺序逐张执行，单图 5 分钟超时后自动跳过并继续
@@ -143,25 +145,17 @@
 
 ## 项目结构
 
+前端组件按业务维度拆分为 `components/2d`、`components/9d`、`components/common`（详见 `client/src/components/README.md`）。
+
 ```
 DAX_Autolabeling/
-├── client/                 # 前端React应用
+├── client/                 # 前端 React 应用
 │   ├── src/
-│   │   ├── components/    # 组件目录
-│   │   │   ├── AnnotationCanvas.tsx  # 标注画布组件
-│   │   │   ├── AnnotationPage.tsx     # 标注页面组件
-│   │   │   ├── PoseAnnotationPage.tsx # 9D Pose 标注页面（Mesh/图片预览）
-│   │   │   ├── ImageList.tsx         # 图像列表组件
-│   │   │   ├── ImageUploader.tsx     # 图像上传组件
-│   │   │   ├── LandingPage.tsx       # 首页导览组件
-│   │   │   ├── ManualAnnotation.tsx  # 手动标注组件
-│   │   │   ├── DepthUploader.tsx     # Depth 上传组件
-│   │   │   ├── MeshUploader.tsx      # Mesh 上传组件（OBJ/资源）
-│   │   │   ├── MeshPreview3D.tsx     # 3D Mesh 预览组件（Three.js）
-│   │   │   ├── MeshThumbnail.tsx     # Mesh 缩略图组件（静态截图）
-│   │   │   ├── PosePointCloudLayer.tsx # Pose 点云图层（点云+多Mesh+姿态编辑）
-│   │   │   ├── PoseFitLayer.tsx      # Diff-DOPE 拟合图层（2D overlay）
-│   │   │   └── *.css                 # 样式文件
+│   │   ├── components/    # 组件目录（2d / 9d / common）
+│   │   │   ├── 2d/        # 2D 标注：AnnotationPage、AnnotationCanvas、ManualAnnotation、ImageList 等
+│   │   │   ├── 9d/        # Pose：PoseAnnotationPage、PoseManualAnnotation、Mesh/Depth 上传、MeshLabelMappingModal 等
+│   │   │   ├── common/    # LandingPage 等跨模块入口
+│   │   │   └── README.md  # 子目录约定说明
 │   │   ├── services/      # API服务
 │   │   │   └── api.ts                # 后端API接口
 │   │   ├── poseAutoOpen3D.ts       # Pose 页面状态辅助工具
@@ -187,7 +181,7 @@ DAX_Autolabeling/
 │   │   ├── requirements.txt # Python 依赖
 │   │   ├── README.md      # SAM2 服务说明
 │   │   └── setup.bat      # SAM2 服务启动/安装脚本
-│   ├── pose-service/      # 6D/姿态服务（例如 Diff-DOPE 相关）
+│   ├── pose-service/      # 6D / Diff-DOPE 等 Python 服务（FastAPI，`app.py` 等；子模块含 diff-dope）
 │   └── nodemon.json       # 开发模式热重载配置
 ├── database/              # 数据库文件目录
 │   └── annotations.db     # SQLite数据库文件
@@ -241,7 +235,7 @@ DAX_Autolabeling/
 1. **克隆项目**
 ```bash
 git clone <repository-url>
-cd DAXautolabeling
+cd DAX_Autolabeling
 ```
 
 2. **安装后端依赖**
@@ -393,14 +387,17 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 - 详细的调试日志
 
 ### 技术特色
-- 基于Redux Toolkit的状态管理
-- TypeScript类型安全
-- RESTful API设计
-- SQLite轻量级数据库存储
+- 基于 Redux Toolkit 的状态管理
+- TypeScript 类型安全
+- 前端页面按 **2D / 9D / common** 分目录维护，Pose 页复用 `AnnotationPage.css` 布局样式
+- RESTful API 设计
+- SQLite 轻量级数据库存储
 - 外键约束和级联删除
 - 完整的错误处理和日志记录
 
 ## 更新记录
+
+- **V2.6**：文档与仓库目录对齐（`components/2d|9d|common`）；补充 Pose 页 **Mesh Label 对照表**、ZIP 导出与 Mesh 列表加载等行为说明。
 
 详细的版本/功能更新记录见 `UPDATES.md`。
 

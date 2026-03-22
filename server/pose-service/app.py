@@ -51,14 +51,22 @@ class Estimate6DRequest(BaseModel):
     useMaskLoss: bool = True
     useRgbLoss: bool = False
     useDepthLoss: bool = True
+    stage1UseMask: bool = True
+    stage1UseRgb: bool = True
+    stage2UseMask: bool = True
+    stage2UseRgb: bool = True
+    stage2UseDepth: bool = True
     weightMask: float = 1.0
     weightRgb: float = 0.7
     weightDepth: float = 1.0
     stage1WeightMask: Optional[float] = None
+    stage1WeightRgb: Optional[float] = None
     stage2WeightMask: Optional[float] = None
     stage2WeightDepth: Optional[float] = None
     stage1EarlyStopLoss: Optional[float] = None
     stage2EarlyStopLoss: Optional[float] = None
+    stage1BaseLr: Optional[float] = None
+    stage1LrDecay: Optional[float] = None
     stage2BaseLr: Optional[float] = None
     stage2LrDecay: Optional[float] = None
     maxAllowedFinalLoss: Optional[float] = None
@@ -112,6 +120,35 @@ def _load_depth_cm(depth_path: Path, intr: Dict[str, Any]) -> np.ndarray:
     return depth_raw * depth_scale * 100.0
 
 
+def _configure_stage_losses(
+    ddope,
+    *,
+    use_mask: bool,
+    use_depth: bool,
+    use_rgb: bool,
+    weight_mask: float,
+    weight_depth: float,
+    weight_rgb: float,
+) -> None:
+    """按开关组装当前阶段的 loss 列表；至少一项为 True。"""
+    ddope.cfg.losses.l1_mask = use_mask
+    ddope.cfg.losses.weight_mask = weight_mask if use_mask else 0.0
+    ddope.cfg.losses.l1_depth_with_mask = use_depth
+    ddope.cfg.losses.weight_depth = weight_depth if use_depth else 0.0
+    ddope.cfg.losses.l1_rgb_with_mask = use_rgb
+    ddope.cfg.losses.weight_rgb = weight_rgb if use_rgb else 0.0
+    fns: List[Any] = []
+    if use_mask:
+        fns.append(dd.l1_mask)
+    if use_depth:
+        fns.append(dd.l1_depth_with_mask)
+    if use_rgb:
+        fns.append(dd.l1_rgb_with_mask)
+    if not fns:
+        raise RuntimeError("每一轮优化至少需要启用 Mask、Depth、RGB 中的一项")
+    ddope.loss_functions = fns
+
+
 def _mask_from_flat_points(flat: List[float], h: int, w: int) -> np.ndarray:
     if not isinstance(flat, list) or len(flat) < 6:
         raise RuntimeError("maskFlatPoints 非法，至少需要 3 个点")
@@ -157,13 +194,12 @@ def estimate6d(req: Estimate6DRequest):
             if len(xs) == 0:
                 raise RuntimeError("mask 区域为空")
 
+            # 初始位姿：mask 质心像素 + mask 内深度**中位数**（cm）反投影；无有效深度时回退 80cm。
             depth_cm = _load_depth_cm(depth_path, intr)
             valid_depth = depth_cm[mask > 0]
             valid_depth = valid_depth[valid_depth > 0]
             z_cm = float(np.median(valid_depth)) if len(valid_depth) > 0 else 80.0
 
-            # 严格对齐 run_mine_demo_no_video.py：
-            # 初始化总是来自 mask + depth 反投影，不走外部 init。
             u = float(np.median(xs))
             v = float(np.median(ys))
             x_cm = (u - cx) * z_cm / max(1e-6, fx)
@@ -179,7 +215,7 @@ def estimate6d(req: Estimate6DRequest):
                 print(f"meshPath={mesh_path}")
                 print(f"camera fx/fy/cx/cy=({fx}, {fy}, {cx}, {cy})")
                 print(f"mask center (u,v)=({u}, {v}), mask pixels={int(len(xs))}")
-                print(f"median depth z_cm={z_cm}")
+                print(f"median depth z_cm={z_cm} (mask 内有效深度点数={len(valid_depth)})")
                 print(f"init xyz(cm)={init_xyz}")
                 print(f"init quat(xyzw)={init_quat}")
 
@@ -246,15 +282,22 @@ def estimate6d(req: Estimate6DRequest):
             ddope.set_batchsize(cfg.hyperparameters.batchsize)
 
             # 两阶段优化（严格对齐 run_mine_demo_no_video.py）：
-            # Stage-1: mask 粗定位
-            # Stage-2: mask + depth 精修
+            # Stage-1: 仅 mask + RGB（不使用 depth loss）
+            # Stage-2: mask +（可选 depth）+（可选 RGB）
             stage1_iters = int(max(1, min(500, req.stage1Iters if req.stage1Iters is not None else 80)))
             stage2_iters = int(max(1, min(500, req.stage2Iters if req.stage2Iters is not None else 120)))
             stage1_weight_mask = float(max(0.0, req.stage1WeightMask if req.stage1WeightMask is not None else 1.0))
+            stage1_weight_rgb = float(max(0.0, req.stage1WeightRgb if req.stage1WeightRgb is not None else 0.7))
             stage2_weight_mask = float(max(0.0, req.stage2WeightMask if req.stage2WeightMask is not None else 0.5))
             stage2_weight_depth = float(max(0.0, req.stage2WeightDepth if req.stage2WeightDepth is not None else 1.0))
-            stage2_use_rgb = bool(req.useRgbLoss)
             stage2_weight_rgb = float(max(0.0, req.weightRgb))
+            stage1_use_mask = bool(req.stage1UseMask)
+            stage1_use_rgb = bool(req.stage1UseRgb)
+            stage2_use_mask = bool(req.stage2UseMask)
+            stage2_use_rgb = bool(req.stage2UseRgb)
+            stage2_use_depth = bool(req.stage2UseDepth)
+            stage1_base_lr = float(max(0.01, min(200.0, req.stage1BaseLr if req.stage1BaseLr is not None else 20.0)))
+            stage1_lr_decay = float(max(0.001, min(1.0, req.stage1LrDecay if req.stage1LrDecay is not None else 0.1)))
             stage2_base_lr = float(max(0.01, min(200.0, req.stage2BaseLr if req.stage2BaseLr is not None else 20.0)))
             stage2_lr_decay = float(max(0.001, min(1.0, req.stage2LrDecay if req.stage2LrDecay is not None else 0.1)))
             stage1_early_stop = (
@@ -268,26 +311,34 @@ def estimate6d(req: Estimate6DRequest):
                 else None
             )
 
-            ddope.cfg.losses.l1_mask = True
-            ddope.cfg.losses.weight_mask = stage1_weight_mask
-            ddope.cfg.losses.l1_depth_with_mask = False
-            ddope.cfg.losses.l1_rgb_with_mask = False
             ddope.cfg.hyperparameters.nb_iterations = stage1_iters
             ddope.cfg.hyperparameters.early_stop_loss = stage1_early_stop
-            ddope.loss_functions = [dd.l1_mask]
+            ddope.cfg.hyperparameters.base_lr = stage1_base_lr
+            ddope.cfg.hyperparameters.lr_decay = stage1_lr_decay
+            _configure_stage_losses(
+                ddope,
+                use_mask=stage1_use_mask,
+                use_depth=False,
+                use_rgb=stage1_use_rgb,
+                weight_mask=stage1_weight_mask,
+                weight_depth=0.0,
+                weight_rgb=stage1_weight_rgb,
+            )
             ddope.run_optimization()
 
-            ddope.cfg.losses.l1_mask = True
-            ddope.cfg.losses.weight_mask = stage2_weight_mask
-            ddope.cfg.losses.l1_depth_with_mask = True
-            ddope.cfg.losses.weight_depth = stage2_weight_depth
-            ddope.cfg.losses.l1_rgb_with_mask = stage2_use_rgb
-            ddope.cfg.losses.weight_rgb = stage2_weight_rgb
             ddope.cfg.hyperparameters.nb_iterations = stage2_iters
             ddope.cfg.hyperparameters.early_stop_loss = stage2_early_stop
             ddope.cfg.hyperparameters.base_lr = stage2_base_lr
             ddope.cfg.hyperparameters.lr_decay = stage2_lr_decay
-            ddope.loss_functions = [dd.l1_mask, dd.l1_depth_with_mask] + ([dd.l1_rgb_with_mask] if stage2_use_rgb else [])
+            _configure_stage_losses(
+                ddope,
+                use_mask=stage2_use_mask,
+                use_depth=stage2_use_depth,
+                use_rgb=stage2_use_rgb,
+                weight_mask=stage2_weight_mask,
+                weight_depth=stage2_weight_depth,
+                weight_rgb=stage2_weight_rgb,
+            )
             ddope.run_optimization()
             stage2_scalar_loss = (
                 float(ddope.final_loss_scalar)
@@ -424,22 +475,35 @@ def estimate6d(req: Estimate6DRequest):
                     "poseDiagnostics": {
                         "initPositionCm": init_xyz,
                         "initQuatXyzw": init_quat,
+                        "initDepthPolicy": "median_depth_in_mask_cm_fallback_80",
+                        "initZCm": z_cm,
+                        "initDepthValidPixelsInMask": int(len(valid_depth)),
                     },
                     "stages": {
-                        "stage1": {"name": "mask-coarse", "iterations": stage1_iters},
+                        "stage1": {
+                            "name": "stage1-refine",
+                            "iterations": stage1_iters,
+                            "useMask": stage1_use_mask,
+                            "useDepth": False,
+                            "useRgb": stage1_use_rgb,
+                        },
                         "stage2": {
-                            "name": "mask-depth-refine",
+                            "name": "stage2-refine",
                             "iterations": stage2_iters,
-                            "useDepthLoss": True,
-                            "useRgbLoss": stage2_use_rgb,
+                            "useMask": stage2_use_mask,
+                            "useDepth": stage2_use_depth,
+                            "useRgb": stage2_use_rgb,
                         },
                         "weights": {
-                            "stage1Mask": stage1_weight_mask,
-                            "stage2Mask": stage2_weight_mask,
-                            "stage2Depth": stage2_weight_depth,
-                            "stage2Rgb": stage2_weight_rgb,
+                            "stage1Mask": stage1_weight_mask if stage1_use_mask else None,
+                            "stage1Rgb": stage1_weight_rgb if stage1_use_rgb else None,
+                            "stage2Mask": stage2_weight_mask if stage2_use_mask else None,
+                            "stage2Depth": stage2_weight_depth if stage2_use_depth else None,
+                            "stage2Rgb": stage2_weight_rgb if stage2_use_rgb else None,
                         },
                         "learningRate": {
+                            "stage1BaseLr": stage1_base_lr,
+                            "stage1LrDecay": stage1_lr_decay,
                             "stage2BaseLr": stage2_base_lr,
                             "stage2LrDecay": stage2_lr_decay,
                         },

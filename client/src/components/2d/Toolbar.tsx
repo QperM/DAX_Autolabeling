@@ -1,7 +1,7 @@
-import React from 'react';
+﻿import React from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import { setToolMode, setBrushSize, undo, redo } from '../store/annotationSlice';
-import type { ToolMode } from '../types';
+import { setToolMode, setBrushSize, undo, redo } from '../../store/annotationSlice';
+import type { ToolMode } from '../../types';
 
 const Toolbar: React.FC = () => {
   const dispatch = useDispatch();

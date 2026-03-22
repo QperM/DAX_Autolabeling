@@ -1,11 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
-import { depthApi, meshApi, pose9dApi } from '../services/api';
-import { toAbsoluteUrl } from '../utils/urls';
+import { depthApi, meshApi, pose9dApi } from '../../services/api';
+import { toAbsoluteUrl } from '../../utils/urls';
 
 type Props = {
   visible: boolean;

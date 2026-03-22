@@ -246,6 +246,19 @@
   margin-bottom: 0.75rem;
 }
 
+/* 统一 AI 控制区内主按钮高度：调整拟合参数 / 批量AI / Label 对照 / 导出 */
+.ai-controls .ai-model-config-btn,
+.ai-controls .ai-annotation-btn,
+.ai-controls .label-mapping-btn {
+  height: 45px;
+  min-height: 45px;
+  max-height: 45px;
+  padding-top: 0;
+  padding-bottom: 0;
+  box-sizing: border-box;
+  line-height: 1.25;
+}
+
 .ai-controls-top {
   display: flex;
   justify-content: space-between;
@@ -327,8 +340,13 @@
 
 .ai-model-config-btn {
   margin-top: 0.4rem;
-  padding: 0.6rem 1.2rem;
+  box-sizing: border-box;
+  min-height: 45px;
+  padding: 0 1.2rem;
   width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 8px;
   border: none;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -594,10 +612,15 @@
 }
 
 .ai-annotation-btn {
+  box-sizing: border-box;
+  min-height: 45px;
+  padding: 0 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
   border: none;
-  padding: 0.75rem 1.5rem;
   border-radius: 8px;
   font-size: 0.9rem;
   font-weight: 600;
@@ -734,11 +757,16 @@
   background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   color: white;
   border: none;
-  padding: 0.6rem 1.2rem;
+  min-height: 45px;
+  padding: 0 1.2rem;
+  box-sizing: border-box;
   border-radius: 8px;
   font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: all 0.3s ease;
   margin-top: 0.75rem;
   width: 100%;
@@ -848,6 +876,189 @@
   text-align: center;
   color: #64748b;
   font-size: 0.9rem;
+}
+
+/* Pose 页：Mesh Label 对照表（缩略图 + SKU，复用 label-mapping 弹窗结构） */
+.mesh-label-mapping-list {
+  max-height: min(60vh, 520px);
+}
+
+.mesh-label-mapping-item {
+  align-items: stretch;
+  gap: 1rem;
+}
+
+.mesh-label-mapping-thumb-wrap {
+  width: 140px;
+  height: 140px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #020617;
+  border: 1px solid #e2e8f0;
+}
+
+.mesh-label-mapping-fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  justify-content: center;
+}
+
+.mesh-label-mapping-filename {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #334155;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mesh-label-mapping-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mesh-label-mapping-combo-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.mesh-label-mapping-select-anchor {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.mesh-label-mapping-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 38px;
+  padding: 0.45rem 0.65rem;
+  box-sizing: border-box;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  font-size: 0.9rem;
+  color: #1e293b;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.mesh-label-mapping-select-trigger:hover:not(:disabled) {
+  border-color: #94a3b8;
+}
+
+.mesh-label-mapping-select-trigger:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.mesh-label-mapping-select-trigger:disabled {
+  opacity: 0.75;
+  cursor: not-allowed;
+  background: #f8fafc;
+}
+
+.mesh-label-mapping-select-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.mesh-label-mapping-select-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesh-label-mapping-select-text--warn {
+  color: #b45309;
+}
+
+.mesh-label-mapping-select-caret {
+  flex-shrink: 0;
+  font-size: 0.85rem;
+  color: #64748b;
+  line-height: 1;
+}
+
+.mesh-label-mapping-dropdown-portal .mesh-label-mapping-dropdown {
+  margin: 0;
+  padding: 0.35rem 0;
+  list-style: none;
+  max-height: min(40vh, 280px);
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
+}
+
+.mesh-label-mapping-dropdown-empty {
+  padding: 0.65rem 0.85rem;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.mesh-label-mapping-suggestion-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.45rem 0.65rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.9rem;
+  color: #1e293b;
+  transition: background 0.12s ease;
+}
+
+.mesh-label-mapping-suggestion-btn:hover {
+  background: #f1f5f9;
+}
+
+.mesh-label-mapping-suggestion-clear {
+  color: #64748b;
+  font-style: italic;
+}
+
+.mesh-label-mapping-suggestion-clear:hover {
+  background: #f8fafc;
+}
+
+.mesh-label-mapping-suggestion-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-sizing: border-box;
+}
+
+.mesh-label-mapping-suggestion-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesh-label-mapping-input {
+  min-width: 0;
 }
 
 .ai-description {

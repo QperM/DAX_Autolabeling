@@ -1,14 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
-import { setImages, setLoading, setError, setCurrentImage } from '../store/annotationSlice';
-import { imageApi, annotationApi, projectApi, authApi } from '../services/api';
-import type { Image, Mask, BoundingBox, Polygon } from '../types';
+import { setImages, setLoading, setError, setCurrentImage } from '../../store/annotationSlice';
+import { imageApi, annotationApi, projectApi, authApi } from '../../services/api';
+import type { Image, Mask, BoundingBox } from '../../types';
 import ImageUploader from './ImageUploader';
-import { clearStoredCurrentProject, getStoredCurrentProject } from '../tabStorage';
-import { toAbsoluteUrl } from '../utils/urls';
+import { clearStoredCurrentProject, getStoredCurrentProject } from '../../tabStorage';
+import { toAbsoluteUrl } from '../../utils/urls';
 import './AnnotationPage.css';
-import JSZip from 'jszip';
+import { AnnotationLabelmeZipExportButton, type LabelmeExportProgressState } from './AnnotationLabelmeZipExport';
 
 type Sam2ModelParams = {
   maxPolygonPoints: number;
@@ -95,14 +95,7 @@ const AnnotationPage: React.FC = () => {
 
   // 图片 URL 缓存破坏因子：只在列表内容发生变化时更新，避免每次 render 都触发图片重新请求
   const [imageCacheBust, setImageCacheBust] = useState(0);
-  const [exportFormat, setExportFormat] = useState<'project' | 'labelme-zip'>('project');
-  const [importExportProgress, setImportExportProgress] = useState<{
-    active: boolean;
-    mode: 'import' | 'export' | null;
-    total: number;
-    completed: number;
-    current: string;
-  }>({
+  const [exportProgress, setExportProgress] = useState<LabelmeExportProgressState>({
     active: false,
     mode: null,
     total: 0,
@@ -572,662 +565,6 @@ const AnnotationPage: React.FC = () => {
       setAnnotationSummary(summary);
     } catch (e) {
       console.warn('刷新标注汇总失败:', e);
-    }
-  };
-
-  // ===== Labelme JSON 兼容（导入/导出）=====
-  // 参考：labelme 输出结构（version/flags/shapes/imagePath/imageData/imageHeight/imageWidth）
-  type LabelmeShape = {
-    label: string;
-    points: number[][];
-    group_id?: number | null;
-    description?: string;
-    shape_type: string;
-    flags?: Record<string, any>;
-    mask?: any;
-  };
-
-  type LabelmeJson = {
-    version?: string;
-    flags?: Record<string, any>;
-    shapes: LabelmeShape[];
-    imagePath?: string;
-    imageData?: string | null;
-    imageHeight?: number | null;
-    imageWidth?: number | null;
-    // 允许额外字段（比 labelme 多一些信息）
-    [k: string]: any;
-  };
-
-  const normalizePathBaseName = (p: string) => {
-    const s = String(p || '').replace(/\\/g, '/');
-    const parts = s.split('/');
-    return (parts[parts.length - 1] || '').trim();
-  };
-
-  const stripExt = (name: string) => {
-    const n = String(name || '').trim();
-    return n.replace(/\.[^.]+$/, '');
-  };
-
-  const isLabelmeJson = (obj: any): obj is LabelmeJson => {
-    if (!obj || typeof obj !== 'object') return false;
-    if (!Array.isArray(obj.shapes)) return false;
-    // labelme 常见字段：version、imagePath、imageWidth/Height、imageData
-    if ('imagePath' in obj || 'imageWidth' in obj || 'imageHeight' in obj) return true;
-    // 兜底：有 shapes 也当作 labelme-like
-    return true;
-  };
-
-  const flatPointsToPairs = (pts: number[]) => {
-    const pairs: number[][] = [];
-    const arr = Array.isArray(pts) ? pts : [];
-    for (let i = 0; i + 1 < arr.length; i += 2) {
-      const x = Number(arr[i]);
-      const y = Number(arr[i + 1]);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      pairs.push([x, y]);
-    }
-    return pairs;
-  };
-
-  const pairsToFlatPoints = (pairs: any) => {
-    const out: number[] = [];
-    if (!Array.isArray(pairs)) return out;
-    for (const p of pairs) {
-      if (!Array.isArray(p) || p.length < 2) continue;
-      const x = Number(p[0]);
-      const y = Number(p[1]);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      out.push(x, y);
-    }
-    return out;
-  };
-
-  const labelmeToInternal = (labelme: LabelmeJson): { masks: Mask[]; boundingBoxes: BoundingBox[]; polygons: Polygon[] } => {
-    const masksOut: Mask[] = [];
-    const bboxesOut: BoundingBox[] = [];
-    const polygonsOut: Polygon[] = [];
-
-    const shapes = Array.isArray(labelme?.shapes) ? labelme.shapes : [];
-    const baseId = `${Date.now()}`;
-    shapes.forEach((shape, idx) => {
-      const shapeType = String(shape?.shape_type || '').toLowerCase();
-      const label = String(shape?.label || '');
-      const flags = (shape?.flags || {}) as Record<string, any>;
-      const daxType = String(flags?.dax_type || '').toLowerCase();
-      const daxColor = typeof flags?.dax_color === 'string' ? flags.dax_color : undefined;
-
-      if (shapeType === 'rectangle') {
-        // Labelme rectangle: points = [[x1,y1],[x2,y2]]
-        const pts = Array.isArray(shape?.points) ? shape.points : [];
-        const p1 = pts[0];
-        const p2 = pts[1];
-        if (!Array.isArray(p1) || !Array.isArray(p2) || p1.length < 2 || p2.length < 2) return;
-        const x1 = Number(p1[0]);
-        const y1 = Number(p1[1]);
-        const x2 = Number(p2[0]);
-        const y2 = Number(p2[1]);
-        if (![x1, y1, x2, y2].every(Number.isFinite)) return;
-        const x = Math.min(x1, x2);
-        const y = Math.min(y1, y2);
-        const width = Math.abs(x2 - x1);
-        const height = Math.abs(y2 - y1);
-        bboxesOut.push({
-          id: `bbox-${baseId}-${idx}`,
-          x,
-          y,
-          width,
-          height,
-          label,
-          color: daxColor,
-        });
-        return;
-      }
-
-      if (shapeType === 'polygon') {
-        const flat = pairsToFlatPoints(shape?.points);
-        if (flat.length < 6) return; // 至少 3 个点
-        const common = {
-          id: `poly-${baseId}-${idx}`,
-          points: flat,
-          label,
-          color: daxColor,
-        };
-        // 我们导出时会带 flags.dax_type，以便导入时恢复到 masks/polygons
-        if (daxType === 'polygon') {
-          polygonsOut.push({ ...common });
-        } else {
-          masksOut.push({
-            id: `mask-${baseId}-${idx}`,
-            points: flat,
-            label,
-            color: daxColor,
-            opacity: 0.7,
-          });
-        }
-        return;
-      }
-
-      // 其他 shape_type：先忽略，但给日志提示，避免悄悄丢数据
-      console.warn('[Import][Labelme] 不支持的 shape_type，将忽略:', shapeType, shape);
-    });
-
-    return { masks: masksOut, boundingBoxes: bboxesOut, polygons: polygonsOut };
-  };
-
-  const buildLabelmeFromInternal = (args: {
-    image: Image;
-    masks: Mask[];
-    boundingBoxes: BoundingBox[];
-    polygons: Polygon[];
-  }): LabelmeJson => {
-    const { image, masks, boundingBoxes, polygons } = args;
-    const shapes: LabelmeShape[] = [];
-
-    (masks || []).forEach((m) => {
-      shapes.push({
-        label: String(m.label || ''),
-        points: flatPointsToPairs(m.points || []),
-        group_id: null,
-        description: '',
-        shape_type: 'polygon',
-        flags: {
-          dax_type: 'mask',
-          dax_id: m.id,
-          dax_color: m.color,
-          dax_opacity: m.opacity,
-        },
-        mask: null,
-      });
-    });
-
-    (polygons || []).forEach((p) => {
-      shapes.push({
-        label: String(p.label || ''),
-        points: flatPointsToPairs(p.points || []),
-        group_id: null,
-        description: '',
-        shape_type: 'polygon',
-        flags: {
-          dax_type: 'polygon',
-          dax_id: p.id,
-          dax_color: p.color,
-        },
-        mask: null,
-      });
-    });
-
-    (boundingBoxes || []).forEach((b) => {
-      const x1 = Number(b.x);
-      const y1 = Number(b.y);
-      const x2 = Number(b.x + b.width);
-      const y2 = Number(b.y + b.height);
-      shapes.push({
-        label: String(b.label || ''),
-        points: [
-          [x1, y1],
-          [x2, y2],
-        ],
-        group_id: null,
-        description: '',
-        shape_type: 'rectangle',
-        flags: {
-          dax_type: 'bbox',
-          dax_id: b.id,
-          dax_color: b.color,
-        },
-        mask: null,
-      });
-    });
-
-    return {
-      version: '5.5.0',
-      flags: {},
-      shapes,
-      // Labelme 通常写原图路径；这里用 originalName（或 filename）对齐导入时的匹配规则
-      imagePath: image.originalName || image.filename,
-      // 不写 imageData，避免文件巨大；labelme 允许 imageData=null
-      imageData: null,
-      imageHeight: typeof image.height === 'number' ? image.height : null,
-      imageWidth: typeof image.width === 'number' ? image.width : null,
-      dax: {
-        source: 'DAXautolabeling',
-        imageId: image.id,
-        filename: image.filename,
-        url: image.url,
-      },
-    };
-  };
-
-  const assignColorsForAll = (input: { masks: Mask[]; boundingBoxes: BoundingBox[]; polygons: Polygon[] }) => {
-    const labelColorMap = labelColorMapRef.current;
-    const getColorForLabel = (label: string | undefined, fallbackIndex: number): string => {
-      const key = label && label.trim().length > 0 ? label.trim() : `__unnamed_${fallbackIndex}`;
-      if (labelColorMap.has(key)) return labelColorMap.get(key)!;
-      const color = COLOR_PALETTE[labelColorMap.size % COLOR_PALETTE.length];
-      labelColorMap.set(key, color);
-      return color;
-    };
-
-    const masksColored: Mask[] = (input.masks || []).map((m, idx) => ({
-      ...m,
-      color: m.color || getColorForLabel(m.label, idx),
-    }));
-
-    const bboxesColored: BoundingBox[] = (input.boundingBoxes || []).map((b, idx) => ({
-      ...b,
-      color: b.color || getColorForLabel(b.label, (input.masks?.length || 0) + idx),
-    }));
-
-    const polygonsColored: Polygon[] = (input.polygons || []).map((p, idx) => ({
-      ...p,
-      color: p.color || getColorForLabel(p.label, (input.masks?.length || 0) + (input.boundingBoxes?.length || 0) + idx),
-    }));
-
-    return { masks: masksColored, boundingBoxes: bboxesColored, polygons: polygonsColored };
-  };
-
-  // 导入标注数据从 JSON
-  const handleImportAnnotations = async () => {
-    if (!isAdmin) {
-      alert('当前账号无权限导入标注数据，请联系管理员操作');
-      return;
-    }
-
-    if (!currentProject) {
-      alert('请先选择项目');
-      return;
-    }
-
-    // 创建文件选择器
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.json,application/json';
-    input.onchange = async (e: any) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-
-      try {
-        // 进度条：导入开始
-        setImportExportProgress({
-          active: true,
-          mode: 'import',
-          total: 0,
-          completed: 0,
-          current: `读取文件: ${file.name}`,
-        });
-        dispatch(setLoading(true));
-        const text = await file.text();
-        const importData = JSON.parse(text);
-
-        // 1) labelme 单图 JSON：{ shapes, imagePath, imageWidth/Height, ... }
-        // 2) 我们的 labelme-like 项目包：{ format: "labelme-project", images: [{ labelme: {...} }, ...] }
-        // 3) 旧版导出 JSON：{ images: [{ masks, boundingBoxes, polygons, originalName/filename }, ...] }
-        const isSingleLabelme = isLabelmeJson(importData) && !Array.isArray(importData.images);
-        const isLabelmeProjectPack =
-          importData &&
-          typeof importData === 'object' &&
-          importData.format === 'labelme-project' &&
-          Array.isArray(importData.images);
-        const isLegacyProjectPack = importData && typeof importData === 'object' && Array.isArray(importData.images) && importData.format !== 'labelme-project';
-
-        if (!isSingleLabelme && !isLabelmeProjectPack && !isLegacyProjectPack) {
-          alert('导入文件格式错误：未识别为 labelme JSON 或项目导出包（images 数组）');
-          return;
-        }
-
-        const importTotal = isSingleLabelme ? 1 : (Array.isArray(importData.images) ? importData.images.length : 0);
-        setImportExportProgress((prev) => ({
-          ...prev,
-          total: importTotal,
-          completed: 0,
-          current: `开始导入（共 ${importTotal} 项）`,
-        }));
-
-        let successCount = 0;
-        let failCount = 0;
-        let notFoundCount = 0;
-        const collectedLabelColor = new Map<string, string>();
-        let processedCount = 0;
-
-        const projectId = currentProject.id;
-        const updateProjectLabelColorMap = (pairs: Array<{ label: string; color: string }>) => {
-          if (!pairs.length) return;
-          const key = `labelColorMap:${projectId}`;
-          try {
-            const existingMap = new Map<string, string>();
-            const raw = localStorage.getItem(key);
-            if (raw) {
-              const obj = JSON.parse(raw) as Record<string, string>;
-              Object.entries(obj).forEach(([label, color]) => {
-                if (label && color) existingMap.set(label, color);
-              });
-            }
-
-            pairs.forEach(({ label, color }) => {
-              const l = (label || '').trim();
-              const c = (color || '').trim();
-              if (!l || !c) return;
-              existingMap.set(l, c);
-            });
-
-            const objToSave: Record<string, string> = {};
-            existingMap.forEach((color, label) => {
-              objToSave[label] = color;
-            });
-            localStorage.setItem(key, JSON.stringify(objToSave));
-          } catch (err) {
-            console.warn('[Import] 更新 labelColorMap 失败:', err);
-          }
-        };
-
-        const matchImageByAnyName = (target: string) => {
-          const tBase = normalizePathBaseName(target);
-          const tNoExt = stripExt(tBase);
-          return images.find((img: Image) => {
-            const c1 = normalizePathBaseName(img.originalName);
-            const c2 = normalizePathBaseName(img.filename);
-            return (
-              c1 === tBase ||
-              c2 === tBase ||
-              stripExt(c1) === tNoExt ||
-              stripExt(c2) === tNoExt ||
-              img.originalName === target ||
-              img.filename === target
-            );
-          });
-        };
-
-        const importOne = async (args: {
-          targetName: string;
-          internal: { masks: Mask[]; boundingBoxes: BoundingBox[]; polygons: Polygon[] };
-        }) => {
-          // 进度条：更新当前处理项（即使找不到也算处理过）
-          setImportExportProgress((prev) => ({
-            ...prev,
-            current: `导入: ${args.targetName}`,
-          }));
-
-          const matchedImage = matchImageByAnyName(args.targetName);
-          if (!matchedImage) {
-            notFoundCount++;
-            console.warn(`[Import] 未找到匹配图片: ${args.targetName}`);
-            processedCount += 1;
-            setImportExportProgress((prev) => ({
-              ...prev,
-              completed: Math.min(prev.total, processedCount),
-            }));
-            return;
-          }
-
-          try {
-            // 为 labelme 输入（通常不含颜色）按项目规则补齐颜色
-            const colored = assignColorsForAll(args.internal);
-            await annotationApi.saveAnnotation(matchedImage.id, colored);
-
-            // 收集 label -> color（用于刷新项目级映射）
-            [...colored.masks, ...colored.boundingBoxes, ...colored.polygons].forEach((item: any) => {
-              const label = (item?.label || '').trim();
-              const color = (item?.color || '').trim?.() || item?.color;
-              if (!label || !color) return;
-              if (!collectedLabelColor.has(label)) collectedLabelColor.set(label, color);
-            });
-
-            successCount++;
-          } catch (error: any) {
-            console.error(`[Import] 导入图片 ${matchedImage.originalName} 标注失败:`, error);
-            failCount++;
-          } finally {
-            processedCount += 1;
-            setImportExportProgress((prev) => ({
-              ...prev,
-              completed: Math.min(prev.total, processedCount),
-            }));
-          }
-        };
-
-        if (isSingleLabelme) {
-          // 单文件 labelme：用 imagePath/文件名匹配图片
-          const targetName = normalizePathBaseName(importData.imagePath || file.name);
-          const internal = labelmeToInternal(importData);
-          await importOne({ targetName, internal });
-        } else {
-          // 项目包（labelme-project 或 legacy）
-          for (const importedImage of importData.images) {
-            if (isLabelmeProjectPack && importedImage?.labelme && isLabelmeJson(importedImage.labelme)) {
-              const labelme = importedImage.labelme as LabelmeJson;
-              const targetName = normalizePathBaseName(labelme.imagePath || importedImage.originalName || importedImage.filename || '');
-              const internal = labelmeToInternal(labelme);
-              await importOne({ targetName, internal });
-              continue;
-            }
-
-            // legacy：直接使用内部结构字段
-            const targetName = normalizePathBaseName(importedImage.originalName || importedImage.filename || '');
-            const internal = {
-              masks: importedImage.masks || [],
-              boundingBoxes: importedImage.boundingBoxes || [],
-              polygons: importedImage.polygons || [],
-            };
-            await importOne({ targetName, internal });
-          }
-        }
-
-        // 更新项目级 label -> color 映射（导入后立即同步到本地，重命名下拉框可立即看到）
-        if (collectedLabelColor.size > 0) {
-          const pairs = Array.from(collectedLabelColor.entries()).map(([label, color]) => ({ label, color }));
-          updateProjectLabelColorMap(pairs);
-        }
-
-        // 刷新图片列表和标注汇总
-        if (currentProject) {
-          const loadedImages = await imageApi.getImages(currentProject.id);
-          dispatch(setImages(loadedImages));
-          await refreshAnnotationSummary();
-        }
-
-        // 显示导入结果
-        let message = `导入完成！\n\n成功: ${successCount} 张`;
-        if (notFoundCount > 0) {
-          message += `\n未找到匹配图片: ${notFoundCount} 张（请确保图片已上传）`;
-        }
-        if (failCount > 0) {
-          message += `\n失败: ${failCount} 张`;
-        }
-        alert(message);
-      } catch (error: any) {
-        console.error('导入标注数据失败:', error);
-        if (error instanceof SyntaxError) {
-          alert('导入失败：JSON 文件格式错误，请检查文件是否完整');
-        } else {
-          alert(`导入失败: ${error.message || '未知错误'}`);
-        }
-      } finally {
-        dispatch(setLoading(false));
-        // 进度条：导入结束（稍后自动隐藏）
-        setTimeout(() => {
-          setImportExportProgress((prev) => ({ ...prev, active: false, mode: null, current: '' }));
-        }, 1200);
-      }
-    };
-
-    input.click();
-  };
-
-  // 导出标注数据（支持两种格式：项目 JSON / Labelme ZIP）
-  const handleExportAnnotations = async () => {
-    if (!isAdmin) {
-      alert('当前账号无权限导出标注数据，请联系管理员操作');
-      return;
-    }
-
-    if (!currentProject) {
-      alert('请先选择项目');
-      return;
-    }
-
-    if (images.length === 0) {
-      alert('当前没有可导出的图片');
-      return;
-    }
-
-    try {
-      // 进度条：导出开始
-      setImportExportProgress({
-        active: true,
-        mode: 'export',
-        total: images.length,
-        completed: 0,
-        current: `开始导出（共 ${images.length} 张）`,
-      });
-      dispatch(setLoading(true));
-
-      if (exportFormat === 'labelme-zip') {
-        // 导出为 Labelme：一图一 JSON，打包为 ZIP
-        const zip = new JSZip();
-
-        for (let i = 0; i < images.length; i++) {
-          const image = images[i];
-          setImportExportProgress((prev) => ({
-            ...prev,
-            current: `导出: ${image.originalName || image.filename || `image_${image.id}`}`,
-            completed: Math.max(prev.completed, i),
-          }));
-          try {
-            const resp = await annotationApi.getAnnotation(image.id);
-            const anno = resp?.annotation;
-
-            const masks0: Mask[] = anno?.masks || [];
-            const bboxes0: BoundingBox[] = anno?.boundingBoxes || [];
-            const polygons0: Polygon[] = anno?.polygons || [];
-
-            const labelme = buildLabelmeFromInternal({
-              image,
-              masks: masks0,
-              boundingBoxes: bboxes0,
-              polygons: polygons0,
-            });
-
-            const baseName = stripExt(normalizePathBaseName(image.originalName || image.filename || `image_${image.id}`));
-            const fileName = `${baseName || `image_${image.id}`}.json`;
-            zip.file(fileName, JSON.stringify(labelme, null, 2));
-          } catch (e) {
-            console.warn(`[Labelme 导出] 获取图片 ${image.id} 标注失败，将导出空标注:`, e);
-            const labelme = buildLabelmeFromInternal({
-              image,
-              masks: [],
-              boundingBoxes: [],
-              polygons: [],
-            });
-            const baseName = stripExt(normalizePathBaseName(image.originalName || image.filename || `image_${image.id}`));
-            const fileName = `${baseName || `image_${image.id}`}.json`;
-            zip.file(fileName, JSON.stringify(labelme, null, 2));
-          }
-          setImportExportProgress((prev) => ({
-            ...prev,
-            completed: Math.max(prev.completed, i + 1),
-          }));
-        }
-
-        const zipBlob = await zip.generateAsync({ type: 'blob' });
-        const url = URL.createObjectURL(zipBlob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `labelme_${currentProject.name}_${new Date().toISOString().split('T')[0]}.zip`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        alert(`Labelme ZIP 导出成功！\n\n共导出 ${images.length} 个 JSON（每图一个）`);
-      } else {
-        // 导出为项目内部 JSON（兼容旧格式）
-        const exportData = {
-          project: {
-            id: currentProject.id,
-            name: currentProject.name,
-            description: currentProject.description || '',
-          },
-          exportTime: new Date().toISOString(),
-          totalImages: images.length,
-          images: [] as Array<{
-            imageId: number;
-            filename: string;
-            originalName: string;
-            url: string;
-            width?: number;
-            height?: number;
-            masks: Mask[];
-            boundingBoxes: BoundingBox[];
-            polygons: Polygon[];
-          }>,
-        };
-
-        for (let i = 0; i < images.length; i++) {
-          const image = images[i];
-          setImportExportProgress((prev) => ({
-            ...prev,
-            current: `导出: ${image.originalName || image.filename || `image_${image.id}`}`,
-            completed: Math.max(prev.completed, i),
-          }));
-          try {
-            const resp = await annotationApi.getAnnotation(image.id);
-            const anno = resp?.annotation;
-
-            exportData.images.push({
-              imageId: image.id,
-              filename: image.filename,
-              originalName: image.originalName,
-              url: image.url,
-              width: image.width,
-              height: image.height,
-              masks: anno?.masks || [],
-              boundingBoxes: anno?.boundingBoxes || [],
-              polygons: anno?.polygons || [],
-            });
-          } catch (e) {
-            console.warn(`[项目导出] 获取图片 ${image.id} 标注失败:`, e);
-            exportData.images.push({
-              imageId: image.id,
-              filename: image.filename,
-              originalName: image.originalName,
-              url: image.url,
-              width: image.width,
-              height: image.height,
-              masks: [],
-              boundingBoxes: [],
-              polygons: [],
-            });
-          }
-          setImportExportProgress((prev) => ({
-            ...prev,
-            completed: Math.max(prev.completed, i + 1),
-          }));
-        }
-
-        const jsonStr = JSON.stringify(exportData, null, 2);
-        const blob = new Blob([jsonStr], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `annotations_${currentProject.name}_${new Date().toISOString().split('T')[0]}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        alert(`项目 JSON 导出成功！\n\n共导出 ${exportData.images.length} 张图片的标注数据`);
-      }
-    } catch (error: any) {
-      console.error('导出标注数据失败:', error);
-      alert(`导出失败: ${error.message || '未知错误'}`);
-    } finally {
-      dispatch(setLoading(false));
-      // 进度条：导出结束（稍后自动隐藏）
-      setTimeout(() => {
-        setImportExportProgress((prev) => ({ ...prev, active: false, mode: null, current: '' }));
-      }, 1200);
     }
   };
 
@@ -1832,6 +1169,14 @@ const AnnotationPage: React.FC = () => {
                         </button>
                       </div>
                     </div>
+                    <button
+                      className="ai-annotation-btn"
+                      onClick={handleBatchAIAutoAnnotation}
+                      disabled={!isAdmin || images.length === 0 || batchAnnotating}
+                      title={!isAdmin ? '普通用户已禁用：批量AI标注可能导致服务器过载，请联系管理员' : ''}
+                    >
+                      {batchAnnotating ? '批量标注中...' : '🤖 批量AI标注'}
+                    </button>
                     {/* Mask Label 对照表按钮 */}
                     <button
                       type="button"
@@ -1847,63 +1192,32 @@ const AnnotationPage: React.FC = () => {
                     >
                       🏷️ Mask Label 对照表
                     </button>
-                    <button 
-                      className="ai-annotation-btn"
-                      onClick={handleBatchAIAutoAnnotation}
-                      disabled={!isAdmin || images.length === 0 || batchAnnotating}
-                      title={!isAdmin ? '普通用户已禁用：批量AI标注可能导致服务器过载，请联系管理员' : ''}
-                    >
-                      {batchAnnotating ? '批量标注中...' : '🤖 批量AI标注'}
-                    </button>
                     <div className="import-export-buttons">
-                      <button 
-                        className="ai-annotation-btn import-btn"
-                        onClick={handleImportAnnotations}
-                        disabled={!isAdmin || !currentProject || loading}
-                        title={!isAdmin ? '普通用户已禁用：请联系管理员导入/导出' : ''}
-                      >
-                        📤 导入标注 (JSON)
-                      </button>
-                      <div className="export-row">
-                        <select
-                          className="export-format-select"
-                          value={exportFormat}
-                          onChange={(e) => setExportFormat(e.target.value as 'project' | 'labelme-zip')}
-                          disabled={!isAdmin}
-                          title={!isAdmin ? '普通用户已禁用：请联系管理员导入/导出' : ''}
-                        >
-                          <option value="project">项目默认 JSON</option>
-                          <option value="labelme-zip">Labelme ZIP</option>
-                        </select>
-                        <button 
-                          className="ai-annotation-btn export-btn"
-                          onClick={handleExportAnnotations}
-                          disabled={!isAdmin || images.length === 0 || loading}
-                          title={!isAdmin ? '普通用户已禁用：请联系管理员导入/导出' : ''}
-                        >
-                          📥 导出标注数据
-                        </button>
-                      </div>
+                      <AnnotationLabelmeZipExportButton
+                        project={currentProject ? { id: currentProject.id, name: currentProject.name } : null}
+                        images={images}
+                        isAdmin={isAdmin}
+                        pageLoading={loading}
+                        setExportProgress={setExportProgress}
+                      />
 
-                      {/* 导入/导出进度条 */}
-                      {importExportProgress.active && importExportProgress.total > 0 && (
+                      {/* Labelme ZIP 导出进度 */}
+                      {exportProgress.active && exportProgress.total > 0 && (
                         <div className="ai-progress-container" style={{ marginTop: '0.75rem' }}>
                           <div className="batch-progress-info">
                             <div className="batch-progress-stats">
                               <span>
-                                {importExportProgress.mode === 'import' ? '导入进度' : '导出进度'}:
-                                {' '}
-                                {importExportProgress.completed}/{importExportProgress.total}
+                                导出进度: {exportProgress.completed}/{exportProgress.total}
                               </span>
                               <span>
                                 {Math.round(
-                                  (importExportProgress.completed / Math.max(1, importExportProgress.total)) * 100
+                                  (exportProgress.completed / Math.max(1, exportProgress.total)) * 100
                                 )}%
                               </span>
                             </div>
-                            {importExportProgress.current && (
+                            {exportProgress.current && (
                               <div className="batch-progress-current">
-                                {importExportProgress.current}
+                                {exportProgress.current}
                               </div>
                             )}
                           </div>
@@ -1912,7 +1226,7 @@ const AnnotationPage: React.FC = () => {
                               className="ai-progress-fill"
                               style={{
                                 width: `${Math.round(
-                                  (importExportProgress.completed / Math.max(1, importExportProgress.total)) * 100
+                                  (exportProgress.completed / Math.max(1, exportProgress.total)) * 100
                                 )}%`,
                               }}
                             />

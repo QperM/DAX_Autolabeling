@@ -1,9 +1,9 @@
-import React, { useRef, useEffect, useState } from 'react';
+﻿import React, { useRef, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Stage, Layer, Image, Line, Rect, Circle } from 'react-konva';
 import useImage from 'use-image';
-import type { Mask, BoundingBox, Polygon } from '../types';
-import { getStoredCurrentProject } from '../tabStorage';
+import type { Mask, BoundingBox, Polygon } from '../../types';
+import { getStoredCurrentProject } from '../../tabStorage';
 
 interface AnnotationCanvasProps {
   imageUrl: string;

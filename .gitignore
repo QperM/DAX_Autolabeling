@@ -16,8 +16,10 @@ build/
 .env.test.local
 .env.production.local
 
-# Database
-server/database.db
+# Database (SQLite)
+# 运行时库默认路径为项目根目录 database/annotations.db（见 server/db/connection.js）
+# 勿提交整个 database 目录；全局 *.db 防止其它路径误提交数据库文件
+database/
 *.sqlite
 *.db
 
@@ -70,6 +72,20 @@ Desktop.ini
 
 # Uploaded runtime files (should not be committed)
 server/uploads/
+
+# Python（sam2-service / pose-service 等）
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+.eggs/
 
 # Embedded SAM2 / checkpoints（仅本地使用，不入 Git）
 server/sam2-service/grounded-sam2/

@@ -1,8 +1,8 @@
-import React from 'react';
+﻿import React from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import { setCurrentImage, removeImage, setLoading, setError } from '../store/annotationSlice';
-import { imageApi } from '../services/api';
-import type { Image } from '../types';
+import { setCurrentImage, removeImage, setLoading, setError } from '../../store/annotationSlice';
+import { imageApi } from '../../services/api';
+import type { Image } from '../../types';
 
 const ImageList: React.FC = () => {
   const dispatch = useDispatch();

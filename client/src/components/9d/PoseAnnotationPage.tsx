@@ -1,18 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
-import { setCurrentImage, setError, setImages, setLoading } from '../store/annotationSlice';
-import { authApi, imageApi, meshApi, pose6dApi, pose9dApi } from '../services/api';
-import type { Image } from '../types';
-import { clearStoredCurrentProject, getStoredCurrentProject } from '../tabStorage';
-import { toAbsoluteUrl } from '../utils/urls';
+import { setCurrentImage, setError, setImages, setLoading } from '../../store/annotationSlice';
+import { authApi, imageApi, meshApi, pose6dApi, pose9dApi } from '../../services/api';
+import type { Image } from '../../types';
+import { clearStoredCurrentProject, getStoredCurrentProject } from '../../tabStorage';
+import { toAbsoluteUrl } from '../../utils/urls';
 import MeshUploader from './MeshUploader';
 import DepthUploader from './DepthUploader';
 // @ts-ignore: MeshPreview3D is a TSX React component resolved by bundler
 import MeshPreview3D from './MeshPreview3D';
 // @ts-ignore: MeshThumbnail is a TSX React component resolved by bundler
 import MeshThumbnail from './MeshThumbnail';
-import './AnnotationPage.css';
+import { PoseAnnotationsZipExportButton } from './PoseAnnotationsZipExport';
+import MeshLabelMappingModal from './MeshLabelMappingModal';
+import '../2d/AnnotationPage.css';
 
 const DEFAULT_DIFFDOPE_PARAMS = {
   stage1Iters: 80,
@@ -62,8 +64,6 @@ const PoseAnnotationPage: React.FC = () => {
       skuLabel?: string | null;
     }>
   >([]);
-  const [meshSkuDraft, setMeshSkuDraft] = useState<string>('');
-  const [meshSkuSaving, setMeshSkuSaving] = useState(false);
   const [meshPreviewTextureEnabled, setMeshPreviewTextureEnabled] = useState(true);
   const [meshPreviewDims, setMeshPreviewDims] = useState<{ x: number; y: number; z: number } | null>(null);
   const [projectLabelOptions, setProjectLabelOptions] = useState<Array<{ label: string; color: string }>>([]);
@@ -80,6 +80,7 @@ const PoseAnnotationPage: React.FC = () => {
   const [previewFitOverlayUrl, setPreviewFitOverlayUrl] = useState<string | null>(null);
   const [previewFitLoading, setPreviewFitLoading] = useState(false);
   const [showDiffDopeParamModal, setShowDiffDopeParamModal] = useState(false);
+  const [showMeshLabelMappingModal, setShowMeshLabelMappingModal] = useState(false);
   const [diffDopeParams, setDiffDopeParams] = useState(() => ({ ...DEFAULT_DIFFDOPE_PARAMS }));
   // 从 2D 的 “Mask Label 对照表” 复用项目级 label 列表（localStorage: labelColorMap:${projectId}）
   useEffect(() => {
@@ -103,13 +104,6 @@ const PoseAnnotationPage: React.FC = () => {
     }
   }, [currentProject?.id]);
 
-  const selectedSkuColor = useMemo(() => {
-    const label = (meshSkuDraft || '').trim();
-    if (!label) return null;
-    const hit = projectLabelOptions.find((p) => p.label === label);
-    return hit?.color || null;
-  }, [meshSkuDraft, projectLabelOptions]);
-
   const handlePreviewMeshNavigate = (direction: 'prev' | 'next') => {
     if (!selectedPreviewMesh?.id) return;
     const idx = projectMeshes.findIndex((m) => m.id === selectedPreviewMesh.id);
@@ -120,8 +114,6 @@ const PoseAnnotationPage: React.FC = () => {
   };
 
   useEffect(() => {
-    // 切换预览 Mesh 时同步 sku draft
-    setMeshSkuDraft(String(selectedPreviewMesh?.skuLabel || ''));
     setMeshPreviewDims(null);
   }, [selectedPreviewMesh?.id]);
 
@@ -232,11 +224,10 @@ const PoseAnnotationPage: React.FC = () => {
     loadImages();
   }, [dispatch, currentProject?.id, authReady, hasProjectAccess, navigate]);
 
-  // 加载项目 Mesh 列表（用于下方 Mesh 预览）
+  // 加载项目 Mesh 列表（底部 Mesh 区、Mesh Label 对照表、导出等均依赖；不依赖是否切到 Mesh 标签）
   useEffect(() => {
     if (!currentProject?.id) return;
     if (!authReady || !hasProjectAccess) return;
-    if (bottomViewMode !== 'meshes') return;
 
     (async () => {
       try {
@@ -246,7 +237,7 @@ const PoseAnnotationPage: React.FC = () => {
         console.warn('[PoseAnnotationPage] 加载项目 Mesh 列表失败:', e);
       }
     })();
-  }, [currentProject?.id, authReady, hasProjectAccess, bottomViewMode]);
+  }, [currentProject?.id, authReady, hasProjectAccess]);
 
   useEffect(() => {
     // project 或图片列表变动时更新一次即可，避免每次 render 都触发图片重新请求
@@ -656,20 +647,26 @@ const PoseAnnotationPage: React.FC = () => {
                       <div className="import-export-buttons">
                         <button
                           type="button"
-                          className="ai-annotation-btn import-btn"
-                          onClick={() => alert('TODO：导入标注（Pose 页面占位）')}
-                          title="占位：后续接入导入 Pose 标注数据"
+                          className="label-mapping-btn"
+                          onClick={() => {
+                            if (!currentProject) {
+                              alert('请先选择项目');
+                              return;
+                            }
+                            setShowMeshLabelMappingModal(true);
+                          }}
+                          disabled={!currentProject}
+                          title="查看 / 编辑各 Mesh 的 SKU Label（缩略图与底部网格一致）"
                         >
-                          📤 导入标注 (JSON)
+                          🏷️ Mesh Label 对照表
                         </button>
-                        <button
-                          type="button"
+                        <PoseAnnotationsZipExportButton
                           className="ai-annotation-btn export-btn"
-                          onClick={() => alert('TODO：导出标注数据（Pose 页面占位）')}
-                          title="占位：后续接入导出 Pose 标注数据"
-                        >
-                          📥 导出标注数据
-                        </button>
+                          project={currentProject ? { id: currentProject.id, name: currentProject.name } : null}
+                          images={images}
+                          meshes={projectMeshes}
+                          isAdmin={isAdmin}
+                        />
                       </div>
                     </div>
                   </div>
@@ -747,94 +744,27 @@ const PoseAnnotationPage: React.FC = () => {
                         ← 上一个
                       </button>
 
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-                          <div style={{ color: '#666', fontSize: '0.9rem' }}>Label</div>
-                          <span
-                            title={selectedSkuColor ? `颜色：${selectedSkuColor}` : '未选择'}
-                            style={{
-                              width: 10,
-                              height: 10,
-                              borderRadius: 999,
-                              background: selectedSkuColor || '#e5e7eb',
-                              border: '1px solid rgba(0,0,0,0.12)',
-                              display: 'inline-block',
-                            }}
-                          />
-                          <select
-                            value={meshSkuDraft}
-                            onChange={(e) => setMeshSkuDraft(e.target.value)}
-                            style={{
-                              padding: '0.4rem 0.55rem',
-                              borderRadius: 10,
-                              border: '1px solid #d0d7e2',
-                              minWidth: 220,
-                              background: '#fff',
-                              color: '#111',
-                            }}
-                            title="从 2D Mask Label 对照表中选择（不允许手动输入）"
-                          >
-                            <option value="" disabled>
-                              请选择…
-                            </option>
-                            {projectLabelOptions.map((p) => (
-                              <option key={p.label} value={p.label}>
-                                {p.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          style={{ background: '#16a34a', borderColor: '#15803d', color: '#fff' }}
-                          disabled={!selectedPreviewMesh?.id || meshSkuSaving}
-                          onClick={async () => {
-                            if (!selectedPreviewMesh?.id) return;
-                            try {
-                              setMeshSkuSaving(true);
-                              await meshApi.updateMesh(selectedPreviewMesh.id, { skuLabel: meshSkuDraft.trim() || null });
-                              setProjectMeshes((prev) =>
-                                prev.map((m) =>
-                                  m.id === selectedPreviewMesh.id ? { ...m, skuLabel: meshSkuDraft.trim() || null } : m,
-                                ),
-                              );
-                              setSelectedPreviewMesh((prev) =>
-                                prev ? ({ ...prev, skuLabel: meshSkuDraft.trim() || null } as any) : prev,
-                              );
-                            } catch (e: any) {
-                              console.error('[PoseAnnotationPage] 更新 Mesh SKU/Label 失败:', e);
-                              alert(e?.message || '更新 SKU/Label 失败');
-                            } finally {
-                              setMeshSkuSaving(false);
-                            }
-                          }}
-                          title="保存该 Mesh 的 SKU/Label 绑定（入库）"
-                        >
-                          {meshSkuSaving ? '保存中...' : '保存绑定'}
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          style={{ background: '#dc2626', borderColor: '#b91c1c', color: '#fff' }}
-                          onClick={async () => {
-                            if (!selectedPreviewMesh?.id) return;
-                            const ok = window.confirm(`确定删除 Mesh：${selectedPreviewMesh.originalName || selectedPreviewMesh.filename} ？`);
-                            if (!ok) return;
-                            try {
-                              await meshApi.deleteMesh(selectedPreviewMesh.id);
-                              setProjectMeshes((prev) => prev.filter((m) => m.id !== selectedPreviewMesh.id));
-                              setSelectedPreviewMesh(null);
-                            } catch (e: any) {
-                              console.error('[PoseAnnotationPage] 删除 Mesh 失败:', e);
-                              alert(e?.message || '删除 Mesh 失败');
-                            }
-                          }}
-                          title="删除该 Mesh（会同时删除其 9D Pose 记录）"
-                        >
-                          删除 Mesh
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        style={{ background: '#dc2626', borderColor: '#b91c1c', color: '#fff' }}
+                        onClick={async () => {
+                          if (!selectedPreviewMesh?.id) return;
+                          const ok = window.confirm(`确定删除 Mesh：${selectedPreviewMesh.originalName || selectedPreviewMesh.filename} ？`);
+                          if (!ok) return;
+                          try {
+                            await meshApi.deleteMesh(selectedPreviewMesh.id);
+                            setProjectMeshes((prev) => prev.filter((m) => m.id !== selectedPreviewMesh.id));
+                            setSelectedPreviewMesh(null);
+                          } catch (e: any) {
+                            console.error('[PoseAnnotationPage] 删除 Mesh 失败:', e);
+                            alert(e?.message || '删除 Mesh 失败');
+                          }
+                        }}
+                        title="删除该 Mesh（会同时删除其 9D Pose 记录）"
+                      >
+                        删除 Mesh
+                      </button>
 
                       <button
                         className="nav-image-btn next-image-btn"
@@ -1225,6 +1155,22 @@ const PoseAnnotationPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      <MeshLabelMappingModal
+        open={showMeshLabelMappingModal}
+        onClose={() => setShowMeshLabelMappingModal(false)}
+        projectId={currentProject?.id}
+        meshes={projectMeshes}
+        projectLabelOptions={projectLabelOptions}
+        onMeshesUpdated={(next) => {
+          setProjectMeshes(next);
+          setSelectedPreviewMesh((prev) => {
+            if (!prev?.id) return prev;
+            const hit = next.find((m) => m.id === prev.id);
+            return hit ? (hit as any) : prev;
+          });
+        }}
+      />
 
     </div>
   );

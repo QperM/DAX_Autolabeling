@@ -2,16 +2,18 @@ import React from "react";
 import * as THREE from "three";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
-import { toAbsoluteUrl } from "../utils/urls";
+import { toAbsoluteUrl } from "../../utils/urls";
 
 type Props = {
   meshUrl: string | null;
   label?: string;
   assetDirUrl?: string;
   assets?: string[];
+  /** 为 false 时不显示缩略图下方的文字条（如对照表弹窗内仅保留图片格） */
+  showBottomLabel?: boolean;
 };
 
-const MeshThumbnail: React.FC<Props> = ({ meshUrl, label, assetDirUrl, assets }) => {
+const MeshThumbnail: React.FC<Props> = ({ meshUrl, label, assetDirUrl, assets, showBottomLabel = true }) => {
   const [snapshotUrl, setSnapshotUrl] = React.useState<string | null>(null);
   const lastSnapshotUrlRef = React.useRef<string | null>(null);
 
@@ -251,7 +253,7 @@ const MeshThumbnail: React.FC<Props> = ({ meshUrl, label, assetDirUrl, assets })
           加载中…
         </div>
       )}
-      {label && (
+      {showBottomLabel && label && (
         <div
           style={{
             marginTop: 4,

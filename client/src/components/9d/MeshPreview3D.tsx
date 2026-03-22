@@ -1,10 +1,10 @@
-import React, { useEffect, useRef } from "react";
+﻿import React, { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { createAxisGizmo } from "./AxisGizmo";
-import { toAbsoluteUrl } from "../utils/urls";
+import { toAbsoluteUrl } from "../../utils/urls";
 
 interface MeshPreview3DProps {
   meshUrl: string | null;
