@@ -126,6 +126,7 @@ function initializeSchema(db) {
       image_id INTEGER NOT NULL,
       mesh_id INTEGER,
       diffdope_json TEXT NOT NULL,
+      initial_pose_json TEXT,
       fit_overlay_path TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -141,6 +142,11 @@ function initializeSchema(db) {
     db.run('CREATE INDEX IF NOT EXISTS idx_pose9d_image_id ON pose9d_annotations(image_id)', (idxErr) => {
       if (idxErr) console.warn('[DB] CREATE INDEX idx_pose9d_image_id 失败:', idxErr.message);
     });
+  });
+  db.run('ALTER TABLE pose9d_annotations ADD COLUMN initial_pose_json TEXT', (err) => {
+    if (err && !err.message.includes('duplicate column name')) {
+      console.warn('[DB] 为 pose9d_annotations 添加 initial_pose_json 列失败:', err.message);
+    }
   });
 
   // cameras (intrinsics)

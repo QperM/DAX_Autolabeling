@@ -1,4 +1,13 @@
 function makePose9dRepo(db) {
+  const parseJsonSafe = (raw, fallback = null) => {
+    if (!raw || typeof raw !== 'string') return fallback;
+    try {
+      return JSON.parse(raw);
+    } catch (_) {
+      return fallback;
+    }
+  };
+
   return {
     savePose9D: (imageId, meshId, poseJson, callback) => {
       const meshIdVal = meshId == null ? null : Number(meshId);
@@ -21,8 +30,35 @@ function makePose9dRepo(db) {
     },
 
     updatePose9DInitialPose: (imageId, meshId, initialPoseJson, callback) => {
-      // Diff-DOPE 专用表：不再单独维护 initial pose 列
-      if (callback) callback(null, 0);
+      const meshIdVal = meshId == null ? null : Number(meshId);
+      const payload =
+        initialPoseJson == null
+          ? null
+          : (typeof initialPoseJson === 'string' ? initialPoseJson : JSON.stringify(initialPoseJson || {}));
+      const sql = `
+        INSERT INTO pose9d_annotations (image_id, mesh_id, diffdope_json, initial_pose_json, updated_at)
+        VALUES (?, ?, '{}', ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(image_id, mesh_id) DO UPDATE SET
+          initial_pose_json = excluded.initial_pose_json,
+          updated_at = CURRENT_TIMESTAMP
+      `;
+      db.run(sql, [imageId, meshIdVal, payload], function (err) {
+        if (callback) callback(err, this?.changes || 0);
+      });
+    },
+
+    deletePose9DInitialPose: (imageId, meshId, callback) => {
+      const meshIdVal = meshId == null ? null : Number(meshId);
+      const sql = `
+        UPDATE pose9d_annotations
+        SET initial_pose_json = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE image_id = ? AND mesh_id = ?
+      `;
+      db.run(sql, [imageId, meshIdVal], function (err) {
+        if (err) return callback(err, 0);
+        callback(null, this?.changes || 0);
+      });
     },
 
     updatePose9DDiffDope: (imageId, meshId, diffdopeJson, fitOverlayPath, callback) => {
@@ -46,7 +82,7 @@ function makePose9dRepo(db) {
     getPose9D: (imageId, meshId, callback) => {
       const meshIdVal = meshId == null ? null : Number(meshId);
       const baseSql = `
-        SELECT id, image_id, mesh_id, diffdope_json, fit_overlay_path, created_at, updated_at
+        SELECT id, image_id, mesh_id, diffdope_json, initial_pose_json, fit_overlay_path, created_at, updated_at
         FROM pose9d_annotations
         WHERE image_id = ?
       `;
@@ -59,8 +95,8 @@ function makePose9dRepo(db) {
         if (err) return callback(err, null);
         if (!row) return callback(null, null);
         row.pose = null;
-        row.initialPose = null;
-        try { row.diffdope = row.diffdope_json ? JSON.parse(row.diffdope_json) : null; } catch (_) { row.diffdope = null; }
+        row.diffdope = parseJsonSafe(row.diffdope_json, null);
+        row.initialPose = parseJsonSafe(row.initial_pose_json, null);
         row.fitOverlayPath = row.fit_overlay_path || null;
         if (row.diffdope && row.diffdope.pose) row.pose = row.diffdope.pose;
         callback(null, row);
@@ -69,7 +105,7 @@ function makePose9dRepo(db) {
 
     listPose9DByImageId: (imageId, callback) => {
       const sql = `
-        SELECT id, image_id, mesh_id, diffdope_json, fit_overlay_path, created_at, updated_at
+        SELECT id, image_id, mesh_id, diffdope_json, initial_pose_json, fit_overlay_path, created_at, updated_at
         FROM pose9d_annotations
         WHERE image_id = ?
         ORDER BY updated_at DESC
@@ -79,8 +115,8 @@ function makePose9dRepo(db) {
         const formatted = (rows || []).map((row) => {
           const r = { ...row };
           r.pose = null;
-          r.initialPose = null;
-          try { r.diffdope = row.diffdope_json ? JSON.parse(row.diffdope_json) : null; } catch (_) { r.diffdope = null; }
+          r.diffdope = parseJsonSafe(row.diffdope_json, null);
+          r.initialPose = parseJsonSafe(row.initial_pose_json, null);
           r.fitOverlayPath = row.fit_overlay_path || null;
           if (r.diffdope && r.diffdope.pose) r.pose = r.diffdope.pose;
           return r;
@@ -99,6 +135,17 @@ function makePose9dRepo(db) {
       db.run(sql, params, function (err) {
         if (err) return callback(err, 0);
         callback(null, this.changes || 0);
+      });
+    },
+
+    clearPose9DByImageId: (imageId, callback) => {
+      const sql = `
+        DELETE FROM pose9d_annotations
+        WHERE image_id = ?
+      `;
+      db.run(sql, [Number(imageId)], function (err) {
+        if (err) return callback(err, 0);
+        callback(null, this?.changes || 0);
       });
     },
   };

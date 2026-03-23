@@ -1713,7 +1713,26 @@ class DiffDope:
             to_add["depth"] = self.renders["depth"].detach().cpu()
             to_add["mtx"] = mtx_gu.detach().cpu()
 
-            self.optimization_results.append(to_add)
+            # 默认累积每步渲染会占用巨量内存（batch × H×W×3×4 × 迭代次数）。
+            # API/estimate6d 仅需 optimization_results[-1] 供 get_pose / render_img；设 store_all_optimization_renders=false 只保留最新一步。
+            store_all = True
+            try:
+                store_all = bool(
+                    self.cfg.hyperparameters.get("store_all_optimization_renders", True)
+                )
+            except Exception:
+                store_all = bool(
+                    getattr(
+                        self.cfg.hyperparameters,
+                        "store_all_optimization_renders",
+                        True,
+                    )
+                )
+            if store_all:
+                self.optimization_results.append(to_add)
+            else:
+                self.optimization_results.clear()
+                self.optimization_results.append(to_add)
 
             # computing the losses
             loss = torch.zeros(1).cuda()
@@ -1728,6 +1747,16 @@ class DiffDope:
             pbar.set_description(f"loss: {loss_now:.4f}")
             loss.backward()
             self.optimizer.step()
+            # 四元数参数在 forward 里才归一化，SGD 会把 qx..qw 推到任意大，导致数值不稳定；每步后投影回单位球。
+            with torch.no_grad():
+                o = self.object3d
+                q = torch.stack([o.qx, o.qy, o.qz, o.qw], dim=1)
+                n = torch.norm(q, dim=1, keepdim=True).clamp(min=1e-8)
+                q = q / n
+                o.qx.data.copy_(q[:, 0])
+                o.qy.data.copy_(q[:, 1])
+                o.qz.data.copy_(q[:, 2])
+                o.qw.data.copy_(q[:, 3])
             if early_stop_loss is not None and loss_now <= float(early_stop_loss):
                 pbar.set_description(f"loss: {loss_now:.4f} (early stop)")
                 break

@@ -109,6 +109,7 @@ def _resolve_two_stage_params(req: "Estimate6DRequest") -> Dict[str, Any]:
 
 
 class InitPose(BaseModel):
+    pose44: Optional[List[List[float]]] = None
     position: List[float] = Field(default_factory=lambda: [0.0, 0.0, 80.0])  # cm
     quat_xyzw: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 1.0])
 
@@ -132,6 +133,7 @@ class Estimate6DRequest(BaseModel):
     meshPath: str
     maskFlatPoints: List[float]
     init: Optional[InitPose] = None
+    skipStage1: bool = False
 
     # --- 全局（仅 batch，两轮共用）---
     batchSize: int = 8  # 默认 8；clamp [1, 64]
@@ -223,6 +225,53 @@ def _load_depth_cm(depth_path: Path, intr: Dict[str, Any]) -> np.ndarray:
         if p99 <= 20.0 and p50 > 0.0:
             return depth_raw * 100.0  # m -> cm
     return depth_raw * depth_scale * 100.0
+
+
+def _loss_function_labels(ddope: Any) -> List[str]:
+    """便于日志确认当前阶段实际挂了哪些 loss。"""
+    labels: List[str] = []
+    for fn in getattr(ddope, "loss_functions", None) or []:
+        name = getattr(fn, "__name__", None)
+        if isinstance(name, str) and name:
+            labels.append(name)
+        else:
+            labels.append(type(fn).__name__ + "/" + str(fn)[:80])
+    return labels
+
+
+def _summarize_gl_pose44(m44: Any) -> Dict[str, Any]:
+    """get_pose() 返回的 4×4 为渲染用 GL 系；顺带给出对应的 OpenCV 平移 C·t_gl（与 Node 存库 pose44 的 t 一致）。"""
+    M = np.asarray(m44, dtype=np.float64)
+    if M.shape[0] < 4 or M.shape[1] < 4:
+        return {"error": "bad_shape", "shape": list(M.shape)}
+    R = M[:3, :3]
+    t_gl = M[:3, 3].astype(np.float64)
+    C = np.diag([1.0, -1.0, -1.0])
+    t_cv = (C @ t_gl).reshape(3)
+    det_r = float(np.linalg.det(R))
+    return {
+        "t_gl": [float(t_gl[0]), float(t_gl[1]), float(t_gl[2])],
+        "t_gl_norm": float(np.linalg.norm(t_gl)),
+        "t_cv_cm": [float(t_cv[0]), float(t_cv[1]), float(t_cv[2])],
+        "t_cv_norm": float(np.linalg.norm(t_cv)),
+        "det_R": det_r,
+        "trace_R": float(np.trace(R)),
+        "fro_R": float(np.linalg.norm(R, ord="fro")),
+    }
+
+
+def _object3d_param_snapshot(ddope: Any, batch_index: int = 0) -> Dict[str, float]:
+    o = ddope.object3d
+    bi = int(batch_index)
+    return {
+        "x": float(o.x[bi].item()),
+        "y": float(o.y[bi].item()),
+        "z": float(o.z[bi].item()),
+        "qx": float(o.qx[bi].item()),
+        "qy": float(o.qy[bi].item()),
+        "qz": float(o.qz[bi].item()),
+        "qw": float(o.qw[bi].item()),
+    }
 
 
 def _configure_stage_losses(
@@ -343,6 +392,15 @@ def _release_ddope_gpu(ddope: Optional[Any]) -> None:
             pass
         try:
             ddope.losses_values = {}
+        except Exception:
+            pass
+        try:
+            ddope.loss_history_scalar = []
+        except Exception:
+            pass
+        try:
+            if hasattr(ddope, "renders"):
+                ddope.renders = None
         except Exception:
             pass
     gc.collect()
@@ -579,6 +637,37 @@ def estimate6d(req: Estimate6DRequest):
             y_cm = (v - cy) * z_cm / max(1e-6, fy)
             init_xyz = [x_cm, y_cm, z_cm]
             init_quat = [0.0, 0.0, 0.0, 1.0]
+            obj_position = init_xyz
+            obj_rotation: List[float] = init_quat
+            obj_opencv2opengl = True
+            used_initial_pose = False
+            initial_pose_source = "depth-mask-auto"
+            if req.init is not None:
+                pose44_init = getattr(req.init, "pose44", None)
+                pose44_valid = (
+                    isinstance(pose44_init, list)
+                    and len(pose44_init) >= 4
+                    and all((isinstance(r, list) and len(r) >= 4) for r in pose44_init[:4])
+                )
+                if pose44_valid:
+                    pos_gl, rot_gl = _cv_pose44_to_gl_rt(pose44_init)  # DB/前端为 OpenCV pose44
+                    obj_position = pos_gl
+                    obj_rotation = rot_gl
+                    obj_opencv2opengl = False
+                    used_initial_pose = True
+                    initial_pose_source = "request-init-pose44-cv"
+                else:
+                    pos_in = getattr(req.init, "position", None)
+                    quat_in = getattr(req.init, "quat_xyzw", None)
+                    pos_ok = isinstance(pos_in, list) and len(pos_in) == 3 and all(np.isfinite(float(v)) for v in pos_in)
+                    quat_ok = isinstance(quat_in, list) and len(quat_in) == 4 and all(np.isfinite(float(v)) for v in quat_in)
+                    if pos_ok and quat_ok:
+                        obj_position = [float(pos_in[0]), float(pos_in[1]), float(pos_in[2])]
+                        obj_rotation = [float(quat_in[0]), float(quat_in[1]), float(quat_in[2]), float(quat_in[3])]
+                        obj_opencv2opengl = True
+                        used_initial_pose = True
+                        initial_pose_source = "request-init-pos-quat-cv"
+            skip_stage1 = bool(req.skipStage1 and used_initial_pose)
 
             if req.debug:
                 print("=== DEBUG INIT (pose-service) ===")
@@ -591,17 +680,37 @@ def estimate6d(req: Estimate6DRequest):
                 print(f"median depth z_cm={z_cm} (mask 内有效深度点数={len(valid_depth)})")
                 print(f"init xyz(cm)={init_xyz}")
                 print(f"init quat(xyzw)={init_quat}")
+                print(
+                    "[pose-service][estimate6d][trace] init_source",
+                    json.dumps(
+                        {
+                            "usedInitialPose": used_initial_pose,
+                            "initialPoseSource": initial_pose_source,
+                            "skipStage1Requested": bool(req.skipStage1),
+                            "skipStage1Applied": skip_stage1,
+                            "object3dPosition": obj_position,
+                            "object3dRotationLen": len(obj_rotation),
+                            "object3dOpenCv2OpenGl": obj_opencv2opengl,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
 
             cfg = _diffdope_cfg_fresh()
             _apply_camera_scene_intrinsics(cfg, intr, w, h, str(rgb_path))
 
             cfg.object3d.model_path = str(mesh_path)
             cfg.object3d.scale = 100.0  # m -> cm
-            cfg.object3d.position = init_xyz
-            cfg.object3d.rotation = init_quat
+            cfg.object3d.position = obj_position
+            cfg.object3d.rotation = obj_rotation
 
             cfg.hyperparameters.batchsize = int(max(1, min(64, req.batchSize or 8)))
             p = _resolve_two_stage_params(req)
+            if req.debug:
+                print(
+                    "[pose-service][estimate6d][trace] resolved_two_stage_params",
+                    json.dumps(p, default=str, ensure_ascii=False),
+                )
             # 初始模板与第一轮一致（实例化 DiffDope 前写入，避免与遗留 iters/use*Loss 混用）
             cfg.hyperparameters.nb_iterations = p["s1_iters"]
             cfg.losses.l1_mask = p["s1_use_mask"]
@@ -617,10 +726,10 @@ def estimate6d(req: Estimate6DRequest):
             mesh = dd.Mesh(str(mesh_path), scale=100.0)
             mesh.cuda()
             obj = dd.Object3D(
-                position=init_xyz,
-                rotation=init_quat,
+                position=obj_position,
+                rotation=obj_rotation,
                 batchsize=cfg.hyperparameters.batchsize,
-                opencv2opengl=True,
+                opencv2opengl=obj_opencv2opengl,
                 scale=1.0,
             )
             obj.mesh = mesh
@@ -643,22 +752,76 @@ def estimate6d(req: Estimate6DRequest):
             ddope.scene = scene
             ddope.object3d = obj
             ddope.set_batchsize(cfg.hyperparameters.batchsize)
+            # 禁止每迭代缓存整帧 CPU 渲染（batch×分辨率×迭代次数 可达数十 GB）；仅需最后一帧给 get_pose/render_img。
+            try:
+                ddope.cfg.hyperparameters.store_all_optimization_renders = False
+            except Exception:
+                pass
 
             # 两阶段优化（超参数仅来自 p = _resolve_two_stage_params）
-            ddope.cfg.hyperparameters.nb_iterations = p["s1_iters"]
-            ddope.cfg.hyperparameters.early_stop_loss = p["s1_early"]
-            ddope.cfg.hyperparameters.base_lr = p["s1_base_lr"]
-            ddope.cfg.hyperparameters.lr_decay = p["s1_lr_decay"]
-            _configure_stage_losses(
-                ddope,
-                use_mask=p["s1_use_mask"],
-                use_depth=p["s1_use_depth"],
-                use_rgb=p["s1_use_rgb"],
-                weight_mask=p["s1_w_mask"],
-                weight_depth=0.0,
-                weight_rgb=p["s1_w_rgb"],
-            )
-            ddope.run_optimization()
+            if not skip_stage1:
+                ddope.cfg.hyperparameters.nb_iterations = p["s1_iters"]
+                ddope.cfg.hyperparameters.early_stop_loss = p["s1_early"]
+                ddope.cfg.hyperparameters.base_lr = p["s1_base_lr"]
+                ddope.cfg.hyperparameters.lr_decay = p["s1_lr_decay"]
+                _configure_stage_losses(
+                    ddope,
+                    use_mask=p["s1_use_mask"],
+                    use_depth=p["s1_use_depth"],
+                    use_rgb=p["s1_use_rgb"],
+                    weight_mask=p["s1_w_mask"],
+                    weight_depth=0.0,
+                    weight_rgb=p["s1_w_rgb"],
+                )
+                if req.debug:
+                    print(
+                        "[pose-service][estimate6d][trace] stage1_loss_setup",
+                        json.dumps(
+                            {
+                                "loss_functions": _loss_function_labels(ddope),
+                                "cfg_flags": {
+                                    "l1_mask": bool(ddope.cfg.losses.l1_mask),
+                                    "l1_depth_with_mask": bool(ddope.cfg.losses.l1_depth_with_mask),
+                                    "l1_rgb_with_mask": bool(ddope.cfg.losses.l1_rgb_with_mask),
+                                    "weight_mask": float(ddope.cfg.losses.weight_mask),
+                                    "weight_depth": float(ddope.cfg.losses.weight_depth),
+                                    "weight_rgb": float(ddope.cfg.losses.weight_rgb),
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ddope.run_optimization()
+                if req.debug:
+                    try:
+                        am1 = int(ddope.get_argmin())
+                        m1 = np.asarray(ddope.get_pose(batch_index=am1), dtype=np.float64)
+                        s1_terms: Dict[str, float] = {}
+                        for key, tensor in ddope.losses_values.items():
+                            try:
+                                s1_terms[str(key)] = float(tensor[-1][am1].item())
+                            except Exception:
+                                pass
+                        print(
+                            "[pose-service][estimate6d][trace] after_stage1",
+                            json.dumps(
+                                {
+                                    "argmin": am1,
+                                    "stage1_final_scalar_loss": float(ddope.final_loss_scalar)
+                                    if ddope.final_loss_scalar is not None
+                                    else None,
+                                    "loss_term_keys": list(ddope.losses_values.keys()),
+                                    "loss_terms_at_argmin": s1_terms,
+                                    "pose_gl_summary": _summarize_gl_pose44(m1),
+                                    "object3d_params": _object3d_param_snapshot(ddope, am1),
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    except Exception as _e:
+                        print("[pose-service][estimate6d][trace] after_stage1 (snapshot failed)", str(_e))
+            elif req.debug:
+                print("[pose-service][estimate6d][trace] stage1_skipped_by_request")
 
             ddope.cfg.hyperparameters.nb_iterations = p["s2_iters"]
             ddope.cfg.hyperparameters.early_stop_loss = p["s2_early"]
@@ -673,7 +836,53 @@ def estimate6d(req: Estimate6DRequest):
                 weight_depth=p["s2_w_depth"],
                 weight_rgb=p["s2_w_rgb"],
             )
+            if req.debug:
+                print(
+                    "[pose-service][estimate6d][trace] stage2_loss_setup",
+                    json.dumps(
+                        {
+                            "loss_functions": _loss_function_labels(ddope),
+                            "cfg_flags": {
+                                "l1_mask": bool(ddope.cfg.losses.l1_mask),
+                                "l1_depth_with_mask": bool(ddope.cfg.losses.l1_depth_with_mask),
+                                "l1_rgb_with_mask": bool(ddope.cfg.losses.l1_rgb_with_mask),
+                                "weight_mask": float(ddope.cfg.losses.weight_mask),
+                                "weight_depth": float(ddope.cfg.losses.weight_depth),
+                                "weight_rgb": float(ddope.cfg.losses.weight_rgb),
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
             ddope.run_optimization()
+            if req.debug:
+                try:
+                    am2 = int(ddope.get_argmin())
+                    m2 = np.asarray(ddope.get_pose(batch_index=am2), dtype=np.float64)
+                    s2_terms_pre: Dict[str, float] = {}
+                    for key, tensor in ddope.losses_values.items():
+                        try:
+                            s2_terms_pre[str(key)] = float(tensor[-1][am2].item())
+                        except Exception:
+                            pass
+                    print(
+                        "[pose-service][estimate6d][trace] after_stage2",
+                        json.dumps(
+                            {
+                                "argmin": am2,
+                                "stage2_final_scalar_loss": float(ddope.final_loss_scalar)
+                                if ddope.final_loss_scalar is not None
+                                else None,
+                                "loss_term_keys": list(ddope.losses_values.keys()),
+                                "loss_terms_at_argmin": s2_terms_pre,
+                                "pose_gl_summary": _summarize_gl_pose44(m2),
+                                "object3d_params": _object3d_param_snapshot(ddope, am2),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                except Exception as _e:
+                    print("[pose-service][estimate6d][trace] after_stage2 (snapshot failed)", str(_e))
             stage2_scalar_loss = (
                 float(ddope.final_loss_scalar)
                 if getattr(ddope, "final_loss_scalar", None) is not None
@@ -801,6 +1010,10 @@ def estimate6d(req: Estimate6DRequest):
                     "poseDiagnostics": {
                         "initPositionCm": init_xyz,
                         "initQuatXyzw": init_quat,
+                            "usedInitialPose": used_initial_pose,
+                            "initialPoseSource": initial_pose_source,
+                            "skipStage1Requested": bool(req.skipStage1),
+                            "skipStage1Applied": skip_stage1,
                         "initDepthPolicy": "median_depth_in_mask_cm_fallback_80",
                         "initZCm": z_cm,
                         "initDepthValidPixelsInMask": int(len(valid_depth)),

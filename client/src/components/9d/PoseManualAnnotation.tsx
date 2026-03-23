@@ -31,6 +31,9 @@ const PoseManualAnnotation: React.FC = () => {
   const [showFitLayer, setShowFitLayer] = useState(false);
   const [showPointCloudLayer, setShowPointCloudLayer] = useState(false);
   const [pointCloudSaveRequestId, setPointCloudSaveRequestId] = useState(0);
+  const [pointCloudInitSaveRequestId, setPointCloudInitSaveRequestId] = useState(0);
+  const [pointCloudCancelInitRequestId, setPointCloudCancelInitRequestId] = useState(0);
+  const [pointCloudClear6dRequestId, setPointCloudClear6dRequestId] = useState(0);
 
   const [maskOverlayData, setMaskOverlayData] = useState<Mask[] | null>(null);
   const maskFetchReqIdRef = useRef(0);
@@ -105,7 +108,7 @@ const PoseManualAnnotation: React.FC = () => {
         setFitOverlayUrl(null);
       }
     })();
-  }, [currentImage?.id, showFitLayer]);
+  }, [currentImage?.id, showFitLayer, pointCloudClear6dRequestId]);
 
   useEffect(() => {
     if (!currentImage?.id || !showMaskLayer) return;
@@ -324,6 +327,9 @@ const PoseManualAnnotation: React.FC = () => {
             projectId={projectId ? Number(projectId) : null}
             imageId={currentImage?.id ? Number(currentImage.id) : null}
             saveRequestId={pointCloudSaveRequestId}
+            saveInitialRequestId={pointCloudInitSaveRequestId}
+            cancelInitialRequestId={pointCloudCancelInitRequestId}
+            clear6dRequestId={pointCloudClear6dRequestId}
           />
         </div>
 
@@ -438,15 +444,55 @@ const PoseManualAnnotation: React.FC = () => {
             {showPointCloudLayer && (
               <div className="property-section">
                 <h4>点云操作</h4>
-                <div className="save-row">
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => setPointCloudSaveRequestId((v) => v + 1)}
-                    title="保存当前点云窗口中的 Mesh 位姿矩阵到数据库"
-                  >
-                    保存位置
-                  </button>
+                <div
+                  className="save-row"
+                  style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}
+                >
+                  {/* DOM 顺序上让“保存位置”先出现，对应 primary-button[0]；通过 CSS order 显示在第二行 */}
+                  <div style={{ order: 1 }}>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{ background: '#f59e0b', borderColor: '#d97706', width: '100%' }}
+                      onClick={() => setPointCloudSaveRequestId((v) => v + 1)}
+                      title="保存当前点云窗口中的 Mesh 位姿矩阵到数据库（保存图内所有最终位姿）"
+                    >
+                      保存位置
+                    </button>
+                  </div>
+
+                    <div style={{ order: 2 }}>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        style={{ background: '#ef4444', borderColor: '#dc2626', width: '100%' }}
+                        onClick={() => setPointCloudClear6dRequestId((v) => v + 1)}
+                        title="清除本图内所有 6D 姿态标注（删除 diffdope_json 与 initial_pose_json）"
+                      >
+                        清除本图 6D 标注
+                      </button>
+                    </div>
+
+                    <div style={{ order: 0, display: 'flex', gap: '0.55rem', width: '100%' }}>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{ background: '#ef4444', borderColor: '#dc2626', flex: 1 }}
+                      onClick={() => setPointCloudCancelInitRequestId((v) => v + 1)}
+                      title="删除当前点云窗口中选中 Mesh 的人工初始位姿"
+                    >
+                      取消初始位姿
+                    </button>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{ background: '#16a34a', borderColor: '#15803d', flex: 1 }}
+                      onClick={() => setPointCloudInitSaveRequestId((v) => v + 1)}
+                      title="保存当前点云窗口中选中 Mesh 的人工初始位姿"
+                    >
+                      保存初始位姿
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

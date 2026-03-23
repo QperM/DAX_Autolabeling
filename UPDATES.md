@@ -9,6 +9,8 @@
 - [x] **pose-service（`app.py`）**：
   - 合成回渲与 `estimate6d` 共用内参/场景配置辅助函数；`render_images.flip_result` 以 `diffdope.yaml` 为准，避免与磁盘 RGB 行序不一致
   - 仅渲染路径保留唯一 OpenCV→GL 位姿转换 `_cv_pose44_to_gl_rt`，与 Node 存库的 `pose44` 约定一致
+- [x] **点云/人工标注页交互**：
+  - 新增“清除本图 6D 标注”按钮：删除该图片下所有 `pose9d_annotations`（`diffdope_json` + `initial_pose_json`），并触发前端回到未标注渲染状态
 
 ### V2.3 最新进展（2026年3月22日）
 - [x] **成功接入 Diff-DOPE（单 Mesh 6D 姿态）**：

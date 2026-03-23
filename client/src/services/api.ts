@@ -348,6 +348,10 @@ export const pose9dApi = {
     const response = await apiClient.post(`/pose9d/${imageId}/initial-pose`, payload);
     return response.data;
   },
+  deleteInitialPose: async (imageId: number | string, meshId: number | string): Promise<any> => {
+    const response = await apiClient.delete(`/pose9d/${imageId}/initial-pose`, { params: { meshId } });
+    return response.data;
+  },
   getPose9D: async (imageId: number | string, meshId?: number | string | null): Promise<any> => {
     const response = await apiClient.get(`/pose9d/${imageId}`, { params: meshId != null ? { meshId } : undefined });
     return response.data;
@@ -358,6 +362,10 @@ export const pose9dApi = {
   },
   deletePose9D: async (imageId: number | string, meshId?: number | string | null): Promise<any> => {
     const response = await apiClient.delete(`/pose9d/${imageId}`, { params: meshId != null ? { meshId } : undefined });
+    return response.data;
+  },
+  clear6dByImageId: async (imageId: number | string): Promise<any> => {
+    const response = await apiClient.delete(`/pose9d/${imageId}/clear-6d`);
     return response.data;
   },
   saveDiffdopePose44: async (
@@ -409,12 +417,13 @@ export const pose6dApi = {
       stage2BaseLr?: number;
       stage2LrDecay?: number;
       maxAllowedFinalLoss?: number | null;
+      useInitialPose?: boolean;
       returnDebugImages?: boolean;
       /** 打开端到端调试日志（前端/Node/pose-service 都会输出更多信息） */
       debug?: boolean;
     },
   ): Promise<any> => {
-    const response = await apiClient.post(`/pose6d/${imageId}/diffdope-estimate`, payload || {}, { timeout: 5 * 60 * 1000 });
+    const response = await apiClient.post(`/pose6d/${imageId}/diffdope-estimate`, payload || {}, { timeout: 10 * 60 * 1000 });
     return response.data;
   },
 };

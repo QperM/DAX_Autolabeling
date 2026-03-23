@@ -217,6 +217,59 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
     }
   });
 
+  // 清除本图内所有 6D/9D 位姿标注（同时删除 diffdope_json + initial_pose_json）
+  router.delete('/pose9d/:imageId/clear-6d', requireImageProjectAccess, (req, res) => {
+    try {
+      const imageId = Number(req.params.imageId);
+      if (!imageId || Number.isNaN(imageId)) return res.status(400).json({ success: false, message: '非法的 imageId' });
+      db.clearPose9DByImageId(imageId, (err, changes) => {
+        if (err) return res.status(500).json({ success: false, message: '清除 6D 姿态标注失败', error: err.message });
+        return res.json({ success: true, imageId, changes: Number(changes || 0) });
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: '清除 6D 姿态标注失败', error: error?.message || String(error) });
+    }
+  });
+
+  router.post('/pose9d/:imageId/initial-pose', requireImageProjectAccess, (req, res) => {
+    try {
+      const imageId = Number(req.params.imageId);
+      const meshId = Number(req.body?.meshId);
+      const pose44 = req.body?.pose44;
+      const valid =
+        Array.isArray(pose44) &&
+        pose44.length === 4 &&
+        pose44.every((r) => Array.isArray(r) && r.length >= 4 && r.slice(0, 4).every((v) => Number.isFinite(Number(v))));
+      if (!imageId || !meshId || !valid) {
+        return res.status(400).json({ success: false, message: 'initial pose 非法，需提供 meshId 与 4x4 pose44 数值矩阵' });
+      }
+      const payload = { pose44, updatedAt: new Date().toISOString() };
+      db.updatePose9DInitialPose(imageId, meshId, payload, (err, changes) => {
+        if (err) return res.status(500).json({ success: false, message: '保存初始位姿失败', error: err.message });
+        return res.json({ success: true, imageId, meshId, changes: Number(changes || 0), initialPose: payload });
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: '保存初始位姿失败', error: error?.message || String(error) });
+    }
+  });
+
+  // 仅删除人工初始位姿：保留 diffdope_json（最终位姿）
+  router.delete('/pose9d/:imageId/initial-pose', requireImageProjectAccess, (req, res) => {
+    try {
+      const imageId = Number(req.params.imageId);
+      const meshId = Number(req.query?.meshId ?? req.body?.meshId);
+      if (!imageId || !meshId || Number.isNaN(meshId)) {
+        return res.status(400).json({ success: false, message: 'invalid imageId/meshId' });
+      }
+      db.deletePose9DInitialPose(imageId, meshId, (err, changes) => {
+        if (err) return res.status(500).json({ success: false, message: '删除初始位姿失败', error: err.message });
+        return res.json({ success: true, imageId, meshId, changes: Number(changes || 0) });
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: '删除初始位姿失败', error: error?.message || String(error) });
+    }
+  });
+
   router.post('/pose9d/:imageId/:meshId/diffdope-pose44', requireImageProjectAccess, (req, res) => {
     try {
       const imageId = Number(req.params.imageId);
@@ -287,6 +340,7 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
       if (!projectId) return res.status(400).json({ success: false, message: '无法确定该图片所属项目（projectId 缺失）' });
 
       const onlyUniqueMasks = req.body?.onlyUniqueMasks !== false;
+      const useInitialPose = req.body?.useInitialPose === true;
       const normalizeKey = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, '').replace(/[_\-]+/g, '');
 
       dbgLog('[pose6d][diffdope][debug] incoming body:', {
@@ -307,6 +361,7 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
         weightRgb: req.body?.weightRgb,
         weightDepth: req.body?.weightDepth,
         returnDebugImages: req.body?.returnDebugImages,
+        useInitialPose,
         poseServiceUrl,
       });
 
@@ -361,15 +416,11 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
         count: meshes.length,
         sample: meshes.slice(0, 8).map((m) => ({ id: m.id, skuLabel: m.skuLabel, filename: m.filename, originalName: m.originalName, filePath: m.filePath })),
       });
+      // 仅按 Mesh 的 sku_label 与 mask label 做规范化后**全等**匹配（避免 includes/文件名子串误匹配到错误模型）。
       const findMeshForLabel = (label) => {
         const k = normalizeKey(label);
         if (!k) return null;
-        return (
-          meshes.find((m) => normalizeKey(m.skuLabel) === k) ||
-          meshes.find((m) => normalizeKey(m.skuLabel).includes(k)) ||
-          meshes.find((m) => normalizeKey(`${m.originalName || ''}${m.filename || ''}`).includes(k)) ||
-          null
-        );
+        return meshes.find((m) => normalizeKey(m.skuLabel) === k) || null;
       };
 
       const depthRows = await new Promise((resolve, reject) => {
@@ -432,6 +483,28 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
 
       const results = [];
       const failures = [];
+      const usedInitialPoseMeshIds = new Set();
+      const initialPoseByMeshId = new Map();
+      if (useInitialPose) {
+        try {
+          const poseRows = await new Promise((resolve, reject) => {
+            db.listPose9DByImageId(imageId, (err, rows) => (err ? reject(err) : resolve(rows || [])));
+          });
+          for (const row of (poseRows || [])) {
+            const mid = Number(row?.mesh_id ?? row?.meshId ?? 0);
+            const p44 = row?.initialPose?.pose44;
+            const ok =
+              Number.isFinite(mid) &&
+              mid > 0 &&
+              Array.isArray(p44) &&
+              p44.length === 4 &&
+              p44.every((r) => Array.isArray(r) && r.length >= 4 && r.slice(0, 4).every((v) => Number.isFinite(Number(v))));
+            if (ok) initialPoseByMeshId.set(mid, p44);
+          }
+        } catch (e) {
+          dbgLog('[pose6d][diffdope][debug] load initialPose map failed:', e?.message || e);
+        }
+      }
 
       for (const [label, arr] of byLabel.entries()) {
         if (onlyUniqueMasks && arr.length !== 1) {
@@ -462,6 +535,8 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
         const b = req.body || {};
         const legacyRgb = b.useRgbLoss === true;
         const legacyDepth = b.useDepthLoss !== false;
+        const initPose44 = useInitialPose ? (initialPoseByMeshId.get(Number(mesh.id)) || null) : null;
+        const skipStage1 = !!initPose44;
         const payload = {
           projectId,
           imageId,
@@ -505,11 +580,35 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
           // 第二轮 RGB 权重统一走 stage2WeightRgb（上式已含 b.weightRgb 回退）；勿默认塞 weightRgb，否则会覆盖 pose-service 的 DIFFDOPE_DEFAULTS
           weightDepth: b.weightDepth ?? 1,
           returnDebugImages: b.returnDebugImages ?? true,
+          init: skipStage1 ? { pose44: initPose44 } : null,
+          skipStage1,
+          useInitialPose,
           debug,
         };
         dbgLog('[pose6d][diffdope][debug] payload -> pose-service (maskFlatPoints omitted):', {
           ...payload,
           maskFlatPoints: summarizeMaskFlat(flat),
+        });
+        dbgLog('[pose6d][diffdope][debug] loss_switches_resolved (must match pose-service trace):', {
+          label,
+          meshId: mesh.id,
+          stage1UseMask: payload.stage1UseMask,
+          stage1UseRgb: payload.stage1UseRgb,
+          stage2UseMask: payload.stage2UseMask,
+          stage2UseDepth: payload.stage2UseDepth,
+          stage2UseRgb: payload.stage2UseRgb,
+          stage1WeightMask: payload.stage1WeightMask,
+          stage1WeightRgb: payload.stage1WeightRgb,
+          stage2WeightMask: payload.stage2WeightMask,
+          stage2WeightDepth: payload.stage2WeightDepth,
+          stage2WeightRgb: payload.stage2WeightRgb,
+          stage1Iters: payload.stage1Iters,
+          stage2Iters: payload.stage2Iters,
+          batchSize: payload.batchSize,
+          useInitialPose,
+          hasInitialPoseForMesh: !!initPose44,
+          skipStage1,
+          debug: payload.debug,
         });
 
         try {
@@ -536,6 +635,7 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
             );
             continue;
           }
+          if (skipStage1) usedInitialPoseMeshIds.add(Number(mesh.id));
           dbgLog('[pose6d][diffdope][debug] pose-service response summary:', {
             httpMs,
             success: poseOut?.success,
@@ -550,6 +650,8 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
                 }
               : null,
             meta: poseOut?.meta || null,
+            useInitialPose,
+            skipStage1,
           });
           results.push({ label, meshId: mesh.id, maskId: mask.id ?? null, maskIndex: mask.index ?? 0, pose: poseOut });
 
@@ -628,6 +730,11 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
                 () => resolve(),
               );
             });
+            if (skipStage1) {
+              await new Promise((resolve) => {
+                db.updatePose9DInitialPose(imageId, mesh.id, null, () => resolve());
+              });
+            }
           } catch (e) {
             console.warn('[pose6d][diffdope] 写回 pose9d_annotations 失败（不影响返回）:', e);
           }
@@ -645,14 +752,16 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
       } catch (_) {}
 
       const ok = results.length > 0;
-      return res.status(ok ? 200 : 422).json({
+      // 始终 200，便于 axios 拿到 failures（422 会导致前端抛错、用户看不到「未匹配 Mesh」等明细）。
+      return res.status(200).json({
         success: ok,
         imageId,
         projectId,
         results,
         failures,
+        usedInitialPoseMeshIds: Array.from(usedInitialPoseMeshIds),
         poseServiceUrl,
-        message: ok ? undefined : '本次 AI 6D 标注未产出可用结果',
+        message: ok ? undefined : (failures.length ? failures.join('；') : '本次 AI 6D 标注未产出可用结果'),
       });
     } catch (e) {
       console.error('❌ POST /api/pose6d/:imageId/diffdope-estimate 处理失败:', e);

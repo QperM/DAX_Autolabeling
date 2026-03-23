@@ -12,6 +12,9 @@ type Props = {
   projectId: number | null;
   imageId: number | null;
   saveRequestId?: number;
+  saveInitialRequestId?: number;
+  cancelInitialRequestId?: number;
+  clear6dRequestId?: number;
 };
 
 type Intrinsics = {
@@ -63,13 +66,55 @@ const matrixEquals = (a?: number[] | null, b?: number[] | null) => {
   return true;
 };
 
+// 将 CV 坐标系下的 pose44 变换成 threejs 的 Matrix4（坐标系翻转：C = diag(1,-1,-1)）
+const cvPoseToThree44ToMatrix = (pose44: number[][]): THREE.Matrix4 => {
+  const C = [1, -1, -1];
+  const out = [
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 1],
+  ];
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) out[i][j] = C[i] * toNum(pose44?.[i]?.[j], i === j ? 1 : 0) * C[j];
+  }
+  out[0][3] = C[0] * toNum(pose44?.[0]?.[3], 0);
+  out[1][3] = C[1] * toNum(pose44?.[1]?.[3], 0);
+  out[2][3] = C[2] * toNum(pose44?.[2]?.[3], 0);
+  const flat = [
+    out[0][0], out[0][1], out[0][2], out[0][3],
+    out[1][0], out[1][1], out[1][2], out[1][3],
+    out[2][0], out[2][1], out[2][2], out[2][3],
+    0, 0, 0, 1,
+  ];
+  return new THREE.Matrix4().set(
+    flat[0], flat[1], flat[2], flat[3],
+    flat[4], flat[5], flat[6], flat[7],
+    flat[8], flat[9], flat[10], flat[11],
+    flat[12], flat[13], flat[14], flat[15],
+  );
+};
+
 type TransformHistoryEntry = {
   meshId: number;
   before: number[];
   after: number[];
 };
 
-const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, saveRequestId = 0 }) => {
+type PoseMode = 'final' | 'initial';
+
+const COLOR_FINAL = 0xff8a00;
+const COLOR_INITIAL = 0x22c55e;
+
+const PosePointCloudLayer: React.FC<Props> = ({
+  visible,
+  projectId,
+  imageId,
+  saveRequestId = 0,
+  saveInitialRequestId = 0,
+  cancelInitialRequestId = 0,
+  clear6dRequestId = 0,
+}) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState('准备中...');
@@ -78,6 +123,8 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
   const [renderTextured, setRenderTextured] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [, setCancelInitialBusy] = useState(false);
+  const [clear6dBusy, setClear6dBusy] = useState(false);
   const [activeMeshId, setActiveMeshId] = useState<number | null>(null);
   const [sceneRefreshId, setSceneRefreshId] = useState(0);
   const [matrixPos, setMatrixPos] = useState<{ x: number | null; y: number | null }>({ x: null, y: null });
@@ -85,14 +132,24 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
   const [meshList, setMeshList] = useState<any[]>([]);
   const [meshListLoading, setMeshListLoading] = useState(false);
   const [manualMeshIds, setManualMeshIds] = useState<number[]>([]);
+  // 颜色/姿态渲染与可拖拽行为由每个 mesh 是否存在 initialPose 决定，无需额外模式开关
+  // 缓存每个 mesh 的初始位姿 / 最终位姿（用于切换“人工初始位姿”时刷新矩阵）
+  const pose44ByMeshIdRef = useRef<Record<number, { initial: number[][] | null; final: number[][] | null }>>({});
+  // 当前点云场景渲染的所有 meshId（用于“保存位置：保存所有最终位姿”）
+  const targetMeshIdsRef = useRef<number[]>([]);
   const transformRef = useRef<TransformControls | null>(null);
   const meshObjRef = useRef<THREE.Object3D | null>(null);
   const meshByIdRef = useRef<Map<number, THREE.Object3D>>(new Map());
   const undoStackRef = useRef<TransformHistoryEntry[]>([]);
   const redoStackRef = useRef<TransformHistoryEntry[]>([]);
   const dragStartMatrixRef = useRef<number[] | null>(null);
-  const materialEntriesRef = useRef<Array<{ mesh: THREE.Mesh; textured: THREE.Material | THREE.Material[]; wire: THREE.Material }>>([]);
+  const materialEntriesRef = useRef<Array<{ mesh: THREE.Mesh; meshId: number; textured: THREE.Material | THREE.Material[]; wire: THREE.MeshBasicMaterial }>>([]);
   const dragStateRef = useRef<{ dragging: boolean; offsetX: number; offsetY: number }>({ dragging: false, offsetX: 0, offsetY: 0 });
+
+  const activeMeshIdRef = useRef<number | null>(activeMeshId);
+  useEffect(() => {
+    activeMeshIdRef.current = activeMeshId;
+  }, [activeMeshId]);
 
   const matrixText = useMemo(() => {
     const m = matrixValues;
@@ -157,6 +214,22 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
     const entries = materialEntriesRef.current;
     if (!entries || entries.length === 0) return;
     for (const e of entries) {
+      // 颜色固定由“是否存在人工初始位姿”决定：
+      // - 有初始位姿：绿色
+      // - 无初始位姿：橙色
+      const pair = pose44ByMeshIdRef.current[e.meshId];
+      const shouldGreen = !!pair?.initial;
+      e.wire.color.setHex(shouldGreen ? COLOR_INITIAL : COLOR_FINAL);
+      if (!(e.mesh.material instanceof Array) && e.mesh.material === e.wire) {
+        e.mesh.material.needsUpdate = true;
+      }
+    }
+  }, [visible, sceneRefreshId]);
+
+  useEffect(() => {
+    const entries = materialEntriesRef.current;
+    if (!entries || entries.length === 0) return;
+    for (const e of entries) {
       e.mesh.material = renderTextured ? e.textured : e.wire;
     }
   }, [renderTextured, visible]);
@@ -202,6 +275,43 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
       window.removeEventListener('mouseup', onUp);
     };
   }, [visible]);
+
+  const applyPoseToMesh = (meshId: number, targetMode: PoseMode) => {
+    const obj = meshByIdRef.current.get(meshId);
+    if (!obj) return false;
+
+    const pair = pose44ByMeshIdRef.current[meshId];
+    const pose44 = targetMode === 'initial' ? pair?.initial : pair?.final;
+    if (!pose44) return false;
+
+    // 用对应位姿矩阵刷新 mesh 的变换，并同步到 Matrix 面板/TransformControls
+    const m = cvPoseToThree44ToMatrix(pose44);
+    obj.matrix.copy(m);
+    obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
+    obj.scale.multiplyScalar(MESH_UNIT_TO_CM);
+    obj.updateMatrix();
+    obj.updateMatrixWorld(true);
+
+    meshObjRef.current = obj;
+    if (transformRef.current) transformRef.current.attach(obj);
+    setMatrixValues(obj.matrix.toArray());
+    return true;
+  };
+
+  const updateWireColorForMesh = (meshId: number) => {
+    const pair = pose44ByMeshIdRef.current[meshId];
+    const shouldGreen = !!pair?.initial;
+    const hex = shouldGreen ? COLOR_INITIAL : COLOR_FINAL;
+    const entries = materialEntriesRef.current;
+    if (!entries || entries.length === 0) return;
+    for (const e of entries) {
+      if (e.meshId !== meshId) continue;
+      e.wire.color.setHex(hex);
+      if (!(e.mesh.material instanceof Array) && e.mesh.material === e.wire) {
+        e.mesh.material.needsUpdate = true;
+      }
+    }
+  };
 
   useEffect(() => {
     if (!visible || !hostRef.current || !projectId || !imageId) return;
@@ -371,10 +481,12 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
           renderLoop();
           return;
         }
+        targetMeshIdsRef.current = targetMeshIds;
         meshByIdRef.current.clear();
         undoStackRef.current = [];
         redoStackRef.current = [];
-        const allMaterialEntries: Array<{ mesh: THREE.Mesh; textured: THREE.Material | THREE.Material[]; wire: THREE.Material }> = [];
+        const allMaterialEntries: Array<{ mesh: THREE.Mesh; meshId: number; textured: THREE.Material | THREE.Material[]; wire: THREE.MeshBasicMaterial }> = [];
+        pose44ByMeshIdRef.current = {};
         let lastObj: THREE.Object3D | null = null;
         let lastMeshSize = new THREE.Vector3(0, 0, 0);
         let lastActiveMeshId: number | null = null;
@@ -382,6 +494,9 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
         for (const meshId of targetMeshIds) {
           const selectedPose =
             poses.find((p: any) => Number(p?.meshId ?? p?.mesh_id ?? p?.mesh?.id) === Number(meshId)) || null;
+          const initialPose44 = Array.isArray(selectedPose?.initialPose?.pose44) ? selectedPose?.initialPose?.pose44 : null;
+          const finalPose44 = Array.isArray(selectedPose?.diffdope?.pose44) ? selectedPose?.diffdope?.pose44 : null;
+          pose44ByMeshIdRef.current[Number(meshId)] = { initial: initialPose44, final: finalPose44 };
           const mesh = (meshes || []).find((m: any) => Number(m?.id) === Number(meshId));
           const meshUrlRaw = mesh?.url || (mesh as any)?.filePath || (mesh as any)?.file_path || null;
           if (!meshUrlRaw) continue;
@@ -405,7 +520,9 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
           obj.traverse((c: any) => {
             if (c?.isMesh) {
               const wire = new THREE.MeshBasicMaterial({
-                color: 0xff8a00,
+                // 如果该 mesh 在数据库存在人工初始位姿，则始终渲染为绿色；
+                // 否则始终渲染为橙色（AI 位姿）。
+                color: initialPose44 ? COLOR_INITIAL : COLOR_FINAL,
                 wireframe: true,
                 side: THREE.DoubleSide,
                 transparent: true,
@@ -414,7 +531,7 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
               const textured = c.material;
               c.material = renderTextured ? textured : wire;
               c.renderOrder = 10;
-              allMaterialEntries.push({ mesh: c as THREE.Mesh, textured, wire });
+              allMaterialEntries.push({ mesh: c as THREE.Mesh, meshId: Number(meshId), textured, wire });
               pickTargets.push(c as THREE.Object3D);
               pickTargetToRoot.set((c as THREE.Object3D).uuid, obj);
             }
@@ -422,8 +539,11 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
 
           obj.scale.multiplyScalar(MESH_UNIT_TO_CM);
           obj.matrixAutoUpdate = true;
-          if (Array.isArray(selectedPose?.diffdope?.pose44)) {
-            const m = cvPoseToThree(selectedPose.diffdope.pose44);
+          // 如果存在人工初始位姿，则只渲染人工初始位姿（该 mesh 显示在绿色位置）；
+          // 否则渲染 AI 最终位姿（橙色位置）。
+          const pose44ToApply = initialPose44 || finalPose44;
+          if (Array.isArray(pose44ToApply)) {
+            const m = cvPoseToThree(pose44ToApply);
             obj.matrix.copy(m);
             obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
             obj.scale.multiplyScalar(MESH_UNIT_TO_CM);
@@ -448,6 +568,7 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
           renderLoop();
           return;
         }
+        // 进入点云后：初始化选中最后一个 mesh，并允许橙色/绿色都能被拖拽
         setActiveMeshId(lastActiveMeshId);
         meshObj = lastObj;
         meshObjRef.current = lastObj;
@@ -505,12 +626,15 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
             selectableRoots.find((r) => r === hitObj || r.children.includes(hitObj)) ||
             null;
           if (!root) return;
-          transform.attach(root);
-          meshObj = root;
-          meshObjRef.current = root;
           const mid = Number((root as any)?.userData?.meshId ?? 0);
-          if (Number.isFinite(mid) && mid > 0) setActiveMeshId(mid);
-          setMatrixValues(root.matrix.toArray());
+          if (Number.isFinite(mid) && mid > 0) {
+            transform.attach(root);
+            meshObj = root;
+            meshObjRef.current = root;
+            setActiveMeshId(mid);
+            // 指针选中时不要强制“还原”到数据库 pose，避免覆盖未保存的拖拽结果
+            setMatrixValues(root.matrix.toArray());
+          }
           setStatus(`已选中 Mesh #${Number.isFinite(mid) && mid > 0 ? mid : 'unknown'}（可拖拽编辑）`);
         };
         renderer.domElement.addEventListener('pointerdown', onPointerDown);
@@ -619,42 +743,111 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
     };
   }, [visible, projectId, imageId, manualMeshIds, sceneRefreshId, deleteBusy, undoLastTransform, redoLastTransform]);
 
+  const matrixValuesToCvPose44 = () => {
+    const m = new THREE.Matrix4();
+    m.fromArray(matrixValues as any);
+    const p = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    const s = new THREE.Vector3();
+    m.decompose(p, q, s);
+    const rotOnly = new THREE.Matrix4().makeRotationFromQuaternion(q);
+    rotOnly.setPosition(p);
+    const e = rotOnly.elements;
+    const gl = [
+      [e[0], e[4], e[8], e[12]],
+      [e[1], e[5], e[9], e[13]],
+      [e[2], e[6], e[10], e[14]],
+      [0, 0, 0, 1],
+    ];
+    const C = [1, -1, -1];
+    const cv = [
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+      [0, 0, 0, 1],
+    ] as number[][];
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) cv[i][j] = C[i] * Number(gl[i][j]) * C[j];
+    }
+    cv[0][3] = C[0] * Number(gl[0][3]);
+    cv[1][3] = C[1] * Number(gl[1][3]);
+    cv[2][3] = C[2] * Number(gl[2][3]);
+    return cv;
+  };
+
+  const matrixArrayToCvPose44 = (matrixArr: number[]) => {
+    const m = new THREE.Matrix4();
+    m.fromArray(matrixArr as any);
+    const p = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    const s = new THREE.Vector3();
+    m.decompose(p, q, s);
+    const rotOnly = new THREE.Matrix4().makeRotationFromQuaternion(q);
+    rotOnly.setPosition(p);
+    const e = rotOnly.elements;
+    const gl = [
+      [e[0], e[4], e[8], e[12]],
+      [e[1], e[5], e[9], e[13]],
+      [e[2], e[6], e[10], e[14]],
+      [0, 0, 0, 1],
+    ];
+    const C = [1, -1, -1];
+    const cv = [
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+      [0, 0, 0, 1],
+    ] as number[][];
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) cv[i][j] = C[i] * Number(gl[i][j]) * C[j];
+    }
+    cv[0][3] = C[0] * Number(gl[0][3]);
+    cv[1][3] = C[1] * Number(gl[1][3]);
+    cv[2][3] = C[2] * Number(gl[2][3]);
+    return cv;
+  };
+
   const saveCurrentPose44 = async () => {
+    if (!imageId || saveBusy) return;
+    const meshIds = targetMeshIdsRef.current || [];
+    if (!meshIds.length) {
+      setStatus('当前没有可保存的 Mesh');
+      return;
+    }
+    try {
+      setSaveBusy(true);
+      // 保存“最终位姿”：对当前点云场景内的所有 Mesh 都写入 diffdope_json
+      for (const mid of meshIds) {
+        const obj = meshByIdRef.current.get(mid);
+        if (!obj) continue;
+        obj.updateMatrixWorld(true);
+        const matrixArr = obj.matrix.toArray() as number[];
+        const cv = matrixArrayToCvPose44(matrixArr);
+        await pose9dApi.saveDiffdopePose44(imageId, mid, cv);
+        pose44ByMeshIdRef.current[mid] = { ...pose44ByMeshIdRef.current[mid], final: cv };
+      }
+      setStatus('所有 Mesh 的最终位姿已保存到数据库（diffdope_json）');
+    } catch (e: any) {
+      setStatus(e?.response?.data?.message || e?.message || '保存失败');
+    } finally {
+      setSaveBusy(false);
+    }
+  };
+
+  const saveCurrentInitialPose44 = async () => {
     if (!imageId || !activeMeshId || saveBusy) return;
     try {
       setSaveBusy(true);
-      const m = new THREE.Matrix4();
-      m.fromArray(matrixValues as any);
-      const p = new THREE.Vector3();
-      const q = new THREE.Quaternion();
-      const s = new THREE.Vector3();
-      m.decompose(p, q, s);
-      const rotOnly = new THREE.Matrix4().makeRotationFromQuaternion(q);
-      rotOnly.setPosition(p);
-      const e = rotOnly.elements;
-      const gl = [
-        [e[0], e[4], e[8], e[12]],
-        [e[1], e[5], e[9], e[13]],
-        [e[2], e[6], e[10], e[14]],
-        [0, 0, 0, 1],
-      ];
-      const C = [1, -1, -1];
-      const cv = [
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
-        [0, 0, 0, 1],
-      ] as number[][];
-      for (let i = 0; i < 3; i++) {
-        for (let j = 0; j < 3; j++) cv[i][j] = C[i] * Number(gl[i][j]) * C[j];
-      }
-      cv[0][3] = C[0] * Number(gl[0][3]);
-      cv[1][3] = C[1] * Number(gl[1][3]);
-      cv[2][3] = C[2] * Number(gl[2][3]);
-      await pose9dApi.saveDiffdopePose44(imageId, activeMeshId, cv);
-      setStatus('pose44 已保存到数据库');
+      const cv = matrixValuesToCvPose44();
+      const mid = Number(activeMeshId);
+      await pose9dApi.saveInitialPose(imageId, { meshId: mid, pose44: cv });
+      pose44ByMeshIdRef.current[mid] = { ...pose44ByMeshIdRef.current[mid], initial: cv };
+      updateWireColorForMesh(mid);
+      // 确保该 Mesh 以“初始位姿（绿色）”的渲染姿态存在
+      applyPoseToMesh(mid, 'initial');
+      setStatus(`初始位姿已保存到数据库（Mesh #${mid} 变为绿色）`);
     } catch (e: any) {
-      setStatus(e?.response?.data?.message || e?.message || '保存失败');
+      setStatus(e?.response?.data?.message || e?.message || '保存初始位姿失败');
     } finally {
       setSaveBusy(false);
     }
@@ -666,6 +859,71 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
     saveCurrentPose44();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saveRequestId, visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    if (!saveInitialRequestId) return;
+    saveCurrentInitialPose44();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveInitialRequestId, visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    if (!cancelInitialRequestId) return;
+    if (!imageId) return;
+
+    (async () => {
+      const mid = activeMeshIdRef.current;
+      if (!mid) {
+        setStatus('未选中 Mesh，无法取消初始位姿');
+        return;
+      }
+
+      const hasInitial = !!pose44ByMeshIdRef.current[Number(mid)]?.initial;
+      if (!hasInitial) {
+        setStatus(`Mesh #${mid} 没有人工初始位姿，无法取消`);
+        return;
+      }
+
+      try {
+        setCancelInitialBusy(true);
+        await pose9dApi.deleteInitialPose(imageId, mid);
+        pose44ByMeshIdRef.current[Number(mid)] = { ...pose44ByMeshIdRef.current[Number(mid)], initial: null };
+        updateWireColorForMesh(Number(mid));
+        // 返回最终位姿（橙色渲染），并保持当前选中
+        applyPoseToMesh(Number(mid), 'final');
+        setStatus(`已取消 Mesh #${mid} 的人工初始位姿（模型回归橙色）`);
+      } catch (e: any) {
+        setStatus(e?.response?.data?.message || e?.message || '取消人工初始位姿失败');
+      } finally {
+        setCancelInitialBusy(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cancelInitialRequestId, visible, imageId]);
+
+  useEffect(() => {
+    if (!visible) return;
+    if (!clear6dRequestId) return;
+    if (!imageId) return;
+
+    (async () => {
+      try {
+        setClear6dBusy(true);
+        const ok = window.confirm('确定清除本图内所有 6D 姿态标注吗？此操作会删除 diffdope_json 与 initial_pose_json。');
+        if (!ok) return;
+        await pose9dApi.clear6dByImageId(imageId);
+        // 触发完整重载，确保颜色/渲染姿态与 DB 同步。
+        setSceneRefreshId((v) => v + 1);
+        setStatus('已清除本图内所有 6D 姿态标注（模型回归未标注渲染）');
+      } catch (e: any) {
+        setStatus(e?.response?.data?.message || e?.message || '清除 6D 标注失败');
+      } finally {
+        setClear6dBusy(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clear6dRequestId, visible, imageId]);
 
   if (!visible) return null;
   return (
@@ -680,7 +938,7 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
           添加 Mesh
         </button>
         <div className="pose-pointcloud-meta">
-          模式：{mode === 'translate' ? '平移(W)' : '旋转(E/R)'} ｜ 输出：Matrix4
+          模式：{mode === 'translate' ? '平移(W)' : '旋转(E/R)'} ｜ 当前选中：{activeMeshId && pose44ByMeshIdRef.current[Number(activeMeshId)]?.initial ? '人工初始位姿(绿)' : 'AI最终位姿(橙)'} ｜ 输出：Matrix4
           {' '}｜ 回退：Ctrl+Z ｜ 重做：Ctrl+Y / Ctrl+Shift+Z
         </div>
         <label style={{ marginLeft: '0.25rem', fontSize: '0.8rem', color: '#e5e7eb', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
