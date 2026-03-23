@@ -16,6 +16,7 @@ import { PoseAnnotationsZipExportButton } from './PoseAnnotationsZipExport';
 import MeshLabelMappingModal from './MeshLabelMappingModal';
 import '../2d/AnnotationPage.css';
 import PoseDiffDopeParamModal, { type DiffDopeParams } from './PoseDiffDopeParamModal';
+import PoseImagePreviewPanel from './PoseImagePreviewPanel';
 
 const DEFAULT_DIFFDOPE_PARAMS: DiffDopeParams = {
   batchSize: 8,
@@ -89,9 +90,6 @@ const PoseAnnotationPage: React.FC = () => {
     failed: number;
     timeout: number;
   } | null>(null);
-  const [previewDisplayMode, setPreviewDisplayMode] = useState<'image' | 'fit'>('image');
-  const [previewFitOverlayUrl, setPreviewFitOverlayUrl] = useState<string | null>(null);
-  const [previewFitLoading, setPreviewFitLoading] = useState(false);
   const [showDiffDopeParamModal, setShowDiffDopeParamModal] = useState(false);
   const [showMeshLabelMappingModal, setShowMeshLabelMappingModal] = useState(false);
   const [diffDopeParams, setDiffDopeParams] = useState<DiffDopeParams>(() => ({ ...DEFAULT_DIFFDOPE_PARAMS }));
@@ -267,41 +265,6 @@ const PoseAnnotationPage: React.FC = () => {
     }
   }, [bottomViewMode]);
 
-  useEffect(() => {
-    if (!selectedPreviewImage?.id) {
-      setPreviewDisplayMode('image');
-      setPreviewFitOverlayUrl(null);
-      setPreviewFitLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setPreviewFitLoading(true);
-    (async () => {
-      try {
-        const resp = await pose9dApi.listPose9D(selectedPreviewImage.id);
-        const rows = Array.isArray(resp?.poses) ? resp.poses : [];
-        const withOverlay = rows.filter((p: any) => p?.fitOverlayPath);
-        const pick = withOverlay
-          .slice()
-          .sort((a: any, b: any) => String(b?.updatedAt || '').localeCompare(String(a?.updatedAt || '')))[0];
-        const u = pick?.fitOverlayPath ? (toAbsoluteUrl(pick.fitOverlayPath) || pick.fitOverlayPath) : null;
-        if (!cancelled) {
-          setPreviewFitOverlayUrl(u);
-          if (!u) setPreviewDisplayMode('image');
-        }
-      } catch (_) {
-        if (!cancelled) {
-          setPreviewFitOverlayUrl(null);
-          setPreviewDisplayMode('image');
-        }
-      } finally {
-        if (!cancelled) setPreviewFitLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedPreviewImage?.id, imageCacheBust]);
 
   useEffect(() => {
     // 缩略图容器是条件渲染的，所以这里在依赖变化时重试挂载
@@ -915,96 +878,21 @@ const PoseAnnotationPage: React.FC = () => {
                     </div>
                   </div>
                 )
-              ) : selectedPreviewImage ? (
-                <div className="image-preview-container">
-                  <div className="preview-header">
-                    <h3>{selectedPreviewImage.originalName || selectedPreviewImage.filename}</h3>
-                    <button className="close-preview-btn" onClick={() => setSelectedPreviewImage(null)}>
-                      ×
-                    </button>
-                  </div>
-                  <div className="image-preview-wrapper" style={{ position: 'relative' }}>
-                    <div className="preview-floating-panel">
-                      <button
-                        type="button"
-                        className={`preview-mode-btn ${previewDisplayMode === 'image' ? 'active' : ''}`}
-                        onClick={() => setPreviewDisplayMode('image')}
-                      >
-                        原图
-                      </button>
-                      <button
-                        type="button"
-                        className={`preview-mode-btn ${previewDisplayMode === 'fit' ? 'active' : ''}`}
-                        onClick={() => setPreviewDisplayMode('fit')}
-                        disabled={!previewFitOverlayUrl}
-                        title={previewFitOverlayUrl ? '显示拟合图' : '当前图片暂无拟合图'}
-                      >
-                        拟合图
-                      </button>
-                      {previewFitLoading && <span className="preview-mode-loading">加载中...</span>}
-                    </div>
-                    <div className="preview-image-layer" style={{ position: 'relative' }}>
-                      <img
-                        src={
-                          previewDisplayMode === 'fit' && previewFitOverlayUrl
-                            ? `${previewFitOverlayUrl}?v=${imageCacheBust}`
-                            : `${(toAbsoluteUrl(selectedPreviewImage.url) || selectedPreviewImage.url)}?v=${imageCacheBust}`
-                        }
-                        alt={selectedPreviewImage.originalName || selectedPreviewImage.filename}
-                        className="preview-image"
-                      />
-                    </div>
-
-                  </div>
-                  <div className="preview-actions">
-                    <button
-                      className="nav-image-btn prev-image-btn"
-                      onClick={() => handlePreviewNavigate('prev')}
-                      disabled={images.findIndex((img: Image) => img.id === selectedPreviewImage.id) <= 0}
-                    >
-                      ← 上一张
-                    </button>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      {selectedPreviewImage && (
-                        <button
-                          type="button"
-                          className="ai-prompt-modal-btn secondary"
-                          disabled={estimating6d}
-                          onClick={handleEstimate6D}
-                          title="调用 Diff-DOPE 进行 AI 6D 姿态标注"
-                        >
-                          {estimating6d ? 'AI计算中...' : 'AI 6D姿态标注'}
-                        </button>
-                      )}
-                      {selectedPreviewImage && (
-                        <button
-                          type="button"
-                          className="start-annotation-btn"
-                          onClick={() => {
-                            dispatch(setCurrentImage(selectedPreviewImage));
-                            navigate('/pose/manual-annotation');
-                          }}
-                        >
-                          开始人工标注
-                        </button>
-                      )}
-                    </div>
-                    <button
-                      className="nav-image-btn next-image-btn"
-                      onClick={() => handlePreviewNavigate('next')}
-                      disabled={images.findIndex((img: Image) => img.id === selectedPreviewImage.id) === images.length - 1}
-                    >
-                      下一张 →
-                    </button>
-                  </div>
-                </div>
               ) : (
-                <div className="no-preview-selected">
-                  <div className="preview-placeholder">
-                    <span className="preview-icon">🔍</span>
-                    <p>点击下方缩略图查看图片预览</p>
-                  </div>
-                </div>
+                <PoseImagePreviewPanel
+                  selectedPreviewImage={selectedPreviewImage}
+                  images={images}
+                  imageCacheBust={imageCacheBust}
+                  estimating6d={estimating6d}
+                  onClose={() => setSelectedPreviewImage(null)}
+                  onNavigate={handlePreviewNavigate}
+                  onEstimate6D={handleEstimate6D}
+                  onStartManualAnnotation={() => {
+                    if (!selectedPreviewImage) return;
+                    dispatch(setCurrentImage(selectedPreviewImage));
+                    navigate('/pose/manual-annotation');
+                  }}
+                />
               )}
             </div>
 
