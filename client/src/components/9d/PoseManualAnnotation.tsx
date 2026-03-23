@@ -448,36 +448,18 @@ const PoseManualAnnotation: React.FC = () => {
                   className="save-row"
                   style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}
                 >
-                  {/* DOM 顺序上让“保存位置”先出现，对应 primary-button[0]；通过 CSS order 显示在第二行 */}
-                  <div style={{ order: 1 }}>
+                  {/* 第 1 行：人工初始位姿相关 */}
+                  <div style={{ display: 'flex', gap: '0.55rem', width: '100%' }}>
                     <button
                       type="button"
                       className="primary-button"
-                      style={{ background: '#f59e0b', borderColor: '#d97706', width: '100%' }}
-                      onClick={() => setPointCloudSaveRequestId((v) => v + 1)}
-                      title="保存当前点云窗口中的 Mesh 位姿矩阵到数据库（保存图内所有最终位姿）"
-                    >
-                      保存位置
-                    </button>
-                  </div>
-
-                    <div style={{ order: 2 }}>
-                      <button
-                        type="button"
-                        className="primary-button"
-                        style={{ background: '#ef4444', borderColor: '#dc2626', width: '100%' }}
-                        onClick={() => setPointCloudClear6dRequestId((v) => v + 1)}
-                        title="清除本图内所有 6D 姿态标注（删除 diffdope_json 与 initial_pose_json）"
-                      >
-                        清除本图 6D 标注
-                      </button>
-                    </div>
-
-                    <div style={{ order: 0, display: 'flex', gap: '0.55rem', width: '100%' }}>
-                    <button
-                      type="button"
-                      className="primary-button"
-                      style={{ background: '#ef4444', borderColor: '#dc2626', flex: 1 }}
+                      style={{
+                        background: '#ef4444',
+                        borderColor: '#dc2626',
+                        flex: 1,
+                        height: '47px',
+                        whiteSpace: 'nowrap',
+                      }}
                       onClick={() => setPointCloudCancelInitRequestId((v) => v + 1)}
                       title="删除当前点云窗口中选中 Mesh 的人工初始位姿"
                     >
@@ -486,11 +468,51 @@ const PoseManualAnnotation: React.FC = () => {
                     <button
                       type="button"
                       className="primary-button"
-                      style={{ background: '#16a34a', borderColor: '#15803d', flex: 1 }}
+                      style={{
+                        background: '#16a34a',
+                        borderColor: '#15803d',
+                        flex: 1,
+                        height: '47px',
+                        whiteSpace: 'nowrap',
+                      }}
                       onClick={() => setPointCloudInitSaveRequestId((v) => v + 1)}
                       title="保存当前点云窗口中选中 Mesh 的人工初始位姿"
                     >
                       保存初始位姿
+                    </button>
+                  </div>
+
+                  {/* 第 2 行：最终位姿保存 / 清除 */}
+                  <div style={{ display: 'flex', gap: '0.55rem', width: '100%' }}>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{
+                        background: '#f59e0b',
+                        borderColor: '#d97706',
+                        flex: 1,
+                        height: '47px',
+                        whiteSpace: 'nowrap',
+                      }}
+                      onClick={() => setPointCloudSaveRequestId((v) => v + 1)}
+                      title="保存当前点云窗口中的 Mesh 位姿矩阵到数据库（保存图内所有最终位姿）"
+                    >
+                      保存位置
+                    </button>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{
+                        background: '#ef4444',
+                        borderColor: '#dc2626',
+                        flex: 1,
+                        height: '47px',
+                        whiteSpace: 'nowrap',
+                      }}
+                      onClick={() => setPointCloudClear6dRequestId((v) => v + 1)}
+                      title="清除本图内所有 6D 姿态标注（删除 diffdope_json 与 initial_pose_json）"
+                    >
+                      清除本图 6D 标注
                     </button>
                   </div>
                 </div>
