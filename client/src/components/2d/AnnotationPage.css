@@ -535,6 +535,30 @@
   color: #6b7280;
 }
 
+.model-param-row.is-disabled {
+  opacity: 0.48;
+  pointer-events: none;
+  filter: grayscale(0.12);
+}
+
+.model-param-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 1.1rem;
+  margin-bottom: 0.35rem;
+}
+
+.model-param-toggle-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: #374151;
+  cursor: pointer;
+  user-select: none;
+}
+
 @media (max-width: 860px) {
   .model-param-columns {
     grid-template-columns: 1fr;

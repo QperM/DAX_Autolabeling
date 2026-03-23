@@ -1,11 +1,12 @@
 import base64
+import gc
 import json
 import os
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -24,6 +25,88 @@ import diffdope as dd  # noqa: E402
 app = FastAPI(title="pose-service", version="1.0.0")
 _LOCK = threading.Lock()
 
+# -----------------------------------------------------------------------------
+# 两阶段超参数：请求体字段为 None 时的唯一回落表（与前端 DEFAULT_DIFFDOPE_PARAMS 语义应对齐）
+# -----------------------------------------------------------------------------
+DIFFDOPE_DEFAULTS: Dict[str, Any] = {
+    "s1_iters": 80,
+    "s2_iters": 120,
+    "s1_base_lr": 20.0,
+    "s1_lr_decay": 0.1,
+    "s2_base_lr": 8.0,
+    "s2_lr_decay": 0.1,
+    "s1_w_mask": 1.0,
+    "s1_w_rgb": 0.7,
+    "s2_w_mask": 1.0,
+    "s2_w_depth": 1.0,
+    "s2_w_rgb": 1.0,
+}
+
+
+def _resolve_two_stage_params(req: "Estimate6DRequest") -> Dict[str, Any]:
+    """解析第一轮/第二轮的迭代次数、学习率、衰减、权重与开关；禁止在 estimate6d 内再写散落魔法数。"""
+    D = DIFFDOPE_DEFAULTS
+
+    s1_iters = int(max(1, min(500, req.stage1Iters if req.stage1Iters is not None else D["s1_iters"])))
+    s2_iters = int(max(1, min(500, req.stage2Iters if req.stage2Iters is not None else D["s2_iters"])))
+
+    s1_base_lr = float(max(0.01, min(200.0, req.stage1BaseLr if req.stage1BaseLr is not None else D["s1_base_lr"])))
+    s1_lr_decay = float(max(0.001, min(1.0, req.stage1LrDecay if req.stage1LrDecay is not None else D["s1_lr_decay"])))
+    s2_base_lr = float(max(0.01, min(200.0, req.stage2BaseLr if req.stage2BaseLr is not None else D["s2_base_lr"])))
+    s2_lr_decay = float(max(0.001, min(1.0, req.stage2LrDecay if req.stage2LrDecay is not None else D["s2_lr_decay"])))
+
+    s1_w_mask = float(max(0.0, req.stage1WeightMask if req.stage1WeightMask is not None else D["s1_w_mask"]))
+    s1_w_rgb = float(max(0.0, req.stage1WeightRgb if req.stage1WeightRgb is not None else D["s1_w_rgb"]))
+    s2_w_mask = float(max(0.0, req.stage2WeightMask if req.stage2WeightMask is not None else D["s2_w_mask"]))
+    s2_w_depth = float(max(0.0, req.stage2WeightDepth if req.stage2WeightDepth is not None else D["s2_w_depth"]))
+    # 第二轮 RGB：stage2WeightRgb → 遗留 weightRgb（仅旧客户端会传）→ DIFFDOPE_DEFAULTS
+    if req.stage2WeightRgb is not None:
+        s2_w_rgb = float(max(0.0, req.stage2WeightRgb))
+    elif req.weightRgb is not None:
+        s2_w_rgb = float(max(0.0, req.weightRgb))
+    else:
+        s2_w_rgb = float(max(0.0, D["s2_w_rgb"]))
+
+    s1_use_mask = bool(req.stage1UseMask)
+    s1_use_rgb = bool(req.stage1UseRgb)
+    s1_use_depth = False  # 第一轮固定无 depth loss
+    s2_use_mask = bool(req.stage2UseMask)
+    s2_use_rgb = bool(req.stage2UseRgb)
+    s2_use_depth = bool(req.stage2UseDepth)
+
+    s1_early = (
+        float(req.stage1EarlyStopLoss)
+        if req.stage1EarlyStopLoss is not None and float(req.stage1EarlyStopLoss) > 0
+        else None
+    )
+    s2_early = (
+        float(req.stage2EarlyStopLoss)
+        if req.stage2EarlyStopLoss is not None and float(req.stage2EarlyStopLoss) > 0
+        else None
+    )
+
+    return {
+        "s1_iters": s1_iters,
+        "s2_iters": s2_iters,
+        "s1_base_lr": s1_base_lr,
+        "s1_lr_decay": s1_lr_decay,
+        "s2_base_lr": s2_base_lr,
+        "s2_lr_decay": s2_lr_decay,
+        "s1_w_mask": s1_w_mask,
+        "s1_w_rgb": s1_w_rgb,
+        "s2_w_mask": s2_w_mask,
+        "s2_w_depth": s2_w_depth,
+        "s2_w_rgb": s2_w_rgb,
+        "s1_use_mask": s1_use_mask,
+        "s1_use_rgb": s1_use_rgb,
+        "s1_use_depth": s1_use_depth,
+        "s2_use_mask": s2_use_mask,
+        "s2_use_rgb": s2_use_rgb,
+        "s2_use_depth": s2_use_depth,
+        "s1_early": s1_early,
+        "s2_early": s2_early,
+    }
+
 
 class InitPose(BaseModel):
     position: List[float] = Field(default_factory=lambda: [0.0, 0.0, 80.0])  # cm
@@ -31,19 +114,59 @@ class InitPose(BaseModel):
 
 
 class Estimate6DRequest(BaseModel):
+    """POST /diffdope/estimate6d 请求体。
+
+    两轮各自的迭代次数、学习率、衰减、权重、开关均由 `stage1*` / `stage2*` 表达；
+    数值缺省回落见模块常量 `DIFFDOPE_DEFAULTS`，解析入口为 `_resolve_two_stage_params()`。
+    """
+
+    # --- 可选：业务 ID ---
     projectId: Optional[int] = None
     imageId: Optional[int] = None
     meshId: Optional[int] = None
+
+    # --- 必选：路径与 mask ---
     rgbPath: str
     depthPath: str
     intrinsicsPath: str
     meshPath: str
     maskFlatPoints: List[float]
     init: Optional[InitPose] = None
-    stage1Iters: Optional[int] = None
-    stage2Iters: Optional[int] = None
+
+    # --- 全局（仅 batch，两轮共用）---
+    batchSize: int = 8  # 默认 8；clamp [1, 64]
+
+    # --- 第一轮：与 DIFFDOPE_DEFAULTS 对应键 s1_* ---
+    stage1Iters: Optional[int] = None  # None → s1_iters
+    stage1EarlyStopLoss: Optional[float] = None  # None 或 ≤0 → 不关早停
+    stage1BaseLr: Optional[float] = None  # None → s1_base_lr
+    stage1LrDecay: Optional[float] = None  # None → s1_lr_decay
+    stage1UseMask: bool = True
+    stage1UseRgb: bool = True
+    stage1UseDepth: bool = False  # 请求可带，解析层固定第一轮不用 depth
+    stage1WeightMask: Optional[float] = None  # None → s1_w_mask
+    stage1WeightRgb: Optional[float] = None  # None → s1_w_rgb
+    stage1WeightDepth: Optional[float] = None  # 不参与第一轮
+
+    # --- 第二轮：与 DIFFDOPE_DEFAULTS 对应键 s2_*（与第一轮完全独立）---
+    stage2Iters: Optional[int] = None  # None → s2_iters
+    stage2EarlyStopLoss: Optional[float] = None
+    stage2BaseLr: Optional[float] = None  # None → s2_base_lr
+    stage2LrDecay: Optional[float] = None  # None → s2_lr_decay
+    stage2UseMask: bool = True
+    stage2UseRgb: bool = False
+    stage2UseDepth: bool = True
+    stage2WeightMask: Optional[float] = None  # None → s2_w_mask
+    stage2WeightDepth: Optional[float] = None  # None → s2_w_depth
+    stage2WeightRgb: Optional[float] = None  # None → 再用遗留 weightRgb → s2_w_rgb
+
+    # --- 质量与输出 ---
+    maxAllowedFinalLoss: Optional[float] = None
+    returnDebugImages: bool = True
+    debug: bool = False
+
+    # --- 遗留字段（旧客户端）；不参与 _resolve 内阶段逻辑，仅作 stage2WeightRgb 的回退 ---
     iters: int = 60
-    batchSize: int = 8
     lrLow: float = 0.01
     lrHigh: float = 100.0
     baseLr: float = 20.0
@@ -51,27 +174,9 @@ class Estimate6DRequest(BaseModel):
     useMaskLoss: bool = True
     useRgbLoss: bool = False
     useDepthLoss: bool = True
-    stage1UseMask: bool = True
-    stage1UseRgb: bool = True
-    stage2UseMask: bool = True
-    stage2UseRgb: bool = True
-    stage2UseDepth: bool = True
     weightMask: float = 1.0
-    weightRgb: float = 0.7
+    weightRgb: Optional[float] = None  # 旧客户端第二轮 RGB 权重；与 stage2WeightRgb 二选一即可
     weightDepth: float = 1.0
-    stage1WeightMask: Optional[float] = None
-    stage1WeightRgb: Optional[float] = None
-    stage2WeightMask: Optional[float] = None
-    stage2WeightDepth: Optional[float] = None
-    stage1EarlyStopLoss: Optional[float] = None
-    stage2EarlyStopLoss: Optional[float] = None
-    stage1BaseLr: Optional[float] = None
-    stage1LrDecay: Optional[float] = None
-    stage2BaseLr: Optional[float] = None
-    stage2LrDecay: Optional[float] = None
-    maxAllowedFinalLoss: Optional[float] = None
-    returnDebugImages: bool = True
-    debug: bool = False
 
 
 def _as_png_b64(img_bgr: np.ndarray) -> Optional[str]:
@@ -160,23 +265,291 @@ def _mask_from_flat_points(flat: List[float], h: int, w: int) -> np.ndarray:
     return m
 
 
+def _save_fit_overlay(overlay_bgr: Optional[np.ndarray], project_id: Optional[int], image_id: Optional[int], mesh_id: Optional[int], *, suffix: str = "") -> Optional[str]:
+    """统一落盘拟合图并返回相对路径。"""
+    if overlay_bgr is None or not project_id:
+        return None
+    fit_dir = ROOT.parent / "uploads" / f"project_{int(project_id)}" / "pose-fit-overlays"
+    fit_dir.mkdir(parents=True, exist_ok=True)
+    img_id = int(image_id or 0)
+    if suffix:
+        filename = f"fit_image_{img_id}_{suffix}.png"
+    else:
+        filename = f"fit_image_{img_id}_mesh_{int(mesh_id or 0)}.png"
+    abs_path = fit_dir / filename
+    cv2.imwrite(str(abs_path), overlay_bgr)
+    return f"/uploads/project_{int(project_id)}/pose-fit-overlays/{filename}"
+
+
+def _overlay_non_black(base_bgr: np.ndarray, fg_bgr: np.ndarray) -> np.ndarray:
+    """将前景渲染叠加到底图（黑底视为透明）。"""
+    out = base_bgr.copy()
+    if fg_bgr is None:
+        return out
+    if fg_bgr.shape[:2] != out.shape[:2]:
+        fg_bgr = cv2.resize(fg_bgr, (out.shape[1], out.shape[0]), interpolation=cv2.INTER_LINEAR)
+    mask = np.any(fg_bgr > 3, axis=2)
+    out[mask] = fg_bgr[mask]
+    return out
+
+
+def _cv_pose44_to_gl_rt(pose44: List[List[float]]) -> tuple[list[float], list[float]]:
+    """DB pose44 为 OpenCV 系（与 Node `convertPose44OpenGLToOpenCV` 输出一致）→ diffdope 渲染用的 GL 平移 + 行主序 3×3。
+
+    与 Object3D(..., opencv2opengl=True) 内建变换同型：C=diag(1,-1,-1)，R_gl=C·R_cv·C，t_gl=C·t_cv。
+    """
+    M = np.asarray(pose44, dtype=np.float32)
+    if M.shape[0] < 4 or M.shape[1] < 4:
+        raise RuntimeError("pose44 维度非法")
+    R_cv = M[:3, :3]
+    t_cv = M[:3, 3]
+    C = np.diag([1.0, -1.0, -1.0]).astype(np.float32)
+    R_gl = C @ R_cv @ C
+    t_gl = C @ t_cv
+    rot9 = [
+        float(R_gl[0, 0]), float(R_gl[0, 1]), float(R_gl[0, 2]),
+        float(R_gl[1, 0]), float(R_gl[1, 1]), float(R_gl[1, 2]),
+        float(R_gl[2, 0]), float(R_gl[2, 1]), float(R_gl[2, 2]),
+    ]
+    pos3 = [float(t_gl[0]), float(t_gl[1]), float(t_gl[2])]
+    return pos3, rot9
+
+
+def _diffdope_cfg_fresh() -> Any:
+    """每次请求/每个物体独立一份 yaml，避免循环内改字段互相污染。"""
+    base = OmegaConf.load(str(DIFFDOPE_ROOT / "configs" / "diffdope.yaml"))
+    return OmegaConf.create(OmegaConf.to_container(base, resolve=True))
+
+
+def _apply_camera_scene_intrinsics(cfg: Any, intr: Dict[str, Any], w: int, h: int, rgb_path: str) -> None:
+    cfg.camera.fx = float(intr["fx"])
+    cfg.camera.fy = float(intr["fy"])
+    cfg.camera.cx = float(intr.get("cx", intr.get("ppx")))
+    cfg.camera.cy = float(intr.get("cy", intr.get("ppy")))
+    cfg.camera.im_width = int(intr.get("width", w))
+    cfg.camera.im_height = int(intr.get("height", h))
+    cfg.scene.path_img = rgb_path
+    cfg.scene.path_depth = None
+    cfg.scene.path_segmentation = None
+    cfg.scene.image_resize = 1.0
+    cfg.render_images.crop_around_mask = False
+
+
+def _release_ddope_gpu(ddope: Optional[Any]) -> None:
+    if ddope is not None:
+        try:
+            ddope.optimization_results = []
+        except Exception:
+            pass
+        try:
+            ddope.losses_values = {}
+        except Exception:
+            pass
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+
+
+def _forward_render_rgb(ddope: Any, result: Dict[str, Any]) -> Tuple[Any, Any]:
+    """单次 object3d() 前向 + texture 渲染；返回 (renders, mtx_gu)。"""
+    mtx_gu = dd.matrix_batch_44_from_position_quat(p=result["trans"], q=result["quat"])
+    mesh = ddope.object3d.mesh
+    common = {
+        "glctx": ddope.glctx,
+        "proj_cam": ddope.camera.cam_proj,
+        "mtx": mtx_gu,
+        "pos": result["pos"],
+        "pos_idx": result["pos_idx"],
+        "resolution": ddope.resolution,
+    }
+    if not mesh.has_textured_map:
+        renders = dd.render_texture_batch(vtx_color=result["vtx_color"], **common)
+    else:
+        renders = dd.render_texture_batch(
+            uv=result["uv"],
+            uv_idx=result["uv_idx"],
+            tex=result["tex"],
+            **common,
+        )
+    return renders, mtx_gu
+
+
+class RenderFitObject(BaseModel):
+    meshId: Optional[int] = None
+    meshPath: str
+    pose44: List[List[float]]
+
+
+class RenderFitOverlayRequest(BaseModel):
+    projectId: Optional[int] = None
+    imageId: Optional[int] = None
+    rgbPath: str
+    depthPath: Optional[str] = None
+    intrinsicsPath: str
+    objects: List[RenderFitObject]
+    debug: bool = False
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.post("/diffdope/render-fit-overlay")
+def render_fit_overlay(req: RenderFitOverlayRequest):
+    """根据给定的 pose44 列表重渲染并合成单张拟合图层。"""
+    t0 = time.time()
+    with _LOCK:
+        ddope = None
+        scene = None
+        mesh = None
+        obj = None
+        try:
+            rgb_path = Path(req.rgbPath)
+            intr_path = Path(req.intrinsicsPath)
+            if not rgb_path.exists():
+                raise RuntimeError(f"文件不存在: {rgb_path}")
+            if not intr_path.exists():
+                raise RuntimeError(f"文件不存在: {intr_path}")
+            intr = _load_intrinsics(intr_path)
+            base_rgb = cv2.imread(str(rgb_path))
+            if base_rgb is None:
+                raise RuntimeError(f"无法读取 RGB 图像: {rgb_path}")
+            h, w = base_rgb.shape[:2]
+            fx = float(intr["fx"])
+            fy = float(intr["fy"])
+            cx = float(intr.get("cx", intr.get("ppx")))
+            cy = float(intr.get("cy", intr.get("ppy")))
+
+            composed = base_rgb.copy()
+            rendered = 0
+            rgb_s = str(rgb_path)
+            for item in req.objects:
+                mesh_path = Path(item.meshPath)
+                if not mesh_path.exists():
+                    continue
+                pose44 = item.pose44
+                if (
+                    not isinstance(pose44, list)
+                    or len(pose44) < 4
+                    or any((not isinstance(r, list) or len(r) < 4) for r in pose44[:4])
+                ):
+                    continue
+
+                pos_gl, rot_gl = _cv_pose44_to_gl_rt(pose44)
+                if req.debug:
+                    Mdbg = np.asarray(pose44, dtype=np.float64)
+                    print(
+                        "[pose-service][render-fit-overlay][debug]",
+                        {"meshId": item.meshId, "t_cv": Mdbg[:3, 3].tolist(), "tr_Rcv": float(np.trace(Mdbg[:3, :3]))},
+                    )
+
+                cfg = _diffdope_cfg_fresh()
+                _apply_camera_scene_intrinsics(cfg, intr, w, h, rgb_s)
+                # 勿覆盖 diffdope.yaml 的 render_images.flip_result：须与 estimate6d 的 render_img 一致（Scene 竖翻 + make_grid 再翻回磁盘行序）。
+                cfg.render_images.add_background = False
+                cfg.render_images.add_countour = True
+                cfg.hyperparameters.batchsize = 1
+                cfg.hyperparameters.nb_iterations = 1
+                cfg.hyperparameters.base_lr = 0.0
+                cfg.hyperparameters.lr_decay = 1.0
+                cfg.losses.l1_mask = False
+                cfg.losses.l1_depth_with_mask = False
+                cfg.losses.l1_rgb_with_mask = True
+                cfg.losses.weight_mask = 0.0
+                cfg.losses.weight_depth = 0.0
+                cfg.losses.weight_rgb = 1.0
+                cfg.object3d.model_path = str(mesh_path)
+                cfg.object3d.scale = 100.0
+
+                ddope = dd.DiffDope(cfg=cfg)
+                scene = dd.Scene(path_img=rgb_s, path_depth=None, path_segmentation=None, image_resize=1.0)
+                scene.cuda()
+                mesh = dd.Mesh(str(mesh_path), scale=100.0)
+                mesh.cuda()
+                obj = dd.Object3D(
+                    position=pos_gl,
+                    rotation=rot_gl,
+                    batchsize=1,
+                    opencv2opengl=False,
+                    scale=1.0,
+                )
+                obj.mesh = mesh
+                obj.mesh.set_batchsize(1)
+                obj.cuda()
+
+                ddope.scene = scene
+                ddope.object3d = obj
+                ddope.set_batchsize(1)
+                with torch.no_grad():
+                    result = ddope.object3d()
+                    renders, mtx_gu = _forward_render_rgb(ddope, result)
+                    ddope.optimization_results = [{
+                        "rgb": renders["rgb"].detach().cpu(),
+                        "depth": renders["depth"].detach().cpu(),
+                        "mtx": mtx_gu.detach().cpu(),
+                    }]
+
+                fg = ddope.render_img(batch_index=0, render_selection="rgb")
+                if fg is not None:
+                    composed = _overlay_non_black(composed, fg)
+                    rendered += 1
+
+            fit_overlay_rel_path = _save_fit_overlay(composed, req.projectId, req.imageId, None, suffix="composite")
+            return {
+                "success": True,
+                "fitOverlayPath": fit_overlay_rel_path,
+                "renderedCount": int(rendered),
+                "timingSec": round(float(time.time() - t0), 4),
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "timingSec": round(float(time.time() - t0), 4),
+            }
+        finally:
+            try:
+                _release_ddope_gpu(ddope)
+                ddope = None
+                scene = None
+                mesh = None
+                obj = None
+            except Exception:
+                pass
 
 
 @app.post("/diffdope/estimate6d")
 def estimate6d(req: Estimate6DRequest):
     t0 = time.time()
     with _LOCK:
+        # 显式初始化：用于 finally 中释放大对象/触发 gc/清空 torch 缓存
+        ddope = None
+        scene = None
+        mesh = None
+        obj = None
+        seg = None
+        depth_img = None
+        m_batch = None
+        d_batch = None
+        overlay = None
+        mask = None
+        rgb = None
+        depth_cm = None
+        valid_depth = None
+
         try:
             rgb_path = Path(req.rgbPath)
             depth_path = Path(req.depthPath)
             intr_path = Path(req.intrinsicsPath)
             mesh_path = Path(req.meshPath)
-            for p in [rgb_path, depth_path, intr_path, mesh_path]:
-                if not p.exists():
-                    raise RuntimeError(f"文件不存在: {p}")
+            for _path in [rgb_path, depth_path, intr_path, mesh_path]:
+                if not _path.exists():
+                    raise RuntimeError(f"文件不存在: {_path}")
 
             intr = _load_intrinsics(intr_path)
             rgb = cv2.imread(str(rgb_path))
@@ -219,34 +592,24 @@ def estimate6d(req: Estimate6DRequest):
                 print(f"init xyz(cm)={init_xyz}")
                 print(f"init quat(xyzw)={init_quat}")
 
-            cfg = OmegaConf.load(str(DIFFDOPE_ROOT / "configs" / "diffdope.yaml"))
-            cfg.camera.fx = fx
-            cfg.camera.fy = fy
-            cfg.camera.cx = cx
-            cfg.camera.cy = cy
-            cfg.camera.im_width = int(intr.get("width", w))
-            cfg.camera.im_height = int(intr.get("height", h))
-            cfg.scene.path_img = str(rgb_path)
-            cfg.scene.path_depth = None
-            cfg.scene.path_segmentation = None
-            cfg.scene.image_resize = 1.0
-            cfg.render_images.crop_around_mask = False
+            cfg = _diffdope_cfg_fresh()
+            _apply_camera_scene_intrinsics(cfg, intr, w, h, str(rgb_path))
 
             cfg.object3d.model_path = str(mesh_path)
             cfg.object3d.scale = 100.0  # m -> cm
             cfg.object3d.position = init_xyz
             cfg.object3d.rotation = init_quat
 
-            # 严格对齐 demo：默认 8 batch / 两轮 80 + 120 次
-            cfg.hyperparameters.nb_iterations = 80
             cfg.hyperparameters.batchsize = int(max(1, min(64, req.batchSize or 8)))
-
-            cfg.losses.l1_mask = bool(req.useMaskLoss)
-            cfg.losses.l1_depth_with_mask = bool(req.useDepthLoss)
-            cfg.losses.l1_rgb_with_mask = bool(req.useRgbLoss)
-            cfg.losses.weight_mask = float(max(0.0, req.weightMask))
-            cfg.losses.weight_depth = float(max(0.0, req.weightDepth))
-            cfg.losses.weight_rgb = float(max(0.0, req.weightRgb))
+            p = _resolve_two_stage_params(req)
+            # 初始模板与第一轮一致（实例化 DiffDope 前写入，避免与遗留 iters/use*Loss 混用）
+            cfg.hyperparameters.nb_iterations = p["s1_iters"]
+            cfg.losses.l1_mask = p["s1_use_mask"]
+            cfg.losses.l1_depth_with_mask = False
+            cfg.losses.l1_rgb_with_mask = p["s1_use_rgb"]
+            cfg.losses.weight_mask = p["s1_w_mask"]
+            cfg.losses.weight_depth = 0.0
+            cfg.losses.weight_rgb = p["s1_w_rgb"]
 
             ddope = dd.DiffDope(cfg=cfg)
             scene = dd.Scene(path_img=str(rgb_path), path_depth=None, path_segmentation=None, image_resize=1.0)
@@ -281,63 +644,34 @@ def estimate6d(req: Estimate6DRequest):
             ddope.object3d = obj
             ddope.set_batchsize(cfg.hyperparameters.batchsize)
 
-            # 两阶段优化（严格对齐 run_mine_demo_no_video.py）：
-            # Stage-1: 仅 mask + RGB（不使用 depth loss）
-            # Stage-2: mask +（可选 depth）+（可选 RGB）
-            stage1_iters = int(max(1, min(500, req.stage1Iters if req.stage1Iters is not None else 80)))
-            stage2_iters = int(max(1, min(500, req.stage2Iters if req.stage2Iters is not None else 120)))
-            stage1_weight_mask = float(max(0.0, req.stage1WeightMask if req.stage1WeightMask is not None else 1.0))
-            stage1_weight_rgb = float(max(0.0, req.stage1WeightRgb if req.stage1WeightRgb is not None else 0.7))
-            stage2_weight_mask = float(max(0.0, req.stage2WeightMask if req.stage2WeightMask is not None else 0.5))
-            stage2_weight_depth = float(max(0.0, req.stage2WeightDepth if req.stage2WeightDepth is not None else 1.0))
-            stage2_weight_rgb = float(max(0.0, req.weightRgb))
-            stage1_use_mask = bool(req.stage1UseMask)
-            stage1_use_rgb = bool(req.stage1UseRgb)
-            stage2_use_mask = bool(req.stage2UseMask)
-            stage2_use_rgb = bool(req.stage2UseRgb)
-            stage2_use_depth = bool(req.stage2UseDepth)
-            stage1_base_lr = float(max(0.01, min(200.0, req.stage1BaseLr if req.stage1BaseLr is not None else 20.0)))
-            stage1_lr_decay = float(max(0.001, min(1.0, req.stage1LrDecay if req.stage1LrDecay is not None else 0.1)))
-            stage2_base_lr = float(max(0.01, min(200.0, req.stage2BaseLr if req.stage2BaseLr is not None else 20.0)))
-            stage2_lr_decay = float(max(0.001, min(1.0, req.stage2LrDecay if req.stage2LrDecay is not None else 0.1)))
-            stage1_early_stop = (
-                float(req.stage1EarlyStopLoss)
-                if req.stage1EarlyStopLoss is not None and float(req.stage1EarlyStopLoss) > 0
-                else None
-            )
-            stage2_early_stop = (
-                float(req.stage2EarlyStopLoss)
-                if req.stage2EarlyStopLoss is not None and float(req.stage2EarlyStopLoss) > 0
-                else None
-            )
-
-            ddope.cfg.hyperparameters.nb_iterations = stage1_iters
-            ddope.cfg.hyperparameters.early_stop_loss = stage1_early_stop
-            ddope.cfg.hyperparameters.base_lr = stage1_base_lr
-            ddope.cfg.hyperparameters.lr_decay = stage1_lr_decay
+            # 两阶段优化（超参数仅来自 p = _resolve_two_stage_params）
+            ddope.cfg.hyperparameters.nb_iterations = p["s1_iters"]
+            ddope.cfg.hyperparameters.early_stop_loss = p["s1_early"]
+            ddope.cfg.hyperparameters.base_lr = p["s1_base_lr"]
+            ddope.cfg.hyperparameters.lr_decay = p["s1_lr_decay"]
             _configure_stage_losses(
                 ddope,
-                use_mask=stage1_use_mask,
-                use_depth=False,
-                use_rgb=stage1_use_rgb,
-                weight_mask=stage1_weight_mask,
+                use_mask=p["s1_use_mask"],
+                use_depth=p["s1_use_depth"],
+                use_rgb=p["s1_use_rgb"],
+                weight_mask=p["s1_w_mask"],
                 weight_depth=0.0,
-                weight_rgb=stage1_weight_rgb,
+                weight_rgb=p["s1_w_rgb"],
             )
             ddope.run_optimization()
 
-            ddope.cfg.hyperparameters.nb_iterations = stage2_iters
-            ddope.cfg.hyperparameters.early_stop_loss = stage2_early_stop
-            ddope.cfg.hyperparameters.base_lr = stage2_base_lr
-            ddope.cfg.hyperparameters.lr_decay = stage2_lr_decay
+            ddope.cfg.hyperparameters.nb_iterations = p["s2_iters"]
+            ddope.cfg.hyperparameters.early_stop_loss = p["s2_early"]
+            ddope.cfg.hyperparameters.base_lr = p["s2_base_lr"]
+            ddope.cfg.hyperparameters.lr_decay = p["s2_lr_decay"]
             _configure_stage_losses(
                 ddope,
-                use_mask=stage2_use_mask,
-                use_depth=stage2_use_depth,
-                use_rgb=stage2_use_rgb,
-                weight_mask=stage2_weight_mask,
-                weight_depth=stage2_weight_depth,
-                weight_rgb=stage2_weight_rgb,
+                use_mask=p["s2_use_mask"],
+                use_depth=p["s2_use_depth"],
+                use_rgb=p["s2_use_rgb"],
+                weight_mask=p["s2_w_mask"],
+                weight_depth=p["s2_w_depth"],
+                weight_rgb=p["s2_w_rgb"],
             )
             ddope.run_optimization()
             stage2_scalar_loss = (
@@ -433,17 +767,9 @@ def estimate6d(req: Estimate6DRequest):
             overlay = ddope.render_img(batch_index=argmin, render_selection="rgb")
             overlay_b64 = _as_png_b64(overlay) if req.returnDebugImages else None
 
+            # 单 mesh 推理阶段不再落盘独立 overlay（避免形成 image+mesh 级路径）。
+            # 统一由 Node 层按 image 聚合所有 pose44 后调用 /diffdope/render-fit-overlay 生成单图。
             fit_overlay_rel_path: Optional[str] = None
-            if overlay is not None and req.projectId:
-                fit_dir = ROOT.parent / "uploads" / f"project_{int(req.projectId)}" / "pose-fit-overlays"
-                fit_dir.mkdir(parents=True, exist_ok=True)
-                img_id = int(req.imageId or 0)
-                mesh_id = int(req.meshId or 0)
-                # 固定命名：同一 imageId + meshId 重复推理时覆盖旧文件，避免目录膨胀
-                filename = f"fit_image_{img_id}_mesh_{mesh_id}.png"
-                abs_path = fit_dir / filename
-                cv2.imwrite(str(abs_path), overlay)
-                fit_overlay_rel_path = f"/uploads/project_{int(req.projectId)}/pose-fit-overlays/{filename}"
 
             debug_paths: Dict[str, Optional[str]] = {"mask": None, "overlay": None}
             if req.debug:
@@ -482,34 +808,35 @@ def estimate6d(req: Estimate6DRequest):
                     "stages": {
                         "stage1": {
                             "name": "stage1-refine",
-                            "iterations": stage1_iters,
-                            "useMask": stage1_use_mask,
-                            "useDepth": False,
-                            "useRgb": stage1_use_rgb,
+                            "iterations": p["s1_iters"],
+                            "useMask": p["s1_use_mask"],
+                            "useDepth": p["s1_use_depth"],
+                            "useRgb": p["s1_use_rgb"],
                         },
                         "stage2": {
                             "name": "stage2-refine",
-                            "iterations": stage2_iters,
-                            "useMask": stage2_use_mask,
-                            "useDepth": stage2_use_depth,
-                            "useRgb": stage2_use_rgb,
+                            "iterations": p["s2_iters"],
+                            "useMask": p["s2_use_mask"],
+                            "useDepth": p["s2_use_depth"],
+                            "useRgb": p["s2_use_rgb"],
                         },
                         "weights": {
-                            "stage1Mask": stage1_weight_mask if stage1_use_mask else None,
-                            "stage1Rgb": stage1_weight_rgb if stage1_use_rgb else None,
-                            "stage2Mask": stage2_weight_mask if stage2_use_mask else None,
-                            "stage2Depth": stage2_weight_depth if stage2_use_depth else None,
-                            "stage2Rgb": stage2_weight_rgb if stage2_use_rgb else None,
+                            "stage1Mask": p["s1_w_mask"] if p["s1_use_mask"] else None,
+                            "stage1Depth": None,
+                            "stage1Rgb": p["s1_w_rgb"] if p["s1_use_rgb"] else None,
+                            "stage2Mask": p["s2_w_mask"] if p["s2_use_mask"] else None,
+                            "stage2Depth": p["s2_w_depth"] if p["s2_use_depth"] else None,
+                            "stage2Rgb": p["s2_w_rgb"] if p["s2_use_rgb"] else None,
                         },
                         "learningRate": {
-                            "stage1BaseLr": stage1_base_lr,
-                            "stage1LrDecay": stage1_lr_decay,
-                            "stage2BaseLr": stage2_base_lr,
-                            "stage2LrDecay": stage2_lr_decay,
+                            "stage1BaseLr": p["s1_base_lr"],
+                            "stage1LrDecay": p["s1_lr_decay"],
+                            "stage2BaseLr": p["s2_base_lr"],
+                            "stage2LrDecay": p["s2_lr_decay"],
                         },
                         "earlyStopLoss": {
-                            "stage1": stage1_early_stop,
-                            "stage2": stage2_early_stop,
+                            "stage1": p["s1_early"],
+                            "stage2": p["s2_early"],
                         },
                         "qualityGate": {
                             "stage2ScalarLoss": stage2_scalar_loss,
@@ -530,3 +857,21 @@ def estimate6d(req: Estimate6DRequest):
                 "error": str(e),
                 "timingSec": round(float(time.time() - t0), 4),
             }
+        finally:
+            try:
+                _release_ddope_gpu(ddope)
+                ddope = None
+                scene = None
+                mesh = None
+                obj = None
+                seg = None
+                depth_img = None
+                m_batch = None
+                d_batch = None
+                overlay = None
+                mask = None
+                rgb = None
+                depth_cm = None
+                valid_depth = None
+            except Exception:
+                pass

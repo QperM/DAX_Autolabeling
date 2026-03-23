@@ -400,6 +400,8 @@ export const pose6dApi = {
       stage1WeightRgb?: number;
       stage2WeightMask?: number;
       stage2WeightDepth?: number;
+      /** 第二轮 RGB 权重；旧客户端可仍传 weightRgb，由 Node 层映射 */
+      stage2WeightRgb?: number;
       stage1EarlyStopLoss?: number | null;
       stage2EarlyStopLoss?: number | null;
       stage1BaseLr?: number;

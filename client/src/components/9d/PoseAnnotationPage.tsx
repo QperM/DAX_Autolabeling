@@ -17,19 +17,28 @@ import MeshLabelMappingModal from './MeshLabelMappingModal';
 import '../2d/AnnotationPage.css';
 
 const DEFAULT_DIFFDOPE_PARAMS = {
-  stage1Iters: 80,
-  stage2Iters: 120,
-  batchSize: 4,
+  batchSize: 8,
   maxAllowedFinalLoss: 100,
+  /** --- 第一轮（粗对齐）：仅 Mask + RGB，无 depth loss --- */
+  stage1Iters: 60,
+  stage1UseMask: true,
+  stage1UseRgb: true,
   stage1WeightMask: 1,
-  stage1EarlyStopLoss: 0,
-  stage2WeightMask: 0.5,
+  stage1WeightRgb: 0.7,
+  stage1EarlyStopLoss: 5,
+  stage1BaseLr: 20,
+  stage1LrDecay: 0.1,
+  /** --- 第二轮（精修）：Mask / Depth / RGB 可选；LR 与权重均独立于第一轮 --- */
+  stage2Iters: 320,
+  stage2UseMask: true,
+  stage2UseDepth: true,
+  stage2UseRgb: true,
+  stage2WeightMask: 1,
   stage2WeightDepth: 1,
-  useRgbLoss: false,
-  weightRgb: 0.7,
-  stage2EarlyStopLoss: 0,
-  stage2BaseLr: 20,
-  stage2LrDecay: 0.1,
+  stage2WeightRgb: 1,
+  stage2EarlyStopLoss: 8,
+  stage2BaseLr: 8,
+  stage2LrDecay: 0.05,
 };
 
 const PoseAnnotationPage: React.FC = () => {
@@ -536,26 +545,85 @@ const PoseAnnotationPage: React.FC = () => {
   useEffect(() => {
     if (!currentProject?.id) return;
     const key = `diffDopeParams:${currentProject.id}`;
+    let stored: Record<string, unknown> = {};
     try {
       const raw = localStorage.getItem(key);
-      if (!raw) return;
-      const js = JSON.parse(raw);
-      setDiffDopeParams((prev) => {
-        const merged = { ...prev, ...js } as any;
-        // 第二轮专属质量门槛：固定在 10~200 范围内。
-        const gate = Number(merged.maxAllowedFinalLoss);
-        merged.maxAllowedFinalLoss = Number.isFinite(gate) ? Math.min(200, Math.max(10, gate)) : DEFAULT_DIFFDOPE_PARAMS.maxAllowedFinalLoss;
-        const s2lr = Number(merged.stage2BaseLr);
-        merged.stage2BaseLr = Number.isFinite(s2lr) ? Math.min(200, Math.max(0.01, s2lr)) : DEFAULT_DIFFDOPE_PARAMS.stage2BaseLr;
-        const s2decay = Number(merged.stage2LrDecay);
-        merged.stage2LrDecay = Number.isFinite(s2decay) ? Math.min(1, Math.max(0.001, s2decay)) : DEFAULT_DIFFDOPE_PARAMS.stage2LrDecay;
-        merged.useRgbLoss = !!merged.useRgbLoss;
-        const wrgb = Number(merged.weightRgb);
-        merged.weightRgb = Number.isFinite(wrgb) ? Math.min(2, Math.max(0, wrgb)) : DEFAULT_DIFFDOPE_PARAMS.weightRgb;
-        return merged;
-      });
-    } catch (_) {}
+      if (raw) stored = JSON.parse(raw) as Record<string, unknown>;
+    } catch (_) {
+      stored = {};
+    }
+    // 始终以 DEFAULT 为底再叠保存项，避免：① 代码新增字段丢失；② 切换项目时仍沿用上一项目的 state
+    setDiffDopeParams(() => {
+      const merged = { ...DEFAULT_DIFFDOPE_PARAMS, ...stored } as any;
+      const gate = Number(merged.maxAllowedFinalLoss);
+      merged.maxAllowedFinalLoss = Number.isFinite(gate) ? Math.min(200, Math.max(10, gate)) : DEFAULT_DIFFDOPE_PARAMS.maxAllowedFinalLoss;
+      const s1lr = Number(merged.stage1BaseLr);
+      merged.stage1BaseLr = Number.isFinite(s1lr) ? Math.min(200, Math.max(0.01, s1lr)) : DEFAULT_DIFFDOPE_PARAMS.stage1BaseLr;
+      const s1decay = Number(merged.stage1LrDecay);
+      merged.stage1LrDecay = Number.isFinite(s1decay) ? Math.min(1, Math.max(0.001, s1decay)) : DEFAULT_DIFFDOPE_PARAMS.stage1LrDecay;
+      const s2lr = Number(merged.stage2BaseLr);
+      merged.stage2BaseLr = Number.isFinite(s2lr) ? Math.min(200, Math.max(0.01, s2lr)) : DEFAULT_DIFFDOPE_PARAMS.stage2BaseLr;
+      const s2decay = Number(merged.stage2LrDecay);
+      merged.stage2LrDecay = Number.isFinite(s2decay) ? Math.min(1, Math.max(0.001, s2decay)) : DEFAULT_DIFFDOPE_PARAMS.stage2LrDecay;
+      if (typeof stored.stage2UseRgb !== 'boolean' && stored.useRgbLoss === true) {
+        merged.stage2UseRgb = true;
+      }
+      delete merged.useRgbLoss;
+      merged.stage1UseMask = merged.stage1UseMask !== false;
+      merged.stage1UseRgb = merged.stage1UseRgb !== false;
+      merged.stage2UseMask = merged.stage2UseMask !== false;
+      merged.stage2UseDepth = merged.stage2UseDepth !== false;
+      merged.stage2UseRgb = !!merged.stage2UseRgb;
+      let w2rgb = Number(merged.stage2WeightRgb);
+      if (!Number.isFinite(w2rgb) && Number.isFinite(Number((merged as any).weightRgb))) {
+        w2rgb = Number((merged as any).weightRgb);
+      }
+      merged.stage2WeightRgb = Number.isFinite(w2rgb)
+        ? Math.min(2, Math.max(0, w2rgb))
+        : DEFAULT_DIFFDOPE_PARAMS.stage2WeightRgb;
+      delete (merged as any).weightRgb;
+      const w1m = Number(merged.stage1WeightMask);
+      merged.stage1WeightMask = Number.isFinite(w1m) ? Math.min(2, Math.max(0, w1m)) : DEFAULT_DIFFDOPE_PARAMS.stage1WeightMask;
+      const w1r = Number(merged.stage1WeightRgb);
+      merged.stage1WeightRgb = Number.isFinite(w1r) ? Math.min(2, Math.max(0, w1r)) : DEFAULT_DIFFDOPE_PARAMS.stage1WeightRgb;
+      const w2m = Number(merged.stage2WeightMask);
+      merged.stage2WeightMask = Number.isFinite(w2m) ? Math.min(2, Math.max(0, w2m)) : DEFAULT_DIFFDOPE_PARAMS.stage2WeightMask;
+      const w2d = Number(merged.stage2WeightDepth);
+      merged.stage2WeightDepth = Number.isFinite(w2d) ? Math.min(2, Math.max(0, w2d)) : DEFAULT_DIFFDOPE_PARAMS.stage2WeightDepth;
+      if ([merged.stage1UseMask, merged.stage1UseRgb].filter(Boolean).length === 0) {
+        merged.stage1UseMask = true;
+        merged.stage1UseRgb = true;
+      }
+      if ([merged.stage2UseMask, merged.stage2UseDepth, merged.stage2UseRgb].filter(Boolean).length === 0) {
+        merged.stage2UseMask = true;
+        merged.stage2UseDepth = true;
+      }
+      return merged;
+    });
   }, [currentProject?.id]);
+
+  const setStage1LossFlag = (key: 'stage1UseMask' | 'stage1UseRgb', value: boolean) => {
+    setDiffDopeParams((p) => {
+      const next = { ...p, [key]: value };
+      if (!next.stage1UseMask && !next.stage1UseRgb) {
+        alert('第一轮至少需要启用 Mask 与 RGB 中的一项');
+        return p;
+      }
+      return next;
+    });
+  };
+
+  const setStage2LossFlag = (key: 'stage2UseMask' | 'stage2UseDepth' | 'stage2UseRgb', value: boolean) => {
+    setDiffDopeParams((p) => {
+      const next = { ...p, [key]: value };
+      const cnt = [next.stage2UseMask, next.stage2UseDepth, next.stage2UseRgb].filter(Boolean).length;
+      if (cnt === 0) {
+        alert('第二轮至少需要启用 Mask、Depth、RGB 中的一项');
+        return p;
+      }
+      return next;
+    });
+  };
 
   return (
     <div className="annotation-page">
@@ -1038,7 +1106,6 @@ const PoseAnnotationPage: React.FC = () => {
         <div className="ai-prompt-modal-backdrop" onClick={() => setShowDiffDopeParamModal(false)}>
           <div className="ai-prompt-modal" style={{ width: 'min(720px, 94vw)' }} onClick={(e) => e.stopPropagation()}>
             <h3 className="ai-prompt-modal-title">调整拟合参数</h3>
-            <p className="ai-prompt-modal-desc">这些参数用于控制优化过程的速度、稳定性与结果质量。</p>
             <div className="ai-prompt-modal-body">
               <div className="model-param-layout">
                 <div className="model-param-group model-param-group-common">
@@ -1048,39 +1115,78 @@ const PoseAnnotationPage: React.FC = () => {
                     <input type="range" min={1} max={16} step={1} value={diffDopeParams.batchSize} onChange={(e) => setDiffDopeParams((p) => ({ ...p, batchSize: Number(e.target.value) }))} />
                     <div className="model-param-hint">并行候选数量。数值越大，搜索覆盖更广，但资源开销也会增加。</div>
                   </div>
-                  <div className="model-param-row">
-                    <div className="model-param-label"><span>启用 RGB 纹理辅助</span><span className="model-param-value">{diffDopeParams.useRgbLoss ? '开启' : '关闭'}</span></div>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', color: '#374151' }}>
-                      <input
-                        type="checkbox"
-                        checked={!!diffDopeParams.useRgbLoss}
-                        onChange={(e) => setDiffDopeParams((p) => ({ ...p, useRgbLoss: e.target.checked }))}
-                      />
-                      使用纹理/RGB一致性作为额外约束（第二轮生效）
-                    </label>
-                    <div className="model-param-hint">开启后将引入 RGB 约束；关闭时仅使用 mask 与 depth。</div>
-                  </div>
-                  {diffDopeParams.useRgbLoss && (
-                    <div className="model-param-row">
-                      <div className="model-param-label"><span>RGB 权重</span><span className="model-param-value">{diffDopeParams.weightRgb.toFixed(2)}</span></div>
-                      <input type="range" min={0} max={2} step={0.05} value={diffDopeParams.weightRgb} onChange={(e) => setDiffDopeParams((p) => ({ ...p, weightRgb: Number(e.target.value) }))} />
-                      <div className="model-param-hint">RGB 约束强度。提高后更强调纹理一致性。</div>
-                    </div>
-                  )}
                 </div>
 
                 <div className="model-param-columns">
                   <div className="model-param-group">
                     <div className="model-param-group-title">第一轮（粗定位）</div>
                     <div className="model-param-row">
+                      <div className="model-param-label">
+                        <span>损失项（至少选一项）</span>
+                        <span className="model-param-value">
+                          {[diffDopeParams.stage1UseMask && 'Mask', diffDopeParams.stage1UseRgb && 'RGB'].filter(Boolean).join(' + ') || '-'}
+                        </span>
+                      </div>
+                      <div className="model-param-toggle-row">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={!!diffDopeParams.stage1UseMask}
+                            onChange={(e) => setStage1LossFlag('stage1UseMask', e.target.checked)}
+                          />
+                          Mask
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={!!diffDopeParams.stage1UseRgb}
+                            onChange={(e) => setStage1LossFlag('stage1UseRgb', e.target.checked)}
+                          />
+                          RGB
+                        </label>
+                      </div>
+                      <div className="model-param-hint">第一轮仅支持 Mask 与 RGB（深度约束在第二轮）。仅对已勾选项可调权重。</div>
+                    </div>
+                    <div className={`model-param-row${!diffDopeParams.stage1UseMask ? ' is-disabled' : ''}`}>
+                      <div className="model-param-label"><span>mask 权重</span><span className="model-param-value">{diffDopeParams.stage1WeightMask.toFixed(2)}</span></div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={2}
+                        step={0.05}
+                        value={diffDopeParams.stage1WeightMask}
+                        disabled={!diffDopeParams.stage1UseMask}
+                        onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage1WeightMask: Number(e.target.value) }))}
+                      />
+                      <div className="model-param-hint">轮廓约束强度。提高后会更强调边界一致性，过高可能引入波动。</div>
+                    </div>
+                    <div className={`model-param-row${!diffDopeParams.stage1UseRgb ? ' is-disabled' : ''}`}>
+                      <div className="model-param-label"><span>RGB 权重</span><span className="model-param-value">{diffDopeParams.stage1WeightRgb.toFixed(2)}</span></div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={2}
+                        step={0.05}
+                        value={diffDopeParams.stage1WeightRgb}
+                        disabled={!diffDopeParams.stage1UseRgb}
+                        onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage1WeightRgb: Number(e.target.value) }))}
+                      />
+                      <div className="model-param-hint">第一轮 RGB 纹理一致性约束强度。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>第一轮学习率基值（base_lr）</span><span className="model-param-value">{diffDopeParams.stage1BaseLr.toFixed(2)}</span></div>
+                      <input type="range" min={0.01} max={60} step={0.01} value={diffDopeParams.stage1BaseLr} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage1BaseLr: Number(e.target.value) }))} />
+                      <div className="model-param-hint">第一轮优化步长主参数。提高后更新更快，但也更容易震荡。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>第一轮学习率衰减（lr_decay）</span><span className="model-param-value">{diffDopeParams.stage1LrDecay.toFixed(3)}</span></div>
+                      <input type="range" min={0.01} max={1} step={0.01} value={diffDopeParams.stage1LrDecay} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage1LrDecay: Number(e.target.value) }))} />
+                      <div className="model-param-hint">第一轮学习率衰减强度。数值越小衰减越快，优化更稳但后期更新更慢。</div>
+                    </div>
+                    <div className="model-param-row">
                       <div className="model-param-label"><span>迭代次数</span><span className="model-param-value">{diffDopeParams.stage1Iters}</span></div>
                       <input type="range" min={20} max={240} step={1} value={diffDopeParams.stage1Iters} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage1Iters: Number(e.target.value) }))} />
                       <div className="model-param-hint">当前阶段的优化步数。数值越大通常拟合更充分，但耗时会增加。</div>
-                    </div>
-                    <div className="model-param-row">
-                      <div className="model-param-label"><span>mask 权重</span><span className="model-param-value">{diffDopeParams.stage1WeightMask.toFixed(2)}</span></div>
-                      <input type="range" min={0} max={2} step={0.05} value={diffDopeParams.stage1WeightMask} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage1WeightMask: Number(e.target.value) }))} />
-                      <div className="model-param-hint">轮廓约束强度。提高后会更强调边界一致性，过高可能引入波动。</div>
                     </div>
                     <div className="model-param-row">
                       <div className="model-param-label"><span>早停阈值（loss）</span><span className="model-param-value">{diffDopeParams.stage1EarlyStopLoss > 0 ? diffDopeParams.stage1EarlyStopLoss.toFixed(2) : '关闭'}</span></div>
@@ -1092,24 +1198,80 @@ const PoseAnnotationPage: React.FC = () => {
                   <div className="model-param-group">
                     <div className="model-param-group-title">第二轮（精修）</div>
                     <div className="model-param-row">
-                      <div className="model-param-label"><span>迭代次数</span><span className="model-param-value">{diffDopeParams.stage2Iters}</span></div>
-                      <input type="range" min={40} max={320} step={1} value={diffDopeParams.stage2Iters} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2Iters: Number(e.target.value) }))} />
-                      <div className="model-param-hint">当前阶段的优化步数。数值越大通常拟合更充分，但耗时会增加。</div>
+                      <div className="model-param-label">
+                        <span>损失项（至少选一项）</span>
+                        <span className="model-param-value">
+                          {[diffDopeParams.stage2UseMask && 'Mask', diffDopeParams.stage2UseDepth && 'Depth', diffDopeParams.stage2UseRgb && 'RGB']
+                            .filter(Boolean)
+                            .join(' + ') || '-'}
+                        </span>
+                      </div>
+                      <div className="model-param-toggle-row">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={!!diffDopeParams.stage2UseMask}
+                            onChange={(e) => setStage2LossFlag('stage2UseMask', e.target.checked)}
+                          />
+                          Mask
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={!!diffDopeParams.stage2UseDepth}
+                            onChange={(e) => setStage2LossFlag('stage2UseDepth', e.target.checked)}
+                          />
+                          Depth
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={!!diffDopeParams.stage2UseRgb}
+                            onChange={(e) => setStage2LossFlag('stage2UseRgb', e.target.checked)}
+                          />
+                          RGB
+                        </label>
+                      </div>
+                      <div className="model-param-hint">仅对已勾选项调节下方对应权重；未勾选时滑条为灰色不可用。</div>
                     </div>
-                    <div className="model-param-row">
+                    <div className={`model-param-row${!diffDopeParams.stage2UseMask ? ' is-disabled' : ''}`}>
                       <div className="model-param-label"><span>mask 权重</span><span className="model-param-value">{diffDopeParams.stage2WeightMask.toFixed(2)}</span></div>
-                      <input type="range" min={0} max={2} step={0.05} value={diffDopeParams.stage2WeightMask} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2WeightMask: Number(e.target.value) }))} />
+                      <input
+                        type="range"
+                        min={0}
+                        max={2}
+                        step={0.05}
+                        value={diffDopeParams.stage2WeightMask}
+                        disabled={!diffDopeParams.stage2UseMask}
+                        onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2WeightMask: Number(e.target.value) }))}
+                      />
                       <div className="model-param-hint">轮廓约束强度。用于平衡边界对齐与优化稳定性。</div>
                     </div>
-                    <div className="model-param-row">
+                    <div className={`model-param-row${!diffDopeParams.stage2UseDepth ? ' is-disabled' : ''}`}>
                       <div className="model-param-label"><span>depth 权重</span><span className="model-param-value">{diffDopeParams.stage2WeightDepth.toFixed(2)}</span></div>
-                      <input type="range" min={0} max={2} step={0.05} value={diffDopeParams.stage2WeightDepth} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2WeightDepth: Number(e.target.value) }))} />
+                      <input
+                        type="range"
+                        min={0}
+                        max={2}
+                        step={0.05}
+                        value={diffDopeParams.stage2WeightDepth}
+                        disabled={!diffDopeParams.stage2UseDepth}
+                        onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2WeightDepth: Number(e.target.value) }))}
+                      />
                       <div className="model-param-hint">深度约束强度。用于平衡深度一致性与鲁棒性。</div>
                     </div>
-                    <div className="model-param-row">
-                      <div className="model-param-label"><span>早停阈值（loss）</span><span className="model-param-value">{diffDopeParams.stage2EarlyStopLoss > 0 ? diffDopeParams.stage2EarlyStopLoss.toFixed(2) : '关闭'}</span></div>
-                      <input type="range" min={0} max={10} step={0.05} value={diffDopeParams.stage2EarlyStopLoss} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2EarlyStopLoss: Number(e.target.value) }))} />
-                      <div className="model-param-hint">当前阶段 loss 低于该值时提前停止，用于节省计算时间。0 表示关闭。</div>
+                    <div className={`model-param-row${!diffDopeParams.stage2UseRgb ? ' is-disabled' : ''}`}>
+                      <div className="model-param-label"><span>RGB 权重（第二轮）</span><span className="model-param-value">{diffDopeParams.stage2WeightRgb.toFixed(2)}</span></div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={2}
+                        step={0.05}
+                        value={diffDopeParams.stage2WeightRgb}
+                        disabled={!diffDopeParams.stage2UseRgb}
+                        onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2WeightRgb: Number(e.target.value) }))}
+                      />
+                      <div className="model-param-hint">第二轮 RGB 纹理一致性强度（请求字段 stage2WeightRgb，与后端 DIFFDOPE_DEFAULTS 对齐）。</div>
                     </div>
                     <div className="model-param-row">
                       <div className="model-param-label"><span>第二轮学习率基值（base_lr）</span><span className="model-param-value">{diffDopeParams.stage2BaseLr.toFixed(2)}</span></div>
@@ -1120,6 +1282,16 @@ const PoseAnnotationPage: React.FC = () => {
                       <div className="model-param-label"><span>第二轮学习率衰减（lr_decay）</span><span className="model-param-value">{diffDopeParams.stage2LrDecay.toFixed(3)}</span></div>
                       <input type="range" min={0.01} max={1} step={0.01} value={diffDopeParams.stage2LrDecay} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2LrDecay: Number(e.target.value) }))} />
                       <div className="model-param-hint">学习率衰减强度。数值越小衰减越快，优化更稳但后期更新更慢。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>迭代次数</span><span className="model-param-value">{diffDopeParams.stage2Iters}</span></div>
+                      <input type="range" min={40} max={320} step={1} value={diffDopeParams.stage2Iters} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2Iters: Number(e.target.value) }))} />
+                      <div className="model-param-hint">当前阶段的优化步数。数值越大通常拟合更充分，但耗时会增加。</div>
+                    </div>
+                    <div className="model-param-row">
+                      <div className="model-param-label"><span>早停阈值（loss）</span><span className="model-param-value">{diffDopeParams.stage2EarlyStopLoss > 0 ? diffDopeParams.stage2EarlyStopLoss.toFixed(2) : '关闭'}</span></div>
+                      <input type="range" min={0} max={10} step={0.05} value={diffDopeParams.stage2EarlyStopLoss} onChange={(e) => setDiffDopeParams((p) => ({ ...p, stage2EarlyStopLoss: Number(e.target.value) }))} />
+                      <div className="model-param-hint">当前阶段 loss 低于该值时提前停止，用于节省计算时间。0 表示关闭。</div>
                     </div>
                     <div className="model-param-row">
                       <div className="model-param-label"><span>第二轮最大允许 loss</span><span className="model-param-value">{diffDopeParams.maxAllowedFinalLoss.toFixed(0)}</span></div>

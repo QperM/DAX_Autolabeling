@@ -2,6 +2,14 @@
 
 ## 开发进展
 
+### V2.7 最新进展（2026年3月23日）
+- [x] **仓库卫生与文档**：
+  - 更新根目录 `.gitignore`：Python `__pycache__`/venv、pose-service `debug_outputs`、`diff-dope` 本地 `outputs`/`multirun`、`tempfile/` 等，减少误提交
+  - `README.md` 升至 **V2.7**，补充同图多 Mesh **合成拟合图层**（`render-fit-overlay` + `fit_image_*_composite.png`）说明
+- [x] **pose-service（`app.py`）**：
+  - 合成回渲与 `estimate6d` 共用内参/场景配置辅助函数；`render_images.flip_result` 以 `diffdope.yaml` 为准，避免与磁盘 RGB 行序不一致
+  - 仅渲染路径保留唯一 OpenCV→GL 位姿转换 `_cv_pose44_to_gl_rt`，与 Node 存库的 `pose44` 约定一致
+
 ### V2.3 最新进展（2026年3月22日）
 - [x] **成功接入 Diff-DOPE（单 Mesh 6D 姿态）**：
   - Pose 页面新增 `AI 6D姿态标注` 入口，支持对当前图片执行 6D 姿态推理

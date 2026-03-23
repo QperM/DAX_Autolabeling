@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
@@ -54,6 +54,20 @@ function parseNpy(buf: ArrayBuffer): { shape: number[]; dtype: string; data: Flo
 }
 
 const identity16 = () => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+const EPS = 1e-6;
+const matrixEquals = (a?: number[] | null, b?: number[] | null) => {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== 16 || b.length !== 16) return false;
+  for (let i = 0; i < 16; i++) {
+    if (Math.abs(Number(a[i]) - Number(b[i])) > EPS) return false;
+  }
+  return true;
+};
+
+type TransformHistoryEntry = {
+  meshId: number;
+  before: number[];
+  after: number[];
+};
 
 const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, saveRequestId = 0 }) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -63,7 +77,9 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
   const [mode, setMode] = useState<'translate' | 'rotate'>('translate');
   const [renderTextured, setRenderTextured] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const [activeMeshId, setActiveMeshId] = useState<number | null>(null);
+  const [sceneRefreshId, setSceneRefreshId] = useState(0);
   const [matrixPos, setMatrixPos] = useState<{ x: number | null; y: number | null }>({ x: null, y: null });
   const [showMeshPicker, setShowMeshPicker] = useState(false);
   const [meshList, setMeshList] = useState<any[]>([]);
@@ -71,6 +87,10 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
   const [manualMeshIds, setManualMeshIds] = useState<number[]>([]);
   const transformRef = useRef<TransformControls | null>(null);
   const meshObjRef = useRef<THREE.Object3D | null>(null);
+  const meshByIdRef = useRef<Map<number, THREE.Object3D>>(new Map());
+  const undoStackRef = useRef<TransformHistoryEntry[]>([]);
+  const redoStackRef = useRef<TransformHistoryEntry[]>([]);
+  const dragStartMatrixRef = useRef<number[] | null>(null);
   const materialEntriesRef = useRef<Array<{ mesh: THREE.Mesh; textured: THREE.Material | THREE.Material[]; wire: THREE.Material }>>([]);
   const dragStateRef = useRef<{ dragging: boolean; offsetX: number; offsetY: number }>({ dragging: false, offsetX: 0, offsetY: 0 });
 
@@ -81,12 +101,63 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
     return JSON.stringify(r);
   }, [matrixValues]);
 
+  const undoLastTransform = useCallback(() => {
+    const hist = undoStackRef.current;
+    if (!hist.length) {
+      setStatus('没有可回退的操作');
+      return;
+    }
+    const last = hist.pop()!;
+    const obj = meshByIdRef.current.get(last.meshId) || null;
+    if (!obj) {
+      setStatus(`回退失败：场景中找不到 Mesh #${last.meshId}`);
+      return;
+    }
+    const m = new THREE.Matrix4();
+    m.fromArray(last.before as any);
+    obj.matrix.copy(m);
+    obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
+    obj.updateMatrix();
+    obj.updateMatrixWorld(true);
+    meshObjRef.current = obj;
+    setActiveMeshId(last.meshId);
+    setMatrixValues(obj.matrix.toArray());
+    if (transformRef.current) transformRef.current.attach(obj);
+    redoStackRef.current.push(last);
+    setStatus(`已回退 Mesh #${last.meshId} 上一步操作（可重做 ${redoStackRef.current.length} 步）`);
+  }, []);
+
+  const redoLastTransform = useCallback(() => {
+    const hist = redoStackRef.current;
+    if (!hist.length) {
+      setStatus('没有可重做的操作');
+      return;
+    }
+    const last = hist.pop()!;
+    const obj = meshByIdRef.current.get(last.meshId) || null;
+    if (!obj) {
+      setStatus(`重做失败：场景中找不到 Mesh #${last.meshId}`);
+      return;
+    }
+    const m = new THREE.Matrix4();
+    m.fromArray(last.after as any);
+    obj.matrix.copy(m);
+    obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
+    obj.updateMatrix();
+    obj.updateMatrixWorld(true);
+    meshObjRef.current = obj;
+    setActiveMeshId(last.meshId);
+    setMatrixValues(obj.matrix.toArray());
+    if (transformRef.current) transformRef.current.attach(obj);
+    undoStackRef.current.push(last);
+    setStatus(`已重做 Mesh #${last.meshId} 上一步操作（可回退 ${undoStackRef.current.length} 步）`);
+  }, []);
+
   useEffect(() => {
     const entries = materialEntriesRef.current;
     if (!entries || entries.length === 0) return;
     for (const e of entries) {
       e.mesh.material = renderTextured ? e.textured : e.wire;
-      e.mesh.needsUpdate = true;
     }
   }, [renderTextured, visible]);
 
@@ -300,6 +371,9 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
           renderLoop();
           return;
         }
+        meshByIdRef.current.clear();
+        undoStackRef.current = [];
+        redoStackRef.current = [];
         const allMaterialEntries: Array<{ mesh: THREE.Mesh; textured: THREE.Material | THREE.Material[]; wire: THREE.Material }> = [];
         let lastObj: THREE.Object3D | null = null;
         let lastMeshSize = new THREE.Vector3(0, 0, 0);
@@ -309,7 +383,7 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
           const selectedPose =
             poses.find((p: any) => Number(p?.meshId ?? p?.mesh_id ?? p?.mesh?.id) === Number(meshId)) || null;
           const mesh = (meshes || []).find((m: any) => Number(m?.id) === Number(meshId));
-          const meshUrlRaw = mesh?.url || mesh?.filePath || mesh?.file_path || null;
+          const meshUrlRaw = mesh?.url || (mesh as any)?.filePath || (mesh as any)?.file_path || null;
           if (!meshUrlRaw) continue;
 
           const loader = new OBJLoader();
@@ -357,6 +431,7 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
           obj.updateMatrix();
           obj.updateMatrixWorld(true);
           scene.add(obj);
+          meshByIdRef.current.set(Number(meshId), obj);
           selectableRoots.push(obj);
 
           const bb = new THREE.Box3().setFromObject(obj);
@@ -383,6 +458,24 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
         transform.attach(lastObj);
         transform.addEventListener('dragging-changed', (ev: any) => {
           if (orbit) orbit.enabled = !ev.value;
+          // 仅在一次拖拽结束时记录历史，避免 change 事件高频写入。
+          if (ev?.value) {
+            const objNow = transform?.object;
+            dragStartMatrixRef.current = objNow ? (objNow.matrix.toArray() as number[]) : null;
+          } else {
+            const objNow = transform?.object;
+            const mid = Number((objNow as any)?.userData?.meshId ?? 0);
+            const before = dragStartMatrixRef.current;
+            const after = objNow ? (objNow.matrix.toArray() as number[]) : null;
+            if (Number.isFinite(mid) && mid > 0 && before && after && !matrixEquals(before, after)) {
+              const stack = undoStackRef.current;
+              stack.push({ meshId: mid, before: [...before], after: [...after] });
+              if (stack.length > 100) stack.shift();
+              // 产生新操作后，重做链失效
+              redoStackRef.current = [];
+            }
+            dragStartMatrixRef.current = null;
+          }
         });
         transform.addEventListener('change', () => {
           if (transform?.object?.matrixAutoUpdate) {
@@ -396,11 +489,14 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
         setMatrixValues(lastObj.matrix.toArray());
         onPointerDown = (ev: PointerEvent) => {
           if (!renderer?.domElement || !transform) return;
+          // 正在使用 TransformControls（拖拽或悬停到轴）时，不进行 mesh 重选，避免误切对象。
+          if ((transform as any)?.dragging || (transform as any)?.axis) return;
+          if (ev.button !== 0) return;
           const rect = renderer.domElement.getBoundingClientRect();
           const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
           const y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
           const raycaster = new THREE.Raycaster();
-          raycaster.setFromCamera({ x, y }, camera);
+          raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
           const hits = raycaster.intersectObjects(pickTargets, true);
           if (!hits || hits.length === 0) return;
           const hitObj = hits[0].object as THREE.Object3D;
@@ -440,6 +536,17 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
 
     const onKey = (ev: KeyboardEvent) => {
       const k = String(ev.key || '').toLowerCase();
+      if ((ev.ctrlKey || ev.metaKey) && k === 'z') {
+        ev.preventDefault();
+        if (ev.shiftKey) redoLastTransform();
+        else undoLastTransform();
+        return;
+      }
+      if ((ev.ctrlKey || ev.metaKey) && k === 'y') {
+        ev.preventDefault();
+        redoLastTransform();
+        return;
+      }
       if (!transform) return;
       if (k === 'w') {
         transform.setMode('translate');
@@ -447,6 +554,37 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
       } else if (k === 'e' || k === 'r') {
         transform.setMode('rotate');
         setMode('rotate');
+      }
+      // 删除：从场景移除 Mesh，并同步删除后端 pose9d_annotations
+      // 说明：mesh 的选择通过 meshObjRef.current 完成，所以这里优先读取其 userData.meshId。
+      if (!deleteBusy && (k === 'delete' || k === 'backspace') && !ev.repeat) {
+        const target = ev.target as HTMLElement | null;
+        const tag = String(target?.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || (target as any)?.isContentEditable) return;
+
+        const mid = Number((meshObjRef.current as any)?.userData?.meshId ?? 0);
+        if (Number.isFinite(mid) && mid > 0 && imageId) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          (async () => {
+            try {
+              setDeleteBusy(true);
+              const ok = window.confirm(`确定删除当前 Mesh 的 9D 标注（meshId=${mid}）并从场景移除？`);
+              if (!ok) return;
+              await pose9dApi.deletePose9D(imageId, mid);
+              setManualMeshIds((prev) => (prev || []).filter((id) => Number(id) !== mid));
+              setActiveMeshId(null);
+              setMatrixValues(identity16());
+              setStatus(`已删除 Mesh #${mid} 的 9D 标注`);
+              setSceneRefreshId((v) => v + 1);
+            } catch (e: any) {
+              console.error('[PosePointCloudLayer] 删除失败:', e);
+              setStatus(e?.response?.data?.message || e?.message || '删除失败');
+            } finally {
+              setDeleteBusy(false);
+            }
+          })();
+        }
       }
       if (meshObj) setMatrixValues(meshObj.matrix.toArray());
     };
@@ -467,6 +605,10 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
       transform?.dispose();
       transformRef.current = null;
       meshObjRef.current = null;
+      meshByIdRef.current.clear();
+      undoStackRef.current = [];
+      redoStackRef.current = [];
+      dragStartMatrixRef.current = null;
       materialEntriesRef.current = [];
       orbit?.dispose();
       renderer.dispose();
@@ -475,7 +617,7 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
       } catch (_) {}
       if (cancelled) return;
     };
-  }, [visible, projectId, imageId, manualMeshIds]);
+  }, [visible, projectId, imageId, manualMeshIds, sceneRefreshId, deleteBusy, undoLastTransform, redoLastTransform]);
 
   const saveCurrentPose44 = async () => {
     if (!imageId || !activeMeshId || saveBusy) return;
@@ -539,11 +681,30 @@ const PosePointCloudLayer: React.FC<Props> = ({ visible, projectId, imageId, sav
         </button>
         <div className="pose-pointcloud-meta">
           模式：{mode === 'translate' ? '平移(W)' : '旋转(E/R)'} ｜ 输出：Matrix4
+          {' '}｜ 回退：Ctrl+Z ｜ 重做：Ctrl+Y / Ctrl+Shift+Z
         </div>
         <label style={{ marginLeft: '0.25rem', fontSize: '0.8rem', color: '#e5e7eb', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
           <input type="checkbox" checked={renderTextured} onChange={(e) => setRenderTextured(e.target.checked)} />
           真实贴图
         </label>
+        <div style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+          <button
+            type="button"
+            className="pose-pointcloud-title pose-pointcloud-title-btn"
+            onClick={undoLastTransform}
+            title="回退上一步变换（Ctrl+Z）"
+          >
+            回退
+          </button>
+          <button
+            type="button"
+            className="pose-pointcloud-title pose-pointcloud-title-btn"
+            onClick={redoLastTransform}
+            title="重做上一步回退（Ctrl+Y / Ctrl+Shift+Z）"
+          >
+            重做
+          </button>
+        </div>
       </div>
       <div className="pose-pointcloud-status">{status}</div>
       {showMeshPicker && (

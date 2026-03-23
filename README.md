@@ -1,7 +1,7 @@
 # 智能图像标注系统
 
-**版本：V2.6**  
-**最后更新：2026年3月22日**
+**版本：V2.7**  
+**最后更新：2026年3月23日**
 
 ## 项目概述
 
@@ -58,7 +58,7 @@
   - 两阶段参数可独立调节（第一轮粗定位、第二轮精修），并按项目保存
   - 第二轮支持质量门槛（超阈值判定失败，不写入结果/拟合图）
   - 第二轮支持学习率调节（`base_lr` / `lr_decay`）与可选 RGB 纹理约束
-  - 拟合结果图采用固定命名覆盖写入（同 image+mesh 不产生重复文件）
+  - **同图多 Mesh 拟合合成图**：按图片聚合各 Mesh 的 `pose44`，由 Node 调用 pose-service `POST /diffdope/render-fit-overlay` 生成单张 `fit_image_{imageId}_composite.png`（与点云/OpenCV 位姿一致；具体约定见 `server/pose-service/app.py` 与 `diffdope.yaml` 的 `render_images`）
   - Pose 预览区支持左上角切换 `原图 / 拟合图` 进行结果比对
 - ✅ **深度数据管理**：支持 PNG/TIFF/NPY 格式深度数据上传和管理
 - ✅ **点云预览（PoseManualAnnotation）**：
@@ -181,7 +181,7 @@ DAX_Autolabeling/
 │   │   ├── requirements.txt # Python 依赖
 │   │   ├── README.md      # SAM2 服务说明
 │   │   └── setup.bat      # SAM2 服务启动/安装脚本
-│   ├── pose-service/      # 6D / Diff-DOPE 等 Python 服务（FastAPI，`app.py` 等；子模块含 diff-dope）
+│   ├── pose-service/      # Diff-DOPE 6D（FastAPI `app.py`：`/diffdope/estimate6d`、`/diffdope/render-fit-overlay` 等；子目录 `diff-dope/` 为上游库与配置）
 │   └── nodemon.json       # 开发模式热重载配置
 ├── database/              # 数据库文件目录
 │   └── annotations.db     # SQLite数据库文件
@@ -397,6 +397,7 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 
 ## 更新记录
 
+- **V2.7**：`.gitignore` 对齐 Python/pose-service 产物与本地目录；README/UPDATES 补充 **合成拟合图层** 与 pose-service 接口说明。
 - **V2.6**：文档与仓库目录对齐（`components/2d|9d|common`）；补充 Pose 页 **Mesh Label 对照表**、ZIP 导出与 Mesh 列表加载等行为说明。
 
 详细的版本/功能更新记录见 `UPDATES.md`。

@@ -1,4 +1,4 @@
-﻿import React, { useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import { meshApi } from "../../services/api";
 
 type MeshRecord = {
@@ -21,6 +21,7 @@ const MeshUploader: React.FC<Props> = ({ projectId, onUploadComplete }) => {
   const meshInputRef = useRef<HTMLInputElement | null>(null);
   const [meshUploading, setMeshUploading] = useState(false);
   const [meshProgress, setMeshProgress] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState(false);
 
   const ensureProject = () => {
     if (!projectId) {
@@ -54,6 +55,7 @@ const MeshUploader: React.FC<Props> = ({ projectId, onUploadComplete }) => {
     } finally {
       setMeshUploading(false);
       setMeshProgress(null);
+      setDragOver(false);
       if (meshInputRef.current) meshInputRef.current.value = "";
     }
   };
@@ -66,7 +68,53 @@ const MeshUploader: React.FC<Props> = ({ projectId, onUploadComplete }) => {
       <div
         className={`dropzone ${disabled ? "disabled-dropzone" : ""}`}
         onClick={disabled || meshUploading ? undefined : handleSelectMesh}
-        style={{ marginTop: 0, borderColor: "#f97316", height: "100%" }}
+        onDragEnter={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (disabled || meshUploading) return;
+          setDragOver(true);
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (disabled || meshUploading) return;
+          setDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setDragOver(false);
+        }}
+        onDrop={async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (disabled || meshUploading) return;
+          const files = Array.from(e.dataTransfer.files || []);
+          if (!files.length || !projectId) return;
+          setMeshUploading(true);
+          setMeshProgress(0);
+          try {
+            const resp = await meshApi.uploadMeshes(files, projectId, (p) => setMeshProgress(p));
+            if (!resp?.success) {
+              alert("Mesh 上传失败，请稍后重试。");
+              return;
+            }
+            onUploadComplete?.(resp.files || []);
+          } catch (err: any) {
+            console.error("[MeshUploader] uploadMeshes failed:", err);
+            alert(err?.message || "Mesh 上传失败，请稍后重试。");
+          } finally {
+            setMeshUploading(false);
+            setMeshProgress(null);
+            setDragOver(false);
+          }
+        }}
+        style={{
+          marginTop: 0,
+          borderColor: dragOver ? "#ea580c" : "#f97316",
+          background: dragOver ? "rgba(249,115,22,0.08)" : undefined,
+          height: "100%",
+        }}
       >
         <input
           ref={meshInputRef}

@@ -1,5 +1,7 @@
 const express = require('express');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 
 function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl }) {
   const router = express.Router();
@@ -63,6 +65,104 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
     out[1][3] = C[1] * M[1][3];
     out[2][3] = C[2] * M[2][3];
     return out;
+  };
+
+  const regenerateCompositeFitOverlay = async ({ imageId, projectId, imageRow, debug = false }) => {
+    try {
+      if (!imageRow?.file_path) return null;
+      const depthRows = await new Promise((resolve, reject) => {
+        db.getDepthMapsByImageId(projectId, imageId, (err, rows) => (err ? reject(err) : resolve(rows || [])));
+      });
+      const depthRawRow =
+        (depthRows || []).find((d) => d?.modality === 'depth_raw' || String(d?.original_name || d?.filename || '').toLowerCase().endsWith('.npy')) ||
+        null;
+      const depthPngRow =
+        (depthRows || []).find((d) => d?.modality === 'depth_png' || String(d?.original_name || d?.filename || '').toLowerCase().endsWith('.png')) ||
+        null;
+      const depthRow = depthRawRow || depthPngRow;
+      let intrRow =
+        (depthRows || []).find((d) => d?.modality === 'intrinsics' || /^intrinsics_/i.test(String(d?.original_name || d?.filename || ''))) ||
+        null;
+      if (!intrRow?.file_path) {
+        const cameras = await new Promise((resolve) => {
+          db.listCamerasByProjectId(projectId, (cErr, cRows) => {
+            if (cErr) return resolve([]);
+            return resolve(Array.isArray(cRows) ? cRows : []);
+          });
+        });
+        intrRow = (cameras || []).find((c) => c?.role === (depthRow?.role || 'head') && c?.intrinsics_file_path)
+          || (cameras || []).find((c) => c?.intrinsics_file_path)
+          || null;
+        if (intrRow?.intrinsics_file_path && !intrRow?.file_path) {
+          intrRow = { ...intrRow, file_path: intrRow.intrinsics_file_path };
+        }
+      }
+      if (!intrRow?.file_path) {
+        // eslint-disable-next-line no-console
+        console.warn('[pose9d] regenerate composite fit overlay skipped: intrinsics missing');
+        return null;
+      }
+
+      const poses = await new Promise((resolve, reject) => {
+        db.listPose9DByImageId(imageId, (err, rows) => (err ? reject(err) : resolve(rows || [])));
+      });
+      const valid = (poses || []).filter((p) => Array.isArray(p?.diffdope?.pose44) && Number(p?.mesh_id ?? p?.meshId) > 0);
+      if (!valid.length) return null;
+
+      const objects = [];
+      for (const p of valid) {
+        const meshId = Number(p?.mesh_id ?? p?.meshId);
+        // eslint-disable-next-line no-await-in-loop
+        const meshRow = await new Promise((resolve, reject) => {
+          db.getMeshById(meshId, (err, row) => (err ? reject(err) : resolve(row || null)));
+        });
+        if (!meshRow?.file_path) continue;
+        objects.push({
+          meshId,
+          meshPath: meshRow.file_path,
+          pose44: p.diffdope.pose44,
+        });
+      }
+      if (!objects.length) return null;
+
+      const payload = {
+        projectId,
+        imageId,
+        rgbPath: imageRow.file_path,
+        depthPath: depthRow?.file_path || null,
+        intrinsicsPath: intrRow?.file_path,
+        objects,
+        debug: !!debug,
+      };
+      const rendered = await axios.post(`${poseServiceUrl}/diffdope/render-fit-overlay`, payload, { timeout: 10 * 60 * 1000 });
+      const fitOverlayPath = rendered?.data?.fitOverlayPath || null;
+      if (!fitOverlayPath) return null;
+
+      // 清理历史 mesh 级 overlay，强制收敛到“一个 image 一张拟合图”。
+      try {
+        const fitDir = path.join(__dirname, '..', 'uploads', `project_${Number(projectId)}`, 'pose-fit-overlays');
+        const pref = `fit_image_${Number(imageId)}_mesh_`;
+        if (fs.existsSync(fitDir)) {
+          for (const name of fs.readdirSync(fitDir)) {
+            if (name.startsWith(pref) && name.endsWith('.png')) {
+              try { fs.unlinkSync(path.join(fitDir, name)); } catch (_) {}
+            }
+          }
+        }
+      } catch (_) {}
+
+      // 将合成图路径回写到该 image 的所有 pose 记录，前端拟合图层读任意一条都可命中
+      await Promise.all(valid.map((row) => new Promise((resolve) => {
+        const meshId = Number(row?.mesh_id ?? row?.meshId);
+        const diffdopeJson = row?.diffdope && typeof row.diffdope === 'object' ? row.diffdope : {};
+        db.updatePose9DDiffDope(imageId, meshId, diffdopeJson, fitOverlayPath, () => resolve(null));
+      })));
+      return fitOverlayPath;
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[pose9d] regenerate composite fit overlay failed:', e?.message || e);
+      return null;
+    }
   };
 
   router.post('/pose9d/:imageId', requireImageProjectAccess, (req, res) => {
@@ -129,7 +229,7 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
       if (!imageId || !meshId || !valid) {
         return res.status(400).json({ success: false, message: 'pose44 非法，需为 4x4 数值矩阵' });
       }
-      db.getPose9D(imageId, meshId, (err, row) => {
+      db.getPose9D(imageId, meshId, async (err, row) => {
         if (err) return res.status(500).json({ success: false, message: '读取现有姿态失败', error: err.message });
         const prev = row?.diffdope && typeof row.diffdope === 'object' ? row.diffdope : {};
         const next = {
@@ -138,8 +238,18 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
           pose44,
           updatedAt: new Date().toISOString(),
         };
-        db.updatePose9DDiffDope(imageId, meshId, next, row?.fitOverlayPath || null, (uErr) => {
+        db.updatePose9DDiffDope(imageId, meshId, next, row?.fitOverlayPath || null, async (uErr) => {
           if (uErr) return res.status(500).json({ success: false, message: '写入 pose44 失败', error: uErr.message });
+          try {
+            const [projectIds, imageRow] = await Promise.all([
+              db.getProjectIdsByImageId(imageId),
+              new Promise((resolve, reject) => db.getImageById(imageId, (e, r) => (e ? reject(e) : resolve(r || null)))),
+            ]);
+            const projectId = Array.isArray(projectIds) && projectIds.length ? Number(projectIds[0]) : null;
+            if (projectId) {
+              await regenerateCompositeFitOverlay({ imageId, projectId, imageRow, debug: false });
+            }
+          } catch (_) {}
           return res.json({ success: true, message: 'pose44 已保存', imageId, meshId, pose44 });
         });
       });
@@ -374,22 +484,25 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
           useDepthLoss: legacyDepth,
           stage1UseMask: b.stage1UseMask !== false,
           stage1UseRgb: typeof b.stage1UseRgb === 'boolean' ? b.stage1UseRgb : legacyRgb,
-          stage2UseMask: b.stage2UseMask !== false,
+          stage1UseDepth: false,
+          stage2UseMask: typeof b.stage2UseMask === 'boolean' ? b.stage2UseMask : b.stage2UseMask !== false,
           stage2UseRgb: typeof b.stage2UseRgb === 'boolean' ? b.stage2UseRgb : legacyRgb,
           stage2UseDepth: typeof b.stage2UseDepth === 'boolean' ? b.stage2UseDepth : legacyDepth,
           stage1WeightMask: b.stage1WeightMask ?? 1,
           stage1WeightRgb: b.stage1WeightRgb ?? 0.7,
-          stage2WeightMask: b.stage2WeightMask ?? 0.5,
+          stage1WeightDepth: b.stage1WeightDepth ?? 1,
+          stage2WeightMask: b.stage2WeightMask ?? 1,
           stage2WeightDepth: b.stage2WeightDepth ?? 1,
+          stage2WeightRgb: b.stage2WeightRgb ?? b.weightRgb,
           stage1EarlyStopLoss: b.stage1EarlyStopLoss ?? null,
           stage2EarlyStopLoss: b.stage2EarlyStopLoss ?? null,
           stage1BaseLr: b.stage1BaseLr ?? 20,
           stage1LrDecay: b.stage1LrDecay ?? 0.1,
-          stage2BaseLr: b.stage2BaseLr ?? 20,
+          stage2BaseLr: b.stage2BaseLr ?? 8,
           stage2LrDecay: b.stage2LrDecay ?? 0.1,
           maxAllowedFinalLoss: b.maxAllowedFinalLoss ?? null,
           weightMask: b.weightMask ?? 1,
-          weightRgb: b.weightRgb ?? 0.7,
+          // 第二轮 RGB 权重统一走 stage2WeightRgb（上式已含 b.weightRgb 回退）；勿默认塞 weightRgb，否则会覆盖 pose-service 的 DIFFDOPE_DEFAULTS
           weightDepth: b.weightDepth ?? 1,
           returnDebugImages: b.returnDebugImages ?? true,
           debug,
@@ -524,6 +637,12 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
           failures.push(`${label}: diffdope 调用失败${status ? ` (HTTP ${status})` : ''}: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
         }
       }
+
+      // 同图多 mesh：生成一张“合成拟合图层”（覆盖所有已写入 pose44 的 mesh）
+      // 并回写到该 image 的所有 pose 记录，避免前端只显示最后一个 sku 的拟合图。
+      try {
+        await regenerateCompositeFitOverlay({ imageId, projectId, imageRow, debug });
+      } catch (_) {}
 
       const ok = results.length > 0;
       return res.status(ok ? 200 : 422).json({
