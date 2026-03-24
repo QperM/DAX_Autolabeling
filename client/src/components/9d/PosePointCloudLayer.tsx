@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
-import { depthApi, meshApi, pose9dApi } from '../../services/api';
+import { annotationApi, depthApi, meshApi, pose9dApi } from '../../services/api';
 import { toAbsoluteUrl } from '../../utils/urls';
 
 type Props = {
@@ -106,6 +106,80 @@ type PoseMode = 'final' | 'initial';
 const COLOR_FINAL = 0xff8a00;
 const COLOR_INITIAL = 0x22c55e;
 
+type MaskPolygon = {
+  points: Array<{ x: number; y: number }>;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  color: [number, number, number];
+};
+
+const parseMaskColor = (input: any): [number, number, number] => {
+  try {
+    const c = new THREE.Color();
+    const raw = String(input || '').trim();
+    if (!raw) return [1, 0.2, 0.2];
+    // 尽可能兼容 #RRGGBB / rgb(...) / 颜色名等
+    if (raw.startsWith('#') || raw.startsWith('rgb') || raw.startsWith('hsl')) c.setStyle(raw);
+    else c.set(raw as any);
+    return [c.r, c.g, c.b];
+  } catch (_) {
+    return [1, 0.2, 0.2];
+  }
+};
+
+const toMaskPolygon = (mask: any): MaskPolygon | null => {
+  const flat = Array.isArray(mask?.points) ? mask.points.flat(Infinity) : [];
+  const vals = flat.map((v: any) => Number(v)).filter((v: number) => Number.isFinite(v));
+  if (vals.length < 6) return null;
+  const points: Array<{ x: number; y: number }> = [];
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i + 1 < vals.length; i += 2) {
+    const x = vals[i];
+    const y = vals[i + 1];
+    points.push({ x, y });
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  if (points.length < 3) return null;
+  return {
+    points,
+    minX,
+    maxX,
+    minY,
+    maxY,
+    color: parseMaskColor(mask?.color),
+  };
+};
+
+const pointInPolygon = (x: number, y: number, poly: Array<{ x: number; y: number }>) => {
+  // Ray casting: 点在多边形内返回 true
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x;
+    const yi = poly[i].y;
+    const xj = poly[j].x;
+    const yj = poly[j].y;
+    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / ((yj - yi) || 1e-9) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+};
+
+const resolveMaskColorAt = (u: number, v: number, masks: MaskPolygon[]): [number, number, number] | null => {
+  for (const m of masks) {
+    if (u < m.minX || u > m.maxX || v < m.minY || v > m.maxY) continue;
+    if (pointInPolygon(u, v, m.points)) return m.color;
+  }
+  return null;
+};
+
 const PosePointCloudLayer: React.FC<Props> = ({
   visible,
   projectId,
@@ -124,7 +198,7 @@ const PosePointCloudLayer: React.FC<Props> = ({
   const [saveBusy, setSaveBusy] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [, setCancelInitialBusy] = useState(false);
-  const [clear6dBusy, setClear6dBusy] = useState(false);
+  const [, setClear6dBusy] = useState(false);
   const [activeMeshId, setActiveMeshId] = useState<number | null>(null);
   const [sceneRefreshId, setSceneRefreshId] = useState(0);
   const [matrixPos, setMatrixPos] = useState<{ x: number | null; y: number | null }>({ x: null, y: null });
@@ -402,10 +476,15 @@ const PosePointCloudLayer: React.FC<Props> = ({
         const npyUrl = toAbsoluteUrl(npy.url) || npy.url;
         const intrUrl = toAbsoluteUrl(intr.url) || intr.url;
 
-        const [npyBuf, intrJs] = await Promise.all([
+        const [npyBuf, intrJs, annoResp] = await Promise.all([
           fetch(npyUrl).then((r) => r.arrayBuffer()),
           fetch(intrUrl).then((r) => r.json()),
+          annotationApi.getAnnotation(Number(imageId)).catch(() => null),
         ]);
+        const masksRaw = Array.isArray((annoResp as any)?.annotation?.masks) ? (annoResp as any).annotation.masks : [];
+        const maskPolygons = masksRaw
+          .map((m: any) => toMaskPolygon(m))
+          .filter((m: MaskPolygon | null): m is MaskPolygon => !!m);
 
         const parsed = parseNpy(npyBuf);
         const h = toNum(parsed.shape?.[0], 0);
@@ -441,8 +520,13 @@ const PosePointCloudLayer: React.FC<Props> = ({
             const x = ((u - intri.cx) * z) / intri.fx;
             const y = ((v - intri.cy) * z) / intri.fy;
             positions.push(x, -y, -z);
-            const c = Math.min(1, Math.max(0, z / 250));
-            colors.push(0.2 + 0.8 * c, 0.5 * (1 - c), 1 - c);
+            const maskColor = maskPolygons.length ? resolveMaskColorAt(u, v, maskPolygons) : null;
+            if (maskColor) {
+              colors.push(maskColor[0], maskColor[1], maskColor[2]);
+            } else {
+              const c = Math.min(1, Math.max(0, z / 250));
+              colors.push(0.2 + 0.8 * c, 0.5 * (1 - c), 1 - c);
+            }
           }
         }
         const g = new THREE.BufferGeometry();
