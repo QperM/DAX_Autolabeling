@@ -48,6 +48,17 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
   const depthUpload = createDepthUpload();
   const isZipName = (name) => path.extname(name || '').toLowerCase() === '.zip';
   const is7zName = (name) => path.extname(name || '').toLowerCase() === '.7z';
+  const requireAdminWrite = (req, res, next) => {
+    if (req.session?.isAdmin) return next();
+    return res.status(403).json({ success: false, message: '仅管理员可执行此操作' });
+  };
+
+  const safeUnlink = (filePath) => {
+    try {
+      if (!filePath) return;
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch (_) {}
+  };
 
   // archive internal rules (strict):
   // - depth PNG/TIFF: depth_*.png / depth_*.tif / depth_*.tiff
@@ -983,6 +994,150 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
     } catch (error) {
       console.error('❌ GET /api/cameras 处理失败:', error);
       return res.status(500).json({ success: false, message: '获取 cameras 列表失败' });
+    }
+  });
+
+  // 删除单条深度记录（并清理对应文件与 repair 记录）
+  router.delete('/maps/:depthId', requireAdminWrite, async (req, res) => {
+    try {
+      const depthId = Number(req.params?.depthId);
+      if (!depthId || Number.isNaN(depthId)) {
+        return res.status(400).json({ success: false, message: '缺少或非法的 depthId' });
+      }
+
+      const row = await new Promise((resolve, reject) => {
+        db.getDepthMapById(depthId, (err, r) => (err ? reject(err) : resolve(r || null)));
+      });
+      if (!row) {
+        return res.status(404).json({ success: false, message: '深度记录不存在' });
+      }
+
+      const changed = await new Promise((resolve, reject) => {
+        db.deleteDepthMapById(depthId, (err, c) => (err ? reject(err) : resolve(Number(c || 0))));
+      });
+
+      // 尽量清理同 role 的 repair 记录（不存在也忽略）
+      try {
+        if (row.project_id && row.image_id && row.role) {
+          await new Promise((resolve) => {
+            db.deleteDepthRepairRecordsByProjectImageRole(row.project_id, row.image_id, row.role, () => resolve(null));
+          });
+        }
+      } catch (_) {}
+
+      safeUnlink(row.file_path);
+      safeUnlink(row.depth_raw_fix_path);
+      safeUnlink(row.depth_png_fix_path);
+
+      return res.json({
+        success: true,
+        deleted: changed > 0,
+        depthId,
+        projectId: row.project_id,
+        imageId: row.image_id,
+        role: row.role || null,
+      });
+    } catch (error) {
+      console.error('❌ DELETE /api/depth/maps/:depthId 处理失败:', error);
+      return res.status(500).json({ success: false, message: error?.message || '删除深度记录失败' });
+    }
+  });
+
+  // 删除深度相关“单个文件项”
+  // kind: depth_png | depth_raw | depth_png_fix | depth_raw_fix
+  router.delete('/maps/:depthId/file', requireAdminWrite, async (req, res) => {
+    try {
+      const depthId = Number(req.params?.depthId);
+      const kind = String(req.query?.kind || '').trim().toLowerCase();
+      if (!depthId || Number.isNaN(depthId)) {
+        return res.status(400).json({ success: false, message: '缺少或非法的 depthId' });
+      }
+      if (!['depth_png', 'depth_raw', 'depth_png_fix', 'depth_raw_fix'].includes(kind)) {
+        return res.status(400).json({ success: false, message: '缺少或非法的 kind' });
+      }
+
+      const row = await new Promise((resolve, reject) => {
+        db.getDepthMapById(depthId, (err, r) => (err ? reject(err) : resolve(r || null)));
+      });
+      if (!row) return res.status(404).json({ success: false, message: '深度记录不存在' });
+
+      if (kind === 'depth_png' || kind === 'depth_raw') {
+        if (String(row.modality || '') !== kind) {
+          return res.status(400).json({ success: false, message: `该记录不是 ${kind}` });
+        }
+        const changed = await new Promise((resolve, reject) => {
+          db.deleteDepthMapById(depthId, (err, c) => (err ? reject(err) : resolve(Number(c || 0))));
+        });
+        safeUnlink(row.file_path);
+        return res.json({ success: true, deleted: changed > 0, depthId, kind });
+      }
+
+      if (!row.project_id || !row.image_id || !row.role) {
+        return res.status(400).json({ success: false, message: '该记录缺少 project/image/role，无法删除 fix 文件' });
+      }
+
+      if (kind === 'depth_png_fix') {
+        safeUnlink(row.depth_png_fix_path);
+        await new Promise((resolve, reject) => {
+          db.clearDepthFixPathByProjectImageRole(
+            row.project_id,
+            row.image_id,
+            row.role,
+            'depth_png_fix_path',
+            (err) => (err ? reject(err) : resolve(null)),
+          );
+        });
+      } else {
+        safeUnlink(row.depth_raw_fix_path);
+        await new Promise((resolve, reject) => {
+          db.clearDepthFixPathByProjectImageRole(
+            row.project_id,
+            row.image_id,
+            row.role,
+            'depth_raw_fix_path',
+            (err) => (err ? reject(err) : resolve(null)),
+          );
+        });
+      }
+
+      return res.json({ success: true, deleted: true, depthId, kind });
+    } catch (error) {
+      console.error('❌ DELETE /api/depth/maps/:depthId/file 处理失败:', error);
+      return res.status(500).json({ success: false, message: error?.message || '删除深度文件失败' });
+    }
+  });
+
+  // 删除相机内参（cameras 行 + intrinsics 文件）
+  router.delete('/cameras/:cameraId', requireAdminWrite, async (req, res) => {
+    try {
+      const cameraId = Number(req.params?.cameraId);
+      if (!cameraId || Number.isNaN(cameraId)) {
+        return res.status(400).json({ success: false, message: '缺少或非法的 cameraId' });
+      }
+
+      const cam = await new Promise((resolve, reject) => {
+        db.getCameraById(cameraId, (err, r) => (err ? reject(err) : resolve(r || null)));
+      });
+      if (!cam) {
+        return res.status(404).json({ success: false, message: '相机内参记录不存在' });
+      }
+
+      const changed = await new Promise((resolve, reject) => {
+        db.deleteCameraById(cameraId, (err, c) => (err ? reject(err) : resolve(Number(c || 0))));
+      });
+
+      safeUnlink(cam.intrinsics_file_path);
+
+      return res.json({
+        success: true,
+        deleted: changed > 0,
+        cameraId,
+        projectId: cam.project_id,
+        role: cam.role || null,
+      });
+    } catch (error) {
+      console.error('❌ DELETE /api/depth/cameras/:cameraId 处理失败:', error);
+      return res.status(500).json({ success: false, message: error?.message || '删除相机内参失败' });
     }
   });
 

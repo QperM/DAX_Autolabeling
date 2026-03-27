@@ -64,24 +64,13 @@ export function buildPoseExportDocumentForImage(
     const pose44 = diffdope && Array.isArray((diffdope as any).pose44) ? (diffdope as any).pose44 : null;
 
     return {
-      label,
+      // 可识别主键（最小集合）
+      imageId: image.id,
       meshId: Number.isFinite(mid) ? mid : null,
-      mesh: mesh
-        ? {
-            filename: mesh.filename,
-            originalName: mesh.originalName,
-            skuLabel: mesh.skuLabel ?? null,
-          }
-        : null,
-      pose6d: {
-        pose44,
-        method: diffdope && (diffdope as any).method != null ? (diffdope as any).method : null,
-        argmin: diffdope && (diffdope as any).argmin != null ? (diffdope as any).argmin : null,
-        timingSec: diffdope && (diffdope as any).timingSec != null ? (diffdope as any).timingSec : null,
-      },
-      pose9d: row?.pose != null ? row.pose : null,
-      fitOverlayPath: row?.fitOverlayPath ?? row?.fit_overlay_path ?? null,
-      recordUpdatedAt: row?.updated_at ?? null,
+      maskId: row?.mask_id != null ? row.mask_id : null,
+      label,
+      // 仅保留位姿数据
+      pose44,
     };
   });
 
@@ -90,7 +79,7 @@ export function buildPoseExportDocumentForImage(
     kind: 'dax_pose_per_image',
     exportedAt,
     coordinateNote:
-      'pose44 为 OpenCV 相机坐标系下的 4×4 齐次变换矩阵 T_cam_obj（物体坐标 -> 相机坐标）。轴方向约定：+X 向右、+Y 向下、+Z 指向相机前方（离相机更远）。与系统内 Diff-DOPE / 人工标注保存格式一致。',
+      'pose44 为 OpenCV 相机坐标系下的 4×4 齐次变换矩阵 T_cam_obj（物体坐标 -> 相机坐标）。轴方向约定：+X 向右、+Y 向下、+Z 指向相机前方（离相机更远）。平移分量单位与系统内保存格式保持一致。',
     project: {
       id: project.id,
       name: project.name ?? '',
@@ -222,8 +211,8 @@ export const PoseAnnotationsZipExportButton: React.FC<PoseAnnotationsZipExportBu
       });
       const day = new Date().toISOString().split('T')[0];
       const projSafe = safeZipBaseName(project.name || `project_${project.id}`, `project_${project.id}`);
-      triggerDownload(blob, `pose_annotations_${projSafe}_${day}.zip`);
-      alert(`已导出 ZIP：共 ${images.length} 个 JSON（目录 poses/），含 6D pose44 与模型/图片文件名。`);
+      triggerDownload(blob, `pose_annotations_${projSafe}_project_${project.id}_${day}.zip`);
+      alert(`已导出 ZIP：共 ${images.length} 个 JSON（目录 poses/），仅包含主键字段与 pose44 位姿数据。`);
     } catch (e: any) {
       console.error('[PoseAnnotationsZipExport]', e);
       alert(e?.message || '导出失败');
@@ -236,7 +225,7 @@ export const PoseAnnotationsZipExportButton: React.FC<PoseAnnotationsZipExportBu
   }, [project, images, meshes, onExportStart, onExportEnd]);
 
   const title =
-    '导出 6D Pose 标注：ZIP 内 poses/ 每图一 JSON（多物体在 instances 中，含 label、mesh 与图片文件名）';
+    '导出 6D Pose 标注：ZIP 内 poses/ 每图一 JSON（仅保留主键字段 + pose44）';
 
   const total = progress?.total ?? 0;
   const done = progress?.done ?? 0;

@@ -85,6 +85,15 @@ const PoseManualAnnotation: React.FC = () => {
   const pointCloudMode: 'raw' | 'fix' = showPointCloudFixLayer ? 'fix' : 'raw';
 
   const hasAnyDepthFix = depthList.some((d: any) => !!(d?.depthPngFixUrl || d?.depthRawFixUrl));
+  const hasIntrinsics = depthList.some(
+    (d: any) => d?.modality === 'intrinsics' || /^intrinsics_/i.test(String(d?.filename || '')),
+  );
+
+  const ensureIntrinsicsBeforePointCloud = async (): Promise<boolean> => {
+    if (hasIntrinsics) return true;
+    await alert('当前项目缺少相机内参，请先上传 intrinsics_*.json 后再进入点云图层。');
+    return false;
+  };
 
   useEffect(() => {
     const checkAuthAndImage = async () => {
@@ -178,8 +187,11 @@ const PoseManualAnnotation: React.FC = () => {
     (async () => {
       const reqId = ++depthFetchReqIdRef.current;
       try {
-        const list = await depthApi.getDepth(projectId, currentImage.id);
+        const listRaw = await depthApi.getDepth(projectId, currentImage.id);
         if (reqId !== depthFetchReqIdRef.current) return;
+        const list = (Array.isArray(listRaw) ? listRaw : [])
+          .filter((d: any) => d && d.id != null && Number.isFinite(Number(d.id)))
+          .map((d: any) => ({ ...d, id: Number(d.id) }));
         setDepthList(list);
         const firstPng = list.find(
           (d) => d.modality === 'depth_png' || String(d.filename).toLowerCase().endsWith('.png'),
@@ -595,7 +607,7 @@ const PoseManualAnnotation: React.FC = () => {
                   className={`layer-item layer-item-split ${(showPointCloudRawLayer || showPointCloudFixLayer) ? 'active' : ''} ${
                     showPointCloudFixLayer ? 'split-state-fix' : showPointCloudRawLayer ? 'split-state-raw' : 'split-state-off'
                   }`}
-                  onClick={() => {
+                  onClick={async () => {
                     const toggleTo = (mode: 'off' | 'raw' | 'fix') => {
                       if (mode === 'off') {
                         setShowPointCloudRawLayer(false);
@@ -615,6 +627,8 @@ const PoseManualAnnotation: React.FC = () => {
 
                     // cycle: off -> raw -> fix (if available) -> off
                     if (!showPointCloudRawLayer && !showPointCloudFixLayer) {
+                      const ok = await ensureIntrinsicsBeforePointCloud();
+                      if (!ok) return;
                       toggleTo('raw');
                     } else if (showPointCloudRawLayer) {
                       if (hasAnyDepthFix) toggleTo('fix');
@@ -640,7 +654,11 @@ const PoseManualAnnotation: React.FC = () => {
                     <button
                       type="button"
                       className={`layer-split-btn ${showPointCloudRawLayer ? 'active' : ''}`}
-                      onClick={() => {
+                      onClick={async () => {
+                        if (!showPointCloudRawLayer) {
+                          const ok = await ensureIntrinsicsBeforePointCloud();
+                          if (!ok) return;
+                        }
                         setShowPointCloudFixLayer(false);
                         setShowPointCloudRawLayer((prev) => {
                           const next = !prev;
@@ -661,8 +679,12 @@ const PoseManualAnnotation: React.FC = () => {
                     <button
                       type="button"
                       className={`layer-split-btn ${showPointCloudFixLayer ? 'active' : ''}`}
-                      onClick={() => {
+                      onClick={async () => {
                         if (!hasAnyDepthFix) return;
+                        if (!showPointCloudFixLayer) {
+                          const ok = await ensureIntrinsicsBeforePointCloud();
+                          if (!ok) return;
+                        }
                         setShowPointCloudRawLayer(false);
                         setShowPointCloudFixLayer((prev) => {
                           const next = !prev;

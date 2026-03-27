@@ -307,14 +307,15 @@ export const depthApi = {
     imageId?: number | string
   ): Promise<
     Array<{
-      id: number;
+      id: number | null;
       filename: string;
       size?: number;
       url: string;
       role?: string;
       modality?: string;
       uploadTime?: string;
-      imageId?: number;
+      imageId?: number | null;
+      cameraId?: number | null;
       depthRawFixUrl?: string | null;
       depthPngFixUrl?: string | null;
     }>
@@ -323,6 +324,35 @@ export const depthApi = {
     if (imageId != null) params.imageId = imageId;
     const response = await apiClient.get<{ success: boolean; depth: any[] }>('/depth', { params });
     return response.data.depth || [];
+  },
+
+  getCameras: async (
+    projectId: number | string
+  ): Promise<Array<{ id: number; projectId: number; role: string; intrinsics: any; intrinsicsFileSize?: number | null; updatedAt?: string | null }>> => {
+    const response = await apiClient.get<{ success: boolean; cameras: any[] }>('/depth/cameras', {
+      params: { projectId },
+    });
+    return Array.isArray(response.data?.cameras) ? response.data.cameras : [];
+  },
+
+  deleteDepthMap: async (depthId: number | string): Promise<{ success: boolean; deleted?: boolean; message?: string }> => {
+    const response = await apiClient.delete(`/depth/maps/${depthId}`);
+    return response.data;
+  },
+
+  deleteDepthFile: async (
+    depthId: number | string,
+    kind: 'depth_png' | 'depth_raw' | 'depth_png_fix' | 'depth_raw_fix',
+  ): Promise<{ success: boolean; deleted?: boolean; message?: string }> => {
+    const response = await apiClient.delete(`/depth/maps/${depthId}/file`, {
+      params: { kind },
+    });
+    return response.data;
+  },
+
+  deleteCamera: async (cameraId: number | string): Promise<{ success: boolean; deleted?: boolean; message?: string }> => {
+    const response = await apiClient.delete(`/depth/cameras/${cameraId}`);
+    return response.data;
   },
 
   batchRepairDepth: async (projectId: number | string): Promise<{
@@ -385,6 +415,12 @@ export const annotationApi = {
     const response = await apiClient.post<AutoAnnotationResponse>('/annotate/auto', {
       imageId,
       modelParams,
+    });
+    return response.data;
+  },
+  getAutoAnnotateQueueStatus: async (taskId?: string): Promise<any> => {
+    const response = await apiClient.get('/annotate/queue-status', {
+      params: taskId ? { taskId } : undefined,
     });
     return response.data;
   },
@@ -517,6 +553,10 @@ export const pose6dApi = {
   },
   diffdopeProgress: async (imageId: number | string): Promise<any> => {
     const response = await apiClient.get(`/pose6d/${imageId}/diffdope-progress`);
+    return response.data;
+  },
+  diffdopeQueueStatus: async (): Promise<any> => {
+    const response = await apiClient.get('/pose6d/queue-status');
     return response.data;
   },
 };

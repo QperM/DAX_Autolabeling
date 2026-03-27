@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { Stage, Layer, Image, Line, Rect, Circle } from 'react-konva';
 import useImage from 'use-image';
 import type { Mask, BoundingBox, Polygon } from '../../types';
+import { ANNOTATION_COLOR_PALETTE, SAM2_OBJECT_RESERVED_COLOR } from '../common/annotationColors';
+import { buildLabelColorMapFromSources, resolveColorForLabelEdit } from '../common/annotationColorLogic';
 
 interface AnnotationCanvasProps {
   imageUrl: string;
@@ -311,106 +313,24 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
     const trimmed = renameInputValue.trim();
 
-    const COLOR_PALETTE = [
-      '#1F77B4', // 亮蓝
-      '#FF7F0E', // 橙色
-      '#2CA02C', // 绿色
-      '#D62728', // 红色
-      '#9467BD', // 紫色
-      '#8C564B', // 棕色
-      '#E377C2', // 粉色
-      '#7F7F7F', // 中性灰
-      '#17BECF', // 青色
-      '#BCBD22', // 橄榄绿
-      '#FF9896', // 浅红
-      '#98DF8A', // 浅绿
-      '#AEC7E8', // 浅蓝
-      '#C49C94', // 浅棕
-      '#F7B6D2', // 浅粉
-      '#C5B0D5', // 淡紫
-      '#FFBB78', // 淡橙
-      '#FF7F7F', // 珊瑚红
-      '#C7C7C7', // 浅灰
-      '#DBDB8D', // 淡黄绿
-      '#9EDAE5', // 天蓝
-      '#FDB462', // 金橙
-      '#B5CF6B', // 黄绿
-      '#BD9E39', // 土黄
-      '#8C6D31', // 深棕
-      '#E7969C', // 玫瑰粉
-      '#A55194', // 深紫
-      '#6B6ECF', // 靛蓝
-      '#B5A300', // 橄榄黄
-      '#393B79', // 深蓝
-    ];
+    const COLOR_PALETTE = [SAM2_OBJECT_RESERVED_COLOR, ...ANNOTATION_COLOR_PALETTE];
 
-    // label -> color 映射由后端项目表提供；
-    // 这里仅消费父组件传入的 projectLabelMappings 并做内存补全，
-    // 真正持久化写入由保存标注/对照表接口统一处理。
-    const loadProjectLabelColorMap = (): Map<string, string> => {
-      const map = new Map<string, string>();
-      projectLabelMappings.forEach((item) => {
-        const label = String(item?.label || '').trim();
-        const color = String(item?.color || '').trim();
-        if (!label || !color) return;
-        if (!map.has(label)) map.set(label, color);
-      });
-
-      // 额外：从当前图像中已有的 Mask / BBox 补全 label -> color 到内存 map（不回写到 localStorage）
-      masks.forEach((mask) => {
-        const label = (mask.label || '').trim();
-        const color = mask.color;
-        if (!label || !color) return;
-        if (!map.has(label)) {
-          map.set(label, color);
-      }
-      });
-
-      boundingBoxes.forEach((bbox) => {
-        const label = (bbox.label || '').trim();
-        const color = bbox.color;
-        if (!label || !color) return;
-        if (!map.has(label)) {
-          map.set(label, color);
-        }
-      });
-
-      return map;
-    };
-
-    const labelColorMap = loadProjectLabelColorMap();
+    const labelColorMap = buildLabelColorMapFromSources({
+      projectLabelMappings,
+      masks,
+      boundingBoxes,
+    });
 
     // 2. 根据新的 label 决定颜色
     let targetColor: string | undefined;
 
-    if (trimmed.length > 0) {
-      // 有新 label：如果项目里已有这个 label，则复用旧颜色；否则分配未使用颜色
-      if (labelColorMap.has(trimmed)) {
-        targetColor = labelColorMap.get(trimmed)!;
-      } else {
-        const usedColors = new Set(labelColorMap.values());
-        let assigned: string | undefined;
-        for (const c of COLOR_PALETTE) {
-          if (!usedColors.has(c)) {
-            assigned = c;
-            break;
-          }
-        }
-        // 调色板都用完了就循环使用
-        targetColor = assigned || COLOR_PALETTE[usedColors.size % COLOR_PALETTE.length];
-
-        // 记录新 label 的颜色（仅在当前内存映射中，用于本次会话的颜色分配）
-        labelColorMap.set(trimmed, targetColor);
-      }
-    } else {
-      // 没填新 label，仅希望调整颜色：对每个选中 mask 按现有 label 查映射，否则保持原色
-      const firstLabel = (targets[0].label || '').trim();
-      if (firstLabel && labelColorMap.has(firstLabel)) {
-        targetColor = labelColorMap.get(firstLabel)!;
-      } else {
-        targetColor = targets[0].color || COLOR_PALETTE[0];
-      }
-    }
+    targetColor = resolveColorForLabelEdit({
+      newLabel: trimmed,
+      currentLabel: targets[0].label || '',
+      fallbackColor: targets[0].color,
+      labelColorMap,
+      palette: COLOR_PALETTE,
+    });
 
     // 3. 先计算要应用到 Mask 的更新结果
     const updatedMasks = masks.map(mask => {

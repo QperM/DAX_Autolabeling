@@ -259,7 +259,7 @@ export const AnnotationLabelmeZipExportButton: React.FC<AnnotationLabelmeZipExpo
       });
       const day = new Date().toISOString().split('T')[0];
       const safeName = String(project.name || `project_${project.id}`).replace(/[^\w\u4e00-\u9fff-]+/g, '_');
-      triggerDownload(blob, `labelme_${safeName}_${day}.zip`);
+      triggerDownload(blob, `labelme_${safeName}_project_${project.id}_${day}.zip`);
       alert(`Labelme ZIP 导出成功！\n\n共导出 ${images.length} 个 JSON（每图一个）`);
     } catch (error: unknown) {
       console.error('导出标注数据失败:', error);

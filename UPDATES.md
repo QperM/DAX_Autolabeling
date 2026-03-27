@@ -11,10 +11,19 @@
   - 新增 `AppAlert` 全局提示体系，统一成功/失败反馈
   - 新增 `HumanVerificationModal` + `SliderJigsawCaptcha`，支持滑块拼图人机验证流程
   - 新增 `DebugSettingsModal`，支持按服务与调试种类管理日志输出（frontend/node/sam2/diffdope/depthRepair）
+- [x] **缩略图展示顺序修复（Windows Explorer 自然排序）**：
+  - 对图片/资产列表按“整文件名 + numeric 自然顺序”排序，避免仅按末尾数字导致的倒序问题
+- [x] **底部缩略图网格抽离（VirtualThumbGrid）**：
+  - 新增通用虚拟缩略图网格组件 `VirtualThumbGrid`，统一 2D / 9D 底部图像与资产列表渲染布局
 - [x] **深度数据链路增强（9D）**：
   - 新增 `BatchDepthCompletionButton` 与批量补全流程，调用 Node `/api/depth/repair/batch`
   - 后端 `depth` 路由支持深度包 `.zip/.7z` 严格校验解压、RGB 命名匹配校验、intrinsics/camera 绑定
   - 新增 `server/depthrepair-service/`（FastAPI + LingBot-Depth），提供 `/api/repair-depth` 服务
+- [x] **颜色-Label 与配色算法抽离**：
+  - 新增 `ColorLabelMappingManager`，将 2D「Mask Label 对照表」与批量应用/删除逻辑统一到 common
+  - 新增 `annotationColorLogic` / `annotationColors`，统一颜色来源与分配/编辑策略
+- [x] **模型参数弹窗组件化**：
+  - 将 2D「调整模型参数」按钮与 `ai-prompt-modal` 内容统一为 `ModelConfigModal`，减少页面内部臃肿逻辑
 - [x] **结构与命名整理**：
   - 2D 页面组件统一为 `2DAnnotationPage` / `2DManualAnnotation` 命名
   - 启动与初始化脚本路径整理：`server/utils/bootstrap.js`；新增 `start_sam2.bat` / `start_diffdope.bat` / `start_depthrepair.bat`

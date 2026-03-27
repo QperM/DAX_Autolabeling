@@ -8,9 +8,10 @@ type Props = {
   projectId?: number;
   disabled?: boolean;
   title?: string;
+  onUploadComplete?: () => void;
 };
 
-const DepthUploader: React.FC<Props> = ({ projectId, disabled, title }) => {
+const DepthUploader: React.FC<Props> = ({ projectId, disabled, title, onUploadComplete }) => {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const { alert } = useAppAlert();
   const [uploading, setUploading] = useState(false);
@@ -37,6 +38,7 @@ const DepthUploader: React.FC<Props> = ({ projectId, disabled, title }) => {
         await depthApi.uploadDepth(files, projectId, (p) => setProgress(p));
         debugLog('frontend', 'frontend9DDepthUpload', '[DepthUploader] upload success', { projectId, count: files.length });
         await alert(`Depth 上传完成：${files.length} 个文件已处理。`);
+        if (onUploadComplete) onUploadComplete();
       } catch (err: any) {
         console.error("[DepthUploader] uploadDepth failed:", err);
         debugLog('frontend', 'frontend9DDepthUpload', '[DepthUploader] upload error', err?.message || String(err));
@@ -52,7 +54,7 @@ const DepthUploader: React.FC<Props> = ({ projectId, disabled, title }) => {
         if (inputRef.current) inputRef.current.value = "";
       }
     },
-    [projectId, uploading],
+    [projectId, uploading, onUploadComplete],
   );
 
   const handleClick = () => {

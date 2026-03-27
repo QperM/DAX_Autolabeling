@@ -5,109 +5,14 @@ const path = require('path');
 const FormData = require('form-data');
 const { getUploadsRootDir } = require('../utils/dataPaths');
 const { debugLog } = require('../utils/debugSettingsStore');
+const { RequestQueueLimiter } = require('../utils/requestQueueLimiter');
 
 function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
-  // ========== AI标注任务队列管理器 ==========
-  const MAX_CONCURRENT_TASKS = 10;
-
-  class AnnotationTaskQueue {
-    constructor() {
-      this.runningTasks = new Map(); // taskId -> { imageId, startTime, sessionId }
-      this.waitingQueue = []; // [{ taskId, imageId, modelParams, req, res, sessionId, timestamp }]
-      this.taskIdCounter = 0;
-    }
-
-    generateTaskId() {
-      return `task_${Date.now()}_${++this.taskIdCounter}`;
-    }
-
-    getRunningTaskCount() {
-      return this.runningTasks.size;
-    }
-
-    getQueuePosition(taskId) {
-      const index = this.waitingQueue.findIndex((t) => t.taskId === taskId);
-      return index >= 0 ? index + 1 : null;
-    }
-
-    async addTask(imageId, modelParams, req, res, isAdmin) {
-      const taskId = this.generateTaskId();
-      const sessionId = req.sessionID;
-
-      if (isAdmin) {
-        this.runningTasks.set(taskId, { imageId, startTime: Date.now(), sessionId });
-        return { taskId, immediate: true };
-      }
-
-      if (this.runningTasks.size < MAX_CONCURRENT_TASKS) {
-        this.runningTasks.set(taskId, { imageId, startTime: Date.now(), sessionId });
-        return { taskId, immediate: true };
-      }
-
-      const queuePosition = this.waitingQueue.length + 1;
-      this.waitingQueue.push({
-        taskId,
-        imageId,
-        modelParams,
-        req,
-        res,
-        sessionId,
-        timestamp: Date.now(),
-      });
-      return { taskId, immediate: false, queuePosition };
-    }
-
-    completeTask(taskId) {
-      if (this.runningTasks.has(taskId)) {
-        this.runningTasks.delete(taskId);
-        this.processNextInQueue();
-      }
-    }
-
-    async processNextInQueue() {
-      if (this.waitingQueue.length === 0) return;
-      if (this.runningTasks.size >= MAX_CONCURRENT_TASKS) return;
-
-      const nextTask = this.waitingQueue.shift();
-      if (!nextTask) return;
-
-      const { taskId, imageId, modelParams, req, res, sessionId } = nextTask;
-      this.runningTasks.set(taskId, { imageId, startTime: Date.now(), sessionId });
-
-      this.executeTask(taskId, imageId, modelParams, req, res).catch((err) => {
-        console.error(`[任务队列] 任务 ${taskId} 执行失败:`, err);
-        this.completeTask(taskId);
-      });
-    }
-
-    async executeTask(taskId, imageId, modelParams, req, res) {
-      try {
-        const result = await processAnnotationTask(imageId, modelParams);
-        if (!res.headersSent) res.json(result);
-        this.completeTask(taskId);
-      } catch (error) {
-        console.error(`[任务队列] 任务 ${taskId} 执行出错:`, error);
-        if (!res.headersSent) {
-          res.status(500).json({
-            success: false,
-            message: '自动标注失败',
-            error: error.message,
-          });
-        }
-        this.completeTask(taskId);
-      }
-    }
-
-    getStatus() {
-      return {
-        running: this.runningTasks.size,
-        waiting: this.waitingQueue.length,
-        maxConcurrent: MAX_CONCURRENT_TASKS,
-      };
-    }
-  }
-
-  const annotationQueue = new AnnotationTaskQueue();
+  const annotationQueue = new RequestQueueLimiter({
+    key: 'sam2',
+    maxConcurrent: 6,
+    onDebug: (payload) => debugLog('node', 'nodeSam2Queue', payload),
+  });
 
   async function checkGroundedSAM2Health(apiUrl) {
     try {
@@ -289,43 +194,30 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
   router.post('/auto', async (req, res) => {
     try {
       const { imageId, modelParams } = req.body;
-      const isAdmin = req.session && req.session.isAdmin === true;
-
-      const { taskId, immediate, queuePosition } = await annotationQueue.addTask(imageId, modelParams, req, res, isAdmin);
-
-      if (!immediate) {
-        return res.status(429).json({
-          success: false,
-          message: '服务器当前负载较高，您的任务已加入队列',
-          error: 'SERVER_OVERLOAD',
-          taskId,
-          queuePosition,
-          maxConcurrent: MAX_CONCURRENT_TASKS,
-          currentRunning: annotationQueue.getRunningTaskCount(),
-          estimatedWaitTime: queuePosition * 30,
-        });
-      }
-
-      try {
-        const result = await processAnnotationTask(imageId, modelParams);
-        debugLog('node', 'nodeSam2Result', {
-          imageId,
-          success: true,
-          masks: Number(result?.annotations?.masks?.length || 0),
-          bboxes: Number(result?.annotations?.boundingBoxes?.length || 0),
-        });
-        annotationQueue.completeTask(taskId);
-        return res.json(result);
-      } catch (error) {
-        debugLog('node', 'nodeSam2Result', {
-          imageId,
-          success: false,
-          message: error?.message || String(error),
-        });
-        annotationQueue.completeTask(taskId);
-        throw error;
-      }
+      const sessionId = req.sessionID;
+      const { taskId, promise } = annotationQueue.enqueue({
+        sessionId,
+        payload: { imageId, modelParams },
+        worker: async ({ imageId: taskImageId, modelParams: taskModelParams }) => {
+          const result = await processAnnotationTask(taskImageId, taskModelParams);
+          debugLog('node', 'nodeSam2Result', {
+            imageId: taskImageId,
+            success: true,
+            masks: Number(result?.annotations?.masks?.length || 0),
+            bboxes: Number(result?.annotations?.boundingBoxes?.length || 0),
+          });
+          return result;
+        },
+      });
+      debugLog('node', 'nodeSam2Queue', { stage: 'request-enqueued', taskId, imageId: Number(imageId), sessionId });
+      const result = await promise;
+      return res.json(result);
     } catch (error) {
+      debugLog('node', 'nodeSam2Result', {
+        imageId: Number(req?.body?.imageId || 0),
+        success: false,
+        message: error?.message || String(error),
+      });
       console.error('[AI标注] 处理失败:', error);
       if (!res.headersSent) {
         return res.status(500).json({
@@ -339,8 +231,13 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
   });
 
   router.get('/queue-status', (req, res) => {
-    const status = annotationQueue.getStatus();
-    res.json(status);
+    const taskId = String(req.query?.taskId || '').trim();
+    if (taskId) {
+      const status = annotationQueue.getTaskStatus(taskId);
+      return res.json({ success: true, queue: 'sam2', status: status || null });
+    }
+    const status = annotationQueue.getSessionStatus(req.sessionID);
+    return res.json({ success: true, queue: 'sam2', status });
   });
 
   app.use('/api/annotate', router);

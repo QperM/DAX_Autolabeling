@@ -1,6 +1,6 @@
 # 智能图像标注系统
 
-**版本：V2.8**  
+**版本：V2.9**  
 **最后更新：2026年3月27日**
 
 ## 项目概述
@@ -431,10 +431,3 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 
 4. **调试信息**：系统在关键操作点都添加了详细的调试日志，便于排查问题。
 
-## 许可证
-
-本项目仅供学习和研究使用。
-
-## 联系方式
-
-如有问题或建议，请提交Issue或Pull Request。

@@ -53,6 +53,28 @@ function makeDepthRepo(db) {
       db.all(sql, [projectId, imageId], callback);
     },
 
+    getDepthMapById: (depthId, callback) => {
+      const sql = `
+        SELECT
+          id, project_id, image_id, camera_id, role, modality, filename, file_path, file_size, upload_time,
+          depth_raw_fix_path, depth_png_fix_path
+        FROM depth_maps
+        WHERE id = ?
+        LIMIT 1
+      `;
+      db.get(sql, [Number(depthId)], (err, row) => {
+        if (err) return callback(err, null);
+        callback(null, row || null);
+      });
+    },
+
+    deleteDepthMapById: (depthId, callback) => {
+      const sql = `DELETE FROM depth_maps WHERE id = ?`;
+      db.run(sql, [Number(depthId)], function (err) {
+        if (callback) callback(err, this?.changes || 0);
+      });
+    },
+
     deleteDepthMapsByImageId: (projectId, imageId, callback) => {
       const sql = `
         DELETE FROM depth_maps
@@ -72,6 +94,23 @@ function makeDepthRepo(db) {
           AND image_id = ?
       `;
       db.all(sql, [Number(projectId), Number(imageId)], callback);
+    },
+
+    deleteDepthRepairRecordsByProjectImageRole: (projectId, imageId, role, callback) => {
+      const pid = Number(projectId);
+      const iid = Number(imageId);
+      const r = role == null ? null : String(role).trim().toLowerCase();
+      if (!pid || Number.isNaN(pid) || !iid || Number.isNaN(iid) || !r) {
+        if (callback) callback(new Error('projectId/imageId/role 非法'), 0);
+        return;
+      }
+      const sql = `
+        DELETE FROM depth_repair_records
+        WHERE project_id = ? AND image_id = ? AND role = ?
+      `;
+      db.run(sql, [pid, iid, r], function (err) {
+        if (callback) callback(err, this?.changes || 0);
+      });
     },
 
     bindDepthMapsToImage: (projectId, depthIds, imageId, callback) => {
@@ -165,6 +204,29 @@ function makeDepthRepo(db) {
         WHERE project_id = ? AND image_id = ? AND role = ?
       `;
       db.run(sql, [depthRawFixPath || null, depthPngFixPath || null, pid, iid, r], function (err) {
+        if (callback) callback(err, this.changes || 0);
+      });
+    },
+
+    clearDepthFixPathByProjectImageRole: (projectId, imageId, role, which, callback) => {
+      const pid = Number(projectId);
+      const iid = Number(imageId);
+      const r = role == null ? null : String(role).trim().toLowerCase();
+      const w = String(which || '').trim().toLowerCase();
+      if (!pid || Number.isNaN(pid) || !iid || Number.isNaN(iid) || !r) {
+        if (callback) callback(new Error('projectId/imageId/role 非法'), 0);
+        return;
+      }
+      if (!['depth_raw_fix_path', 'depth_png_fix_path'].includes(w)) {
+        if (callback) callback(new Error('which 非法'), 0);
+        return;
+      }
+      const sql = `
+        UPDATE depth_maps
+        SET ${w} = NULL
+        WHERE project_id = ? AND image_id = ? AND role = ?
+      `;
+      db.run(sql, [pid, iid, r], function (err) {
         if (callback) callback(err, this.changes || 0);
       });
     },

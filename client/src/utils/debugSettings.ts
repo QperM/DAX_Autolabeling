@@ -9,6 +9,8 @@ export type DebugKind =
   | 'frontend9DMeshUpload'
   | 'frontend9DDepthUpload'
   | 'frontendProjectSessionGuard'
+  | 'frontendSam2Queue'
+  | 'frontendDiffdopeQueue'
   | 'nodeSam2Request'
   | 'nodeSam2Result'
   | 'nodeDepthRepairRequest'
@@ -22,6 +24,8 @@ export type DebugKind =
   | 'nodeDepthMatch'
   | 'nodeProjectLabelColors'
   | 'nodeProjectSessionGuard'
+  | 'nodeSam2Queue'
+  | 'nodeDiffdopeQueue'
   | 'depthRepairAccessLog'
   | 'sam2AccessLog'
   | 'diffdopeAccessLog'
@@ -64,6 +68,8 @@ export const DEBUG_KINDS_BY_SERVICE: Record<DebugServiceId, { kind: DebugKind; l
     { kind: 'frontend9DMeshUpload', label: '9D Mesh 上传模块日志', hint: '9D Mesh 上传组件的前端日志' },
     { kind: 'frontend9DDepthUpload', label: '9D Depth 上传模块日志', hint: '9D Depth 上传组件的前端日志' },
     { kind: 'frontendProjectSessionGuard', label: '项目会话保护（前端）', hint: 'projectSession guard 的 claim/status/release 与断开跳转日志' },
+    { kind: 'frontendSam2Queue', label: 'SAM2 队列（前端）', hint: '单图 AI 标注提交后，前端轮询队列排位与运行状态日志' },
+    { kind: 'frontendDiffdopeQueue', label: 'DiffDope 队列（前端）', hint: '单图 AI 6D 标注提交后，前端轮询队列排位与运行状态日志' },
   ],
   node: [
     { kind: 'nodeSam2Request', label: 'SAM2 标注请求（Node）', hint: 'Node 转发到 sam2-service 前的请求摘要日志' },
@@ -79,6 +85,8 @@ export const DEBUG_KINDS_BY_SERVICE: Record<DebugServiceId, { kind: DebugKind; l
     { kind: 'nodeDepthMatch', label: 'Depth-Image-相机匹配日志（Node）', hint: 'depth 上传时 role/image/camera 绑定与匹配细节日志' },
     { kind: 'nodeProjectLabelColors', label: '项目标签颜色映射（Node）', hint: 'project_label_colors 的读取/替换/自动 upsert 与 color order 分配日志' },
     { kind: 'nodeProjectSessionGuard', label: '项目会话保护（Node）', hint: '项目单会话控制、被顶号、锁定/删除强制断开等日志' },
+    { kind: 'nodeSam2Queue', label: 'SAM2 队列（Node）', hint: 'SAM2 请求级队列：入队/开始/完成/失败与并发槽占用日志（并发上限=6）' },
+    { kind: 'nodeDiffdopeQueue', label: 'DiffDope 队列（Node）', hint: 'DiffDope 请求级队列：入队/开始/释放与排队位次日志（并发上限=1）' },
   ],
   sam2: [
     { kind: 'startup', label: '启动/加载', hint: 'SAM2 服务启动、模型加载等信息' },

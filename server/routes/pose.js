@@ -4,11 +4,17 @@ const fs = require('fs');
 const path = require('path');
 const { getUploadsRootDir } = require('../utils/dataPaths');
 const { debugLog } = require('../utils/debugSettingsStore');
+const { ConcurrencyGate } = require('../utils/concurrencyGate');
 
 function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl }) {
   const router = express.Router();
   // imageId -> 单图 diffdope 执行进度（内存态，供前端轮询）
   const estimateProgressByImageId = new Map();
+  const diffdopeGate = new ConcurrencyGate({
+    key: 'diffdope',
+    maxConcurrent: 1,
+    onDebug: (payload) => debugLog('node', 'nodeDiffdopeQueue', payload),
+  });
 
   const rad2deg = (r) => (Number(r) * 180) / Math.PI;
 
@@ -375,7 +381,9 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
   });
 
   router.post('/pose6d/:imageId/diffdope-estimate', requireImageProjectAccess, async (req, res) => {
+    let gateHandle = null;
     try {
+      gateHandle = await diffdopeGate.enter(req.sessionID);
       const imageId = Number(req.params.imageId);
       if (!imageId || Number.isNaN(imageId)) return res.status(400).json({ success: false, message: '非法的 imageId' });
       debugLog('node', 'nodeDiffdopeRequest', {
@@ -498,6 +506,8 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
       const usedInitialPoseMeshIds = new Set();
       const initialPoseByMeshId = new Map();
       const attemptedMeshIds = new Set();
+      let lastRenderFitOverlayDiag = null;
+      let lastFitOverlayPath = null;
       // 保存“本次 run 成功”时的 OpenCV pose44，供 render-fit-overlay 只渲染本次成功/尝试的 mesh，避免 stale DB pose 造成“看似成功其实没跑”的假象。
       const pose44ByMeshId = new Map();
       // 保存“本次 run 成功”的逐实例结果（同一 mesh 可出现多次，按 mask 实例区分）。
@@ -891,6 +901,14 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
 
           const renderedResp = await axios.post(`${poseServiceUrl}/diffdope/render-fit-overlay`, payload, { timeout: 10 * 60 * 1000 });
           const r = renderedResp?.data || {};
+          const renderDiag = {
+            objectsCount: Number.isFinite(Number(r?.objectsCount)) ? Number(r.objectsCount) : Number(objects?.length || 0),
+            renderedCount: Number.isFinite(Number(r?.renderedCount)) ? Number(r.renderedCount) : null,
+            failedCount: Number.isFinite(Number(r?.failedCount)) ? Number(r.failedCount) : null,
+            fitOverlayPath: r?.fitOverlayPath || null,
+            timingSec: r?.timingSec ?? null,
+          };
+          lastRenderFitOverlayDiag = renderDiag;
 
           debugLog('node', 'nodeDiffdopeResult', {
             stage: 'run_response',
@@ -904,6 +922,10 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
           });
 
           const fitOverlayPath = r?.fitOverlayPath || null;
+          lastFitOverlayPath = fitOverlayPath;
+          if (renderDiag?.objectsCount === 0) {
+            failures.push('[render-fit-overlay] objectsCount=0（合成拟合图层没有可渲染对象）');
+          }
           if (fitOverlayPath) {
             try {
               const abs = path.join(getUploadsRootDir(), fitOverlayPath.replace(/^\/uploads\//, ''));
@@ -960,7 +982,8 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
 
       // Only fully successful when there are no per-mask failures.
       // (Missing mesh / diffdope call errors should all make the image fail.)
-      const ok = results.length > 0 && failures.length === 0;
+      const renderOk = !!lastFitOverlayPath && (lastRenderFitOverlayDiag?.objectsCount || 0) > 0;
+      const ok = results.length > 0 && failures.length === 0 && renderOk;
       estimateProgressByImageId.set(imageId, {
         running: false,
         phase: 'done',
@@ -992,6 +1015,7 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
         usedInitialPoseMeshIds: Array.from(usedInitialPoseMeshIds),
         poseServiceUrl,
         message: ok ? undefined : (failures.length ? failures.join('；') : '本次 AI 6D 标注未产出可用结果'),
+        renderFitOverlay: lastRenderFitOverlayDiag,
       });
     } catch (e) {
       console.error('❌ POST /api/pose6d/:imageId/diffdope-estimate 处理失败:', e);
@@ -1012,7 +1036,14 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
         });
       }
       return res.status(500).json({ success: false, message: '6D 姿态推测失败', error: e?.message || String(e) });
+    } finally {
+      if (gateHandle?.release) gateHandle.release();
     }
+  });
+
+  router.get('/pose6d/queue-status', (req, res) => {
+    const status = diffdopeGate.getSessionStatus(req.sessionID);
+    return res.json({ success: true, queue: 'diffdope', status });
   });
 
   router.get('/pose6d/:imageId/diffdope-progress', requireImageProjectAccess, (req, res) => {

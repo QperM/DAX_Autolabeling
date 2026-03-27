@@ -72,6 +72,28 @@ function makeCamerasRepo(db) {
       `;
       db.all(sql, [pid], callback);
     },
+
+    getCameraById: (cameraId, callback) => {
+      const cid = Number(cameraId);
+      const sql = `
+        SELECT id, project_id, role, intrinsics_json, intrinsics_file_path, intrinsics_file_size,
+               created_at, updated_at
+        FROM cameras
+        WHERE id = ?
+        LIMIT 1
+      `;
+      db.get(sql, [cid], (err, row) => {
+        if (err) return callback(err, null);
+        callback(null, row || null);
+      });
+    },
+
+    deleteCameraById: (cameraId, callback) => {
+      const cid = Number(cameraId);
+      db.run('DELETE FROM cameras WHERE id = ?', [cid], function (err) {
+        if (callback) callback(err, this?.changes || 0);
+      });
+    },
   };
 }
 
