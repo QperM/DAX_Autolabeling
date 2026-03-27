@@ -432,6 +432,53 @@ def _cv_pose44_to_gl_rt(pose44: List[List[float]]) -> tuple[list[float], list[fl
     return pos3, rot9
 
 
+def _quat_xyzw_to_rotmat33(q_xyzw: List[float]) -> np.ndarray:
+    """xyzw 四元数 -> 3x3 旋转矩阵（OpenCV语义）。"""
+    q = np.asarray(q_xyzw, dtype=np.float64).reshape(-1)
+    if q.shape[0] != 4:
+        raise RuntimeError("quat_xyzw 维度非法")
+    x, y, z, w = [float(v) for v in q]
+    n = x * x + y * y + z * z + w * w
+    if n < 1e-12:
+        return np.eye(3, dtype=np.float64)
+    s = 2.0 / n
+    xx = x * x * s
+    yy = y * y * s
+    zz = z * z * s
+    xy = x * y * s
+    xz = x * z * s
+    yz = y * z * s
+    wx = w * x * s
+    wy = w * y * s
+    wz = w * z * s
+    return np.array(
+        [
+            [1.0 - (yy + zz), xy - wz, xz + wy],
+            [xy + wz, 1.0 - (xx + zz), yz - wx],
+            [xz - wy, yz + wx, 1.0 - (xx + yy)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _build_cv_pose44_from_rt(
+    t_cv_xyz_cm: List[float],
+    quat_xyzw: Optional[List[float]] = None,
+) -> List[List[float]]:
+    """以 OpenCV 坐标语义构造 pose44（默认单位旋转）。"""
+    if quat_xyzw is None:
+        R = np.eye(3, dtype=np.float64)
+    else:
+        R = _quat_xyzw_to_rotmat33(quat_xyzw)
+    t = np.asarray(t_cv_xyz_cm, dtype=np.float64).reshape(-1)
+    if t.shape[0] != 3:
+        raise RuntimeError("position 维度非法")
+    M = np.eye(4, dtype=np.float64)
+    M[:3, :3] = R
+    M[:3, 3] = t
+    return M.tolist()
+
+
 def _diffdope_cfg_fresh() -> Any:
     """每次请求/每个物体独立一份 yaml，避免循环内改字段互相污染。"""
     base = OmegaConf.load(str(DIFFDOPE_ROOT / "configs" / "diffdope.yaml"))
@@ -828,9 +875,11 @@ def estimate6d(req: Estimate6DRequest):
             y_cm = (v - cy) * z_cm / max(1e-6, fy)
             init_xyz = [x_cm, y_cm, z_cm]
             init_quat = [0.0, 0.0, 0.0, 1.0]
-            obj_position = init_xyz
-            obj_rotation: List[float] = init_quat
-            obj_opencv2opengl = True
+            # 统一链路（最稳）：无论是否有初始位姿，都先构造 OpenCV pose44，再显式转换到 GL。
+            # 避免无初始位姿路径走 diffdope 内部 opencv2opengl=True 的 legacy 分支。
+            default_cv_pose44 = _build_cv_pose44_from_rt(init_xyz, init_quat)
+            obj_position, obj_rotation = _cv_pose44_to_gl_rt(default_cv_pose44)
+            obj_opencv2opengl = False
             used_initial_pose = False
             initial_pose_source = "depth-mask-auto"
             if req.init is not None:
@@ -853,9 +902,12 @@ def estimate6d(req: Estimate6DRequest):
                     pos_ok = isinstance(pos_in, list) and len(pos_in) == 3 and all(np.isfinite(float(v)) for v in pos_in)
                     quat_ok = isinstance(quat_in, list) and len(quat_in) == 4 and all(np.isfinite(float(v)) for v in quat_in)
                     if pos_ok and quat_ok:
-                        obj_position = [float(pos_in[0]), float(pos_in[1]), float(pos_in[2])]
-                        obj_rotation = [float(quat_in[0]), float(quat_in[1]), float(quat_in[2]), float(quat_in[3])]
-                        obj_opencv2opengl = True
+                        cv_pose44_from_pos_quat = _build_cv_pose44_from_rt(
+                            [float(pos_in[0]), float(pos_in[1]), float(pos_in[2])],
+                            [float(quat_in[0]), float(quat_in[1]), float(quat_in[2]), float(quat_in[3])],
+                        )
+                        obj_position, obj_rotation = _cv_pose44_to_gl_rt(cv_pose44_from_pos_quat)
+                        obj_opencv2opengl = False
                         used_initial_pose = True
                         initial_pose_source = "request-init-pos-quat-cv"
             skip_stage1 = bool(req.skipStage1 and used_initial_pose)
