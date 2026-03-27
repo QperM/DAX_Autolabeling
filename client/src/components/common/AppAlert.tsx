@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import './AppAlert.css';
 
 type AlertState = {
@@ -100,34 +101,36 @@ export const AppAlertProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   return (
     <AlertContext.Provider value={api}>
       {children}
-      {state.open && (
-        <div className="app-alert-overlay" role="dialog" aria-modal="true" onKeyDown={handleKeyDown} tabIndex={-1}>
-          <div className="app-alert-modal">
-            {state.title ? <div className="app-alert-title">{state.title}</div> : <div className="app-alert-title">提示</div>}
-            <div className="app-alert-body">{state.message}</div>
-            <div className="app-alert-actions">
-              {state.mode === 'confirm' ? (
-                <>
-                  <button
-                    type="button"
-                    className="app-alert-btn app-alert-btn--secondary"
-                    onClick={() => closeConfirm(false)}
-                  >
-                    {cancelText}
-                  </button>
-                  <button type="button" className="app-alert-btn" onClick={() => closeConfirm(true)} autoFocus>
+      {state.open &&
+        createPortal(
+          <div className="app-alert-overlay" role="dialog" aria-modal="true" onKeyDown={handleKeyDown} tabIndex={-1}>
+            <div className="app-alert-modal">
+              {state.title ? <div className="app-alert-title">{state.title}</div> : <div className="app-alert-title">提示</div>}
+              <div className="app-alert-body">{state.message}</div>
+              <div className="app-alert-actions">
+                {state.mode === 'confirm' ? (
+                  <>
+                    <button
+                      type="button"
+                      className="app-alert-btn app-alert-btn--secondary"
+                      onClick={() => closeConfirm(false)}
+                    >
+                      {cancelText}
+                    </button>
+                    <button type="button" className="app-alert-btn" onClick={() => closeConfirm(true)} autoFocus>
+                      {okText}
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" className="app-alert-btn" onClick={closeAlert} autoFocus>
                     {okText}
                   </button>
-                </>
-              ) : (
-                <button type="button" className="app-alert-btn" onClick={closeAlert} autoFocus>
-                  {okText}
-                </button>
-              )}
+                )}
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </AlertContext.Provider>
   );
 };

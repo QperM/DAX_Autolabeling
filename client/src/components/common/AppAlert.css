@@ -1,7 +1,7 @@
 .app-alert-overlay {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 1600;
+  z-index: 20000;
   display: grid;
   place-items: center;
   padding: 20px;
