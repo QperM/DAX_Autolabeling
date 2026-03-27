@@ -8,6 +8,7 @@ import { getStoredCurrentProject } from '../../utils/tabStorage';
 import { toAbsoluteUrl } from '../../utils/urls';
 import { useAppAlert } from '../common/AppAlert';
 import { useProjectSessionGuard } from '../../utils/projectSessionGuard';
+import { ProgressPopupModal, type ProgressPopupBar } from '../common/ProgressPopupModal';
 import '../2d/2DManualAnnotation.css';
 import PoseFitLayer from './PoseFitLayer';
 import PosePointCloudLayer from './PosePointCloudLayer';
@@ -25,7 +26,7 @@ type DepthInfo = {
 const PoseManualAnnotation: React.FC = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
-  const { alert } = useAppAlert();
+  const { alert, confirm } = useAppAlert();
   const { currentImage, images } = useSelector((state: any) => state.annotation);
   const projectId = getStoredCurrentProject<any>()?.id;
   useProjectSessionGuard(projectId ? Number(projectId) : null, !!projectId);
@@ -42,6 +43,17 @@ const PoseManualAnnotation: React.FC = () => {
   const [pointCloudInitSaveRequestId, setPointCloudInitSaveRequestId] = useState(0);
   const [pointCloudCancelInitRequestId, setPointCloudCancelInitRequestId] = useState(0);
   const [pointCloudClear6dRequestId, setPointCloudClear6dRequestId] = useState(0);
+  const [savingFinalPoseProgress, setSavingFinalPoseProgress] = useState<{
+    active: boolean;
+    total: number;
+    completed: number;
+    currentText: string;
+  }>({
+    active: false,
+    total: 0,
+    completed: 0,
+    currentText: '',
+  });
 
   const [maskOverlayData, setMaskOverlayData] = useState<Mask[] | null>(null);
   const [maskOverlayLoading, setMaskOverlayLoading] = useState(false);
@@ -414,11 +426,53 @@ const PoseManualAnnotation: React.FC = () => {
             saveInitialRequestId={pointCloudInitSaveRequestId}
             cancelInitialRequestId={pointCloudCancelInitRequestId}
             clear6dRequestId={pointCloudClear6dRequestId}
+            onSaveFinalPoseStart={({ total }) => {
+              setSavingFinalPoseProgress({
+                active: true,
+                total: Math.max(0, Number(total || 0)),
+                completed: 0,
+                currentText: '开始保存实例位姿...',
+              });
+            }}
+            onSaveFinalPoseProgress={({ total, completed, currentText }) => {
+              setSavingFinalPoseProgress({
+                active: true,
+                total: Math.max(0, Number(total || 0)),
+                completed: Math.max(0, Number(completed || 0)),
+                currentText: String(currentText || ''),
+              });
+            }}
             onSaveFinalPoseComplete={(ok) => {
+              setSavingFinalPoseProgress((prev) => ({
+                ...prev,
+                completed: prev.total,
+                currentText: ok ? '保存完成' : '保存失败',
+              }));
+              setTimeout(() => {
+                setSavingFinalPoseProgress((prev) => ({ ...prev, active: false }));
+              }, 280);
               void alert(ok ? '保存位置完成：已保存当前图内所有实例的最终位姿。' : '保存位置失败：请检查点云状态后重试。');
               // 不管 ok 与否，都触发一次重新拉取：如果服务端合成耗时，这能最大概率拉到新结果。
               setPointCloudSaveDoneRequestId((v) => v + 1);
             }}
+          />
+          <ProgressPopupModal
+            open={savingFinalPoseProgress.active}
+            title="保存位置进度"
+            bars={[
+              {
+                key: 'pointcloud-save-final',
+                title: '保存实例位姿',
+                percent:
+                  savingFinalPoseProgress.total > 0
+                    ? (savingFinalPoseProgress.completed / savingFinalPoseProgress.total) * 100
+                    : 0,
+                currentText:
+                  savingFinalPoseProgress.total > 0
+                    ? `${savingFinalPoseProgress.currentText}\n${savingFinalPoseProgress.completed}/${savingFinalPoseProgress.total}`
+                    : savingFinalPoseProgress.currentText,
+              } satisfies ProgressPopupBar,
+            ]}
           />
 
           {pointCloudOn && depthList.length === 0 && (
@@ -717,7 +771,14 @@ const PoseManualAnnotation: React.FC = () => {
                         height: '47px',
                         whiteSpace: 'nowrap',
                       }}
-                      onClick={() => setPointCloudSaveRequestId((v) => v + 1)}
+                      onClick={async () => {
+                        const ok = await confirm(
+                          '确定保存当前图内所有实例的最终位姿吗？\n\n该操作会逐个实例写入数据库，可能需要一些时间。',
+                          { title: '确认保存位置' },
+                        );
+                        if (!ok) return;
+                        setPointCloudSaveRequestId((v) => v + 1);
+                      }}
                       title="保存当前点云窗口中的 Mesh 位姿矩阵到数据库（保存图内所有最终位姿）"
                     >
                       保存位置

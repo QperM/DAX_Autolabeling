@@ -17,6 +17,8 @@ type Props = {
   saveInitialRequestId?: number;
   cancelInitialRequestId?: number;
   clear6dRequestId?: number;
+  onSaveFinalPoseStart?: (meta: { total: number }) => void;
+  onSaveFinalPoseProgress?: (meta: { total: number; completed: number; currentText: string }) => void;
   onSaveFinalPoseComplete?: (ok: boolean) => void;
 };
 
@@ -215,6 +217,8 @@ const PosePointCloudLayer: React.FC<Props> = ({
   saveInitialRequestId = 0,
   cancelInitialRequestId = 0,
   clear6dRequestId = 0,
+  onSaveFinalPoseStart,
+  onSaveFinalPoseProgress,
   onSaveFinalPoseComplete,
 }) => {
   const { confirm } = useAppAlert();
@@ -1012,15 +1016,31 @@ const PosePointCloudLayer: React.FC<Props> = ({
     let ok = false;
     try {
       setSaveBusy(true);
+      onSaveFinalPoseStart?.({ total: instances.length });
       // 保存“最终位姿”：对当前点云场景内的所有实例都写入 diffdope_json
+      let completed = 0;
       for (const inst of instances) {
         const obj = meshByInstanceRef.current.get(inst.instanceKey);
-        if (!obj) continue;
+        if (!obj) {
+          completed += 1;
+          onSaveFinalPoseProgress?.({
+            total: instances.length,
+            completed,
+            currentText: `跳过实例 ${inst.meshId}${inst.maskId ? `/${inst.maskId}` : ''}（场景中不存在）`,
+          });
+          continue;
+        }
         obj.updateMatrixWorld(true);
         const matrixArr = obj.matrix.toArray() as number[];
         const cv = matrixArrayToCvPose44(matrixArr);
         await pose9dApi.saveDiffdopePose44(imageId, inst.meshId, cv, inst.maskId);
         pose44ByInstanceRef.current[inst.instanceKey] = { ...pose44ByInstanceRef.current[inst.instanceKey], final: cv };
+        completed += 1;
+        onSaveFinalPoseProgress?.({
+          total: instances.length,
+          completed,
+          currentText: `正在保存实例 ${inst.meshId}${inst.maskId ? `/${inst.maskId}` : ''}（${completed}/${instances.length}）`,
+        });
       }
       ok = true;
       setStatus('所有实例的最终位姿已保存到数据库（diffdope_json）');

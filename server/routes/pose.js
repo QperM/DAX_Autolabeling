@@ -833,15 +833,41 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
           }
         }
         const imageOriginalName = imageRow?.original_name || imageRow?.filename || null;
-        const objects = successfulRenderObjects
-          .filter((o) => Array.isArray(o?.pose44) && o.pose44.length >= 4 && o.meshPath)
-          .map((o) => ({
+        // 合成拟合图层应与“保存位置”一致：使用“当前图片数据库中的全部有效位姿”。
+        // 本次 run 的成功实例（same image + mesh + mask）优先覆盖旧值，未触达的实例继续保留。
+        const instanceKey = (meshId, maskId) => `${Number(meshId)}::${String(maskId || '').trim() || '__nomask__'}`;
+        const renderObjectsByInstance = new Map();
+        const dbPoseRows = await new Promise((resolve, reject) => {
+          db.listPose9DByImageId(imageId, (err, rows) => (err ? reject(err) : resolve(rows || [])));
+        });
+        for (const row of dbPoseRows || []) {
+          const meshId = Number(row?.mesh_id ?? row?.meshId ?? 0);
+          if (!Number.isFinite(meshId) || meshId <= 0) continue;
+          const pose44 = row?.diffdope?.pose44;
+          if (!Array.isArray(pose44) || pose44.length < 4) continue;
+          const maskId = row?.mask_id ?? row?.maskId ?? null;
+          const meshInfo = meshes.find((x) => Number(x.id) === meshId);
+          const meshPath = meshInfo?.filePath || '';
+          if (!meshPath) continue;
+          renderObjectsByInstance.set(instanceKey(meshId, maskId), {
+            meshId,
+            meshPath,
+            meshOriginalName: meshInfo?.originalName || meshInfo?.filename || null,
+            meshSkuLabel: meshInfo?.skuLabel || null,
+            pose44,
+          });
+        }
+        for (const o of successfulRenderObjects) {
+          if (!Array.isArray(o?.pose44) || o.pose44.length < 4 || !o.meshPath) continue;
+          renderObjectsByInstance.set(instanceKey(o.meshId, o.maskId), {
             meshId: Number(o.meshId),
             meshPath: o.meshPath,
             meshOriginalName: o.meshOriginalName || null,
             meshSkuLabel: o.meshSkuLabel || null,
             pose44: o.pose44,
-          }));
+          });
+        }
+        const objects = Array.from(renderObjectsByInstance.values());
 
         if (intrRow?.file_path) {
           const payload = {
