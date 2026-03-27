@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { projectApi, authApi, adminApi } from '../../services/api';
 import {
@@ -8,8 +8,13 @@ import {
   getStoredSelectedModules,
   setStoredCurrentProject,
   setStoredSelectedModules,
-} from '../../tabStorage';
+} from '../../utils/tabStorage';
 import './LandingPage.css';
+import DebugSettingsModal from './DebugSettingsModal';
+import { debugLog } from '../../utils/debugSettings';
+import HumanVerificationModal, { type HumanVerificationPurpose } from './HumanVerificationModal';
+import { useAppAlert } from './AppAlert';
+import { useProjectSessionGuard } from '../../utils/projectSessionGuard';
 
 async function copyToClipboard(text: string): Promise<boolean> {
   // Prefer modern Clipboard API when available (requires secure context in most browsers).
@@ -42,7 +47,16 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+const ACCESS_CODE_HEAD_LEN = 4;
+const ACCESS_CODE_TAIL_LEN = 2;
+
+function sanitizeAccessCodeFragment(s: string) {
+  return s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
 const LandingPage: React.FC = () => {
+  const appAlert = useAppAlert();
+  const { confirm } = appAlert;
   // 认证状态
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -50,7 +64,11 @@ const LandingPage: React.FC = () => {
   
   // 验证码输入
   const [showAccessCodeModal, setShowAccessCodeModal] = useState(true);
-  const [accessCode, setAccessCode] = useState('');
+  /** 验证码分两段输入（前 4 + 后 2），降低误触其他项目验证码的概率 */
+  const [accessCodeHead, setAccessCodeHead] = useState('');
+  const [accessCodeTail, setAccessCodeTail] = useState('');
+  const accessCodeTailRef = useRef<HTMLInputElement | null>(null);
+  const accessCodeHeadRef = useRef<HTMLInputElement | null>(null);
   const [verifyingCode, setVerifyingCode] = useState(false);
   const [codeError, setCodeError] = useState('');
   
@@ -60,6 +78,10 @@ const LandingPage: React.FC = () => {
   const [adminPassword, setAdminPassword] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState('');
+
+  // 人机验证弹窗（用于“第二次输入/第二次尝试”后的拦截）
+  const [showHumanVerification, setShowHumanVerification] = useState(false);
+  const [humanVerificationPurpose, setHumanVerificationPurpose] = useState<HumanVerificationPurpose>('verifyCode');
 
   // 管理员：重设密码
   const [showResetPasswordModal, setShowResetPasswordModal] = useState(false);
@@ -91,6 +113,7 @@ const LandingPage: React.FC = () => {
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectDescription, setNewProjectDescription] = useState('');
   const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [showDebugSettingsModal, setShowDebugSettingsModal] = useState(false);
 
   // 删除项目时的加载状态
   const [deletingProjectId, setDeletingProjectId] = useState<number | null>(null);
@@ -110,7 +133,7 @@ const LandingPage: React.FC = () => {
         if (authStatus.user) {
           setCurrentUser(authStatus.user);
         }
-        
+
         // 如果已登录（管理员或通过验证码），加载项目列表
         if (authStatus.authenticated) {
           setShowAccessCodeModal(false);
@@ -135,30 +158,41 @@ const LandingPage: React.FC = () => {
                 // 验证项目是否在可访问列表中
                 if (projectsList.some(p => p.id === project.id)) {
           setCurrentProject(project);
-          console.log('自动加载保存的项目:', project.name);
+          debugLog('frontend', 'landingPage', '自动加载保存的项目:', project.name);
                 } else {
                   clearStoredCurrentProject();
                 }
         } catch (e) {
-          console.error('解析保存的项目失败', e);
+          debugLog('frontend', 'landingPage', '解析保存的项目失败', e);
                 clearStoredCurrentProject();
         }
       }
           } catch (error: any) {
-        console.error('加载项目列表失败', error);
-            if (error.response?.status === 403) {
-              // 权限不足，需要重新输入验证码
+        debugLog('frontend', 'landingPage', '加载项目列表失败', error);
+            const status = error?.response?.status;
+            if (status === 403 || status === 401) {
+              // 权限不足 / session 失效：回到初始入口（验证码输入），让用户重新登录
               setIsAuthenticated(false);
+              setIsAdmin(false);
+              setShowAdminLogin(false);
               setShowAccessCodeModal(true);
             }
         setProjects([]);
           }
         } else {
           // 未登录，显示验证码输入界面
-          setShowAccessCodeModal(true);
+          const mustHumanFirst = !!authStatus.requireHumanVerification?.verifyCode;
+          if (mustHumanFirst) {
+            setHumanVerificationPurpose('verifyCode');
+            setShowHumanVerification(true);
+            setShowAccessCodeModal(false);
+            setShowAdminLogin(false);
+          } else {
+            setShowAccessCodeModal(true);
+          }
         }
       } catch (error) {
-        console.error('检查登录状态失败', error);
+        debugLog('frontend', 'landingPage', '检查登录状态失败', error);
         setShowAccessCodeModal(true);
       }
     };
@@ -168,35 +202,65 @@ const LandingPage: React.FC = () => {
   
   // 验证码验证
   const handleVerifyCode = async () => {
-    if (!accessCode.trim()) {
-      setCodeError('请输入验证码');
+    const head = sanitizeAccessCodeFragment(accessCodeHead).slice(0, ACCESS_CODE_HEAD_LEN);
+    const tail = sanitizeAccessCodeFragment(accessCodeTail).slice(0, ACCESS_CODE_TAIL_LEN);
+    const full = `${head}${tail}`;
+    if (full.length !== ACCESS_CODE_HEAD_LEN + ACCESS_CODE_TAIL_LEN) {
+      setCodeError('请输入完整验证码：前 4 位 + 后 2 位（共 6 位）');
       return;
     }
-    
+
     setVerifyingCode(true);
     setCodeError('');
-    
+
     try {
-      const result = await authApi.verifyCode(accessCode.trim().toUpperCase());
+      const result = await authApi.verifyCode(full);
+
+      if (!result.success) {
+        const serverErr = result.error;
+        // 规则：输入错误一次之后，后续每次都要人机验证；并且顺序要求“先验证后输入”
+        if (serverErr === '验证码无效') {
+          setCodeError('');
+          setHumanVerificationPurpose('verifyCode');
+          setShowHumanVerification(true);
+          // 隐藏项目码输入，保证“先人机验证后输入”
+          setShowAccessCodeModal(false);
+          setAccessCodeHead('');
+          setAccessCodeTail('');
+          return;
+        }
+        if (serverErr === 'HUMAN_VERIFICATION_REQUIRED') {
+          setCodeError('');
+          setHumanVerificationPurpose('verifyCode');
+          setShowHumanVerification(true);
+          setShowAccessCodeModal(false);
+          setAccessCodeHead('');
+          setAccessCodeTail('');
+          return;
+        }
+        // 检查是否是项目锁定错误
+        if (result.status === 403 && serverErr?.includes('锁定')) {
+          setCodeError('项目已锁定，请联系管理员');
+        } else {
+          setCodeError(serverErr || '验证码无效，请重试');
+        }
+        return;
+      }
+
+      setAccessCodeHead('');
+      setAccessCodeTail('');
+      setCurrentProject(result.project);
+      setStoredCurrentProject(result.project);
+      setShowAccessCodeModal(false);
+      setIsAuthenticated(true);
       
-      if (result.success) {
-        setCurrentProject(result.project);
-        setStoredCurrentProject(result.project);
-        setShowAccessCodeModal(false);
-        setIsAuthenticated(true);
-        
-        // 重新加载项目列表
-        const projectsList = await authApi.getAccessibleProjects();
-        setProjects(projectsList);
-      }
+      // 重新加载项目列表
+      const projectsList = await authApi.getAccessibleProjects();
+      setProjects(projectsList);
     } catch (error: any) {
-      console.error('验证码验证失败', error);
-      // 检查是否是项目锁定错误
-      if (error.response?.status === 403 && error.response?.data?.error?.includes('锁定')) {
-        setCodeError('项目已锁定，请联系管理员');
-      } else {
-        setCodeError(error.response?.data?.error || '验证码无效，请重试');
-      }
+      // 非预期错误（网络断连/5xx等）仍记录到 debug 日志
+      debugLog('frontend', 'landingPage', '验证码验证异常', error);
+      setCodeError(error?.response?.data?.error || '网络异常，请稍后重试');
     } finally {
       setVerifyingCode(false);
     }
@@ -226,10 +290,53 @@ const LandingPage: React.FC = () => {
         setProjects(projectsList);
       }
     } catch (error: any) {
-      console.error('管理员登录失败', error);
+      debugLog('frontend', 'landingPage', '管理员登录失败', error);
+      const serverErr = error?.response?.data?.error;
+      // 规则：管理员账号/密码不匹配算“输入错误一次”
+      if (error?.response?.status === 401 && serverErr === '用户名或密码错误') {
+        setLoginError('');
+        setHumanVerificationPurpose('adminLogin');
+        setShowHumanVerification(true);
+        setShowAdminLogin(false);
+        setAdminUsername('');
+        setAdminPassword('');
+        return;
+      }
+      if (serverErr === 'HUMAN_VERIFICATION_REQUIRED') {
+        setLoginError('');
+        setHumanVerificationPurpose('adminLogin');
+        setShowHumanVerification(true);
+        setShowAdminLogin(false);
+        setAdminUsername('');
+        setAdminPassword('');
+        return;
+      }
       setLoginError(error.response?.data?.error || '登录失败，请检查用户名和密码');
     } finally {
       setLoggingIn(false);
+    }
+  };
+
+  const handleAfterHumanVerified = () => {
+    setShowHumanVerification(false);
+
+    // 人机验证通过后重新打开输入框（不自动重试），保证交互顺序正确
+    if (humanVerificationPurpose === 'verifyCode') {
+      setShowAccessCodeModal(true);
+      setShowAdminLogin(false);
+      setCodeError('');
+      setAccessCodeHead('');
+      setAccessCodeTail('');
+      accessCodeHeadRef.current?.focus();
+      return;
+    }
+
+    if (humanVerificationPurpose === 'adminLogin') {
+      setShowAdminLogin(true);
+      setShowAccessCodeModal(false);
+      setLoginError('');
+      setAdminUsername('');
+      setAdminPassword('');
     }
   };
   
@@ -245,8 +352,11 @@ const LandingPage: React.FC = () => {
       clearStoredCurrentProject();
       clearStoredSelectedModules();
       setShowAccessCodeModal(true);
+      setAccessCodeHead('');
+      setAccessCodeTail('');
+      setCodeError('');
     } catch (error) {
-      console.error('登出失败', error);
+      debugLog('frontend', 'landingPage', '登出失败', error);
     }
   };
 
@@ -277,9 +387,9 @@ const LandingPage: React.FC = () => {
       setResetPasswordError('');
       await authApi.changePassword(currentPasswordInput, newPasswordInput, confirmPasswordInput);
       setShowResetPasswordModal(false);
-      alert('密码已更新');
+      await appAlert.alert('密码已更新');
     } catch (error: any) {
-      console.error('修改密码失败', error);
+      debugLog('frontend', 'landingPage', '修改密码失败', error);
       setResetPasswordError(error.response?.data?.error || '修改密码失败，请稍后重试');
     } finally {
       setResettingPassword(false);
@@ -288,22 +398,22 @@ const LandingPage: React.FC = () => {
 
   const availableModules = [
     { id: '2d-bbox-mask', name: '2D Bbox/Mask 标注', description: '基础的2D边界框和Mask标注功能', disabled: false },
-    { id: '9d-pose', name: '9D Pose 标注', description: '3D姿态标注（开发中）', disabled: false },
+    { id: '9d-pose', name: '9D Pose 标注', description: '支持 6D 空间姿态标注（深度、点云与 Mesh）', disabled: false },
   ];
 
   const handleModuleToggle = (moduleId: string) => {
-    console.log('切换模块:', moduleId);
+    debugLog('frontend', 'landingPage', '切换模块:', moduleId);
     // 单选：同一时间只能选中一个模块，避免组合模块导致流程/路由混乱
     setSelectedModules((prev) => {
       const newSelected = prev.includes(moduleId) ? [] : [moduleId];
-      console.log('新的选中模块(单选):', newSelected);
+      debugLog('frontend', 'landingPage', '新的选中模块(单选):', newSelected);
       return newSelected;
     });
   };
 
   // 打开新建项目弹窗
   const handleCreateProject = () => {
-    console.log('开始创建项目 - 打开弹窗');
+    debugLog('frontend', 'landingPage', '开始创建项目 - 打开弹窗');
     setNewProjectName('');
     setNewProjectDescription('');
     setShowCreateProjectModal(true);
@@ -318,12 +428,12 @@ const LandingPage: React.FC = () => {
   // 确认创建项目（仅管理员）
   const handleConfirmCreateProject = async () => {
     if (!newProjectName.trim()) {
-      alert('项目名称不能为空');
+      await appAlert.alert('项目名称不能为空');
       return;
     }
     
     if (!isAdmin) {
-      alert('只有管理员可以创建项目');
+      await appAlert.alert('只有管理员可以创建项目');
       return;
     }
 
@@ -334,9 +444,9 @@ const LandingPage: React.FC = () => {
 
     try {
       setIsCreatingProject(true);
-      console.log('提交新建项目:', projectData);
+      debugLog('frontend', 'landingPage', '提交新建项目:', projectData);
       const createdProject = await adminApi.createProject(projectData);
-      console.log('创建项目成功:', createdProject);
+      debugLog('frontend', 'landingPage', '创建项目成功:', createdProject);
 
       // 保存到状态和 localStorage
       setCurrentProject(createdProject);
@@ -351,28 +461,28 @@ const LandingPage: React.FC = () => {
       const projectsList = await adminApi.getAllProjects();
       setProjects(projectsList);
       
-      alert(`项目 "${createdProject.name}" 创建成功！\n验证码: ${createdProject.access_code}`);
+      await appAlert.alert(`项目 "${createdProject.name}" 创建成功！\n验证码: ${createdProject.access_code}`);
     } catch (error: any) {
       console.error('创建项目失败:', error);
-      alert(error.response?.data?.error || '创建项目失败，请检查后端服务是否正常运行');
+      await appAlert.alert(error.response?.data?.error || '创建项目失败，请检查后端服务是否正常运行');
     } finally {
       setIsCreatingProject(false);
     }
   };
 
   const handleShowProjectList = () => {
-    console.log('显示项目列表');
+    debugLog('frontend', 'landingPage', '显示项目列表');
     setShowProjectList(true);
-    console.log('状态更新: 显示项目列表弹窗');
+    debugLog('frontend', 'landingPage', '状态更新: 显示项目列表弹窗');
   };
 
   const handleBackToProjects = () => {
-    console.log('关闭项目列表弹窗，当前项目:', currentProject);
+    debugLog('frontend', 'landingPage', '关闭项目列表弹窗，当前项目:', currentProject);
     setShowProjectList(false);
   };
 
   const handleSelectProject = (project: any) => {
-    console.log('选择项目:', project);
+    debugLog('frontend', 'landingPage', '选择项目:', project);
     // 选择项目后更新当前项目并关闭弹窗
     setCurrentProject(project);
     setStoredCurrentProject(project);
@@ -380,7 +490,7 @@ const LandingPage: React.FC = () => {
     // 切换项目时可以清空已选模块，避免误操作
     setSelectedModules([]);
     clearStoredSelectedModules();
-    console.log('状态更新: 选择项目并保持在主页');
+    debugLog('frontend', 'landingPage', '状态更新: 选择项目并保持在主页');
   };
 
   // 查看项目描述
@@ -419,10 +529,10 @@ const LandingPage: React.FC = () => {
         setStoredCurrentProject({ ...currentProject, ...updatedProject });
       }
 
-      alert('项目描述已更新');
+      await appAlert.alert('项目描述已更新');
     } catch (error) {
       console.error('更新项目描述失败:', error);
-      alert('更新项目描述失败，请稍后重试或检查后端服务');
+      await appAlert.alert('更新项目描述失败，请稍后重试或检查后端服务');
     } finally {
       setSavingDescription(false);
     }
@@ -434,7 +544,14 @@ const LandingPage: React.FC = () => {
     if (togglingLockProjectId !== null) return;
 
     const action = project.locked ? '解锁' : '锁定';
-    const confirmed = window.confirm(`确定要${action}项目 "${project.name}" 吗？${project.locked ? '解锁后，用户可以通过验证码访问该项目。' : '锁定后，只有管理员可以访问该项目，普通用户输入验证码后将无法访问。'}`);
+    const confirmed = await confirm(
+      `确定要${action}项目 "${project.name}" 吗？${
+        project.locked
+          ? '解锁后，用户可以通过验证码访问该项目。'
+          : '锁定后，只有管理员可以访问该项目，普通用户输入验证码后将无法访问。'
+      }`,
+      { title: `确认${action}` },
+    );
     if (!confirmed) return;
 
     try {
@@ -456,10 +573,10 @@ const LandingPage: React.FC = () => {
         setStoredCurrentProject({ ...currentProject, ...updatedProject });
       }
 
-      alert(`项目 "${project.name}" 已${action}`);
+      await appAlert.alert(`项目 "${project.name}" 已${action}`);
     } catch (error) {
       console.error(`${action}项目失败:`, error);
-      alert(`${action}项目失败，请检查后端服务是否正常运行`);
+      await appAlert.alert(`${action}项目失败，请检查后端服务是否正常运行`);
     } finally {
       setTogglingLockProjectId(null);
     }
@@ -470,7 +587,9 @@ const LandingPage: React.FC = () => {
     e.stopPropagation();
     if (deletingProjectId !== null) return;
 
-    const confirmed = window.confirm(`确定要删除项目 "${project.name}" 以及其相关数据吗？该操作不可恢复！`);
+    const confirmed = await confirm(`确定要删除项目 "${project.name}" 以及其相关数据吗？该操作不可恢复！`, {
+      title: '确认删除',
+    });
     if (!confirmed) return;
 
     try {
@@ -488,34 +607,34 @@ const LandingPage: React.FC = () => {
         clearStoredSelectedModules();
       }
 
-      alert(`项目 "${project.name}" 已删除`);
+      await appAlert.alert(`项目 "${project.name}" 已删除`);
     } catch (error) {
       console.error('删除项目失败:', error);
-      alert('删除项目失败，请检查后端服务是否正常运行');
+      await appAlert.alert('删除项目失败，请检查后端服务是否正常运行');
     } finally {
       setDeletingProjectId(null);
     }
   };
 
   const handleStart = () => {
-    console.log('开始标注，选中模块:', selectedModules, '当前项目:', currentProject);
+    debugLog('frontend', 'landingPage', '开始标注，选中模块:', selectedModules, '当前项目:', currentProject);
     if (!currentProject) {
-      alert('请先选择或创建一个项目');
+      void appAlert.alert('请先选择或创建一个项目');
       return;
     }
     if (selectedModules.length === 0) {
-      alert('请至少选择一个模块');
+      void appAlert.alert('请至少选择一个模块');
       return;
     }
     
     if (!isAuthenticated) {
-      alert('请先输入验证码或登录');
+      void appAlert.alert('请先输入验证码或登录');
       return;
     }
     
     // 存储选择的模块到当前标签页
     setStoredSelectedModules(selectedModules);
-    console.log('导航到标注页面');
+    debugLog('frontend', 'landingPage', '导航到标注页面');
     // 模块路由分发：
     // - 仅选 9D Pose：进入 pose 页面
     // - 其他情况：默认进入 2D 标注页面（后续可扩展为模块组合工作流）
@@ -527,7 +646,7 @@ const LandingPage: React.FC = () => {
   const handleRegenerateCode = async (projectId: number) => {
     if (!isAdmin) return;
     
-    const confirmed = window.confirm('确定要重新生成验证码吗？旧的验证码将失效！');
+    const confirmed = await confirm('确定要重新生成验证码吗？旧的验证码将失效！', { title: '确认操作' });
     if (!confirmed) return;
     
     try {
@@ -542,51 +661,163 @@ const LandingPage: React.FC = () => {
         setStoredCurrentProject(updatedProject);
       }
       
-      alert(`验证码已重新生成: ${updatedProject.access_code}`);
+      await appAlert.alert(`验证码已重新生成: ${updatedProject.access_code}`);
     } catch (error: any) {
       console.error('重新生成验证码失败', error);
-      alert(error.response?.data?.error || '重新生成验证码失败');
+      await appAlert.alert(error.response?.data?.error || '重新生成验证码失败');
     }
   };
 
   const hasProject = !!currentProject;
+  useProjectSessionGuard(currentProject?.id ? Number(currentProject.id) : null, isAuthenticated && !!currentProject?.id);
 
   return (
     <div className="landing-page">
+      <HumanVerificationModal
+        open={showHumanVerification}
+        purpose={humanVerificationPurpose}
+        onVerified={handleAfterHumanVerified}
+      />
       {/* 验证码输入弹窗 */}
       {showAccessCodeModal && !isAuthenticated && (
         <div className="access-code-overlay">
           <div className="access-code-modal">
             <div className="access-code-header">
               <h2>项目访问验证</h2>
-              <p className="access-code-hint">请输入项目验证码以访问标注系统</p>
+              <p className="access-code-hint">验证码共 6 位，请分两段输入（前 4 位 + 后 2 位）</p>
             </div>
             <div className="access-code-body">
-              <input
-                type="text"
-                className="access-code-input code-input"
-                placeholder="请输入6位验证码"
-                value={accessCode}
-                onChange={(e) => {
-                  setAccessCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''));
-                  setCodeError('');
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !verifyingCode) {
-                    handleVerifyCode();
-                  }
-                }}
-                maxLength={6}
-                disabled={verifyingCode}
-                autoFocus
-              />
+              <div className="access-code-split" role="group" aria-label="项目验证码，前四后二">
+                <div className="access-code-split-field">
+                  <label className="access-code-split-label" htmlFor="access-code-head">
+                    前 4 位
+                  </label>
+                  <input
+                    id="access-code-head"
+                    ref={accessCodeHeadRef}
+                    type="text"
+                    inputMode="text"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    className="access-code-input code-input access-code-part access-code-part-head"
+                    placeholder="ABCD"
+                    value={accessCodeHead}
+                    onChange={(e) => {
+                      const raw = sanitizeAccessCodeFragment(e.target.value);
+                      const next = raw.slice(0, ACCESS_CODE_HEAD_LEN);
+                      setAccessCodeHead(next);
+                      setCodeError('');
+                      if (raw.length > ACCESS_CODE_HEAD_LEN) {
+                        const overflow = raw.slice(ACCESS_CODE_HEAD_LEN);
+                        setAccessCodeTail(
+                          sanitizeAccessCodeFragment(overflow + accessCodeTail).slice(
+                            0,
+                            ACCESS_CODE_TAIL_LEN,
+                          ),
+                        );
+                        accessCodeTailRef.current?.focus();
+                      } else if (next.length === ACCESS_CODE_HEAD_LEN) {
+                        accessCodeTailRef.current?.focus();
+                      }
+                    }}
+                    onPaste={(e) => {
+                      const t = sanitizeAccessCodeFragment(e.clipboardData.getData('text'));
+                      if (!t) return;
+                      e.preventDefault();
+                      if (t.length >= ACCESS_CODE_HEAD_LEN + ACCESS_CODE_TAIL_LEN) {
+                        setAccessCodeHead(t.slice(0, ACCESS_CODE_HEAD_LEN));
+                        setAccessCodeTail(t.slice(ACCESS_CODE_HEAD_LEN, ACCESS_CODE_HEAD_LEN + ACCESS_CODE_TAIL_LEN));
+                      } else if (t.length > ACCESS_CODE_HEAD_LEN) {
+                        setAccessCodeHead(t.slice(0, ACCESS_CODE_HEAD_LEN));
+                        setAccessCodeTail(t.slice(ACCESS_CODE_HEAD_LEN));
+                      } else {
+                        setAccessCodeHead(t.slice(0, ACCESS_CODE_HEAD_LEN));
+                        setAccessCodeTail('');
+                      }
+                      setCodeError('');
+                      accessCodeTailRef.current?.focus();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !verifyingCode) {
+                        e.preventDefault();
+                        if (accessCodeHead.length === ACCESS_CODE_HEAD_LEN) {
+                          accessCodeTailRef.current?.focus();
+                        } else {
+                          handleVerifyCode();
+                        }
+                      }
+                    }}
+                    maxLength={ACCESS_CODE_HEAD_LEN}
+                    disabled={verifyingCode}
+                    autoFocus
+                  />
+                </div>
+                <span className="access-code-split-sep" aria-hidden="true">
+                  —
+                </span>
+                <div className="access-code-split-field">
+                  <label className="access-code-split-label" htmlFor="access-code-tail">
+                    后 2 位
+                  </label>
+                  <input
+                    id="access-code-tail"
+                    ref={accessCodeTailRef}
+                    type="text"
+                    inputMode="text"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    className="access-code-input code-input access-code-part access-code-part-tail"
+                    placeholder="12"
+                    value={accessCodeTail}
+                    onChange={(e) => {
+                      const next = sanitizeAccessCodeFragment(e.target.value).slice(
+                        0,
+                        ACCESS_CODE_TAIL_LEN,
+                      );
+                      setAccessCodeTail(next);
+                      setCodeError('');
+                    }}
+                    onPaste={(e) => {
+                      const t = sanitizeAccessCodeFragment(e.clipboardData.getData('text'));
+                      if (t.length >= 6) {
+                        e.preventDefault();
+                        setAccessCodeHead(t.slice(0, ACCESS_CODE_HEAD_LEN));
+                        setAccessCodeTail(t.slice(ACCESS_CODE_HEAD_LEN, ACCESS_CODE_HEAD_LEN + ACCESS_CODE_TAIL_LEN));
+                        setCodeError('');
+                      } else if (t.length >= 2) {
+                        e.preventDefault();
+                        setAccessCodeTail(t.slice(0, ACCESS_CODE_TAIL_LEN));
+                        setCodeError('');
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Backspace' && accessCodeTail === '') {
+                        e.preventDefault();
+                        accessCodeHeadRef.current?.focus();
+                        return;
+                      }
+                      if (e.key === 'Enter' && !verifyingCode) {
+                        handleVerifyCode();
+                      }
+                    }}
+                    maxLength={ACCESS_CODE_TAIL_LEN}
+                    disabled={verifyingCode}
+                  />
+                </div>
+              </div>
               {codeError && <div className="access-code-error">{codeError}</div>}
             </div>
             <div className="access-code-actions">
               <button
                 className="access-code-btn primary"
                 onClick={handleVerifyCode}
-                disabled={verifyingCode || !accessCode.trim()}
+                disabled={
+                  verifyingCode ||
+                  sanitizeAccessCodeFragment(accessCodeHead).length !== ACCESS_CODE_HEAD_LEN ||
+                  sanitizeAccessCodeFragment(accessCodeTail).length !== ACCESS_CODE_TAIL_LEN
+                }
               >
                 {verifyingCode ? '验证中...' : '确认'}
               </button>
@@ -760,13 +991,25 @@ const LandingPage: React.FC = () => {
       <div className="landing-content">
         <header className="landing-header">
           <h1>智能图像标注系统</h1>
-          <p className="subtitle">V2.1</p>
+          <p className="subtitle">V 2.9</p>
         </header>
 
         {/* 顶部：项目管理区域（始终展示） */}
         <div className="project-selection">
           <div className="project-selection-header">
-          <h2>项目管理</h2>
+            <div className="project-selection-header-left">
+              <h2>项目管理</h2>
+              {isAuthenticated && isAdmin && (
+                <button
+                  type="button"
+                  className="debug-settings-open-btn"
+                  onClick={() => setShowDebugSettingsModal(true)}
+                  title="配置各服务调试输出级别"
+                >
+                  调试信息
+                </button>
+              )}
+            </div>
             {isAuthenticated && (
               <div className="project-selection-header-right">
                 <div className="user-info">
@@ -1106,6 +1349,14 @@ const LandingPage: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {showDebugSettingsModal && (
+        <DebugSettingsModal
+          open={showDebugSettingsModal}
+          onClose={() => setShowDebugSettingsModal(false)}
+          isAdmin={isAdmin}
+        />
       )}
       
     </div>

@@ -6,7 +6,7 @@ const fs = require('fs');
 const session = require('express-session');
 const bcrypt = require('bcrypt');
 const db = require('./database');
-const { startServer } = require('./bootstrap');
+const { startServer } = require('./utils/bootstrap');
 // routes
 const { getProjectUploadDir, buildImageUrl, buildUploadsDirUrl } = require('./utils/uploads');
 const { normalizeDepthKey, inferRoleFromFilename } = require('./utils/depthNaming');
@@ -22,11 +22,15 @@ const { registerAnnotationRoutes } = require('./routes/annotations');
 const { registerImageRoutes } = require('./routes/images');
 const { registerPoseRoutes } = require('./routes/pose');
 const { registerDebugRoutes } = require('./routes/debug');
+const { registerProjectSessionRoutes } = require('./routes/projectSession');
+const { getUploadsRootDir } = require('./utils/dataPaths');
+const { makeProjectSessionGuard } = require('./utils/projectSessionGuard');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 // Pose service (Python) for diff-dope or future refiners
 const POSE_SERVICE_URL = process.env.POSE_SERVICE_URL || 'http://localhost:7900';
+const DEPTH_REPAIR_SERVICE_URL = process.env.DEPTH_REPAIR_SERVICE_URL || 'http://localhost:7870';
 
 // 统一的管理员账号配置（只允许这一个账号登录）
 const DEFAULT_ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'DaxAdmin';
@@ -57,22 +61,24 @@ app.use(session({
 }));
 
 // 静态文件服务
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(getUploadsRootDir()));
 
 // 文件上传配置
 // 注意：multer 的 destination 在文件解析前执行，req.body 可能还没有值
 // 所以我们先保存到临时位置，然后在处理中移动到项目文件夹
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, 'uploads');
+    const uploadDir = getUploadsRootDir();
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+    const original = String(file.originalname || 'image');
+    const ext = (path.extname(original) || '').toLowerCase() || '.bin';
+    const uniqueSuffix = `${Date.now()}_${Math.round(Math.random() * 1e9)}`;
+    cb(null, `__stg_${uniqueSuffix}${ext}`);
   }
 });
 
@@ -97,7 +103,7 @@ const upload = multer({
 // Depth upload storage（与 mesh 一样先落盘到 uploads 根目录）
 const depthStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, 'uploads');
+    const uploadDir = getUploadsRootDir();
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
@@ -142,21 +148,29 @@ function generateAccessCode() {
 }
 
 // ========== 权限检查中间件 ==========
-const { requireAdmin, requireProjectAccess, requireImageProjectAccess } = makeAuthzMiddlewares({ db });
+const projectSessionGuard = makeProjectSessionGuard();
+const { requireAdmin, requireProjectAccess, requireImageProjectAccess } = makeAuthzMiddlewares({ db, projectSessionGuard });
 
 // ===== Register decoupled routes =====
 // depth + cameras
-registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename, buildImageUrl });
+registerDepthRoutes(app, {
+  db,
+  normalizeDepthKey,
+  inferRoleFromFilename,
+  buildImageUrl,
+  depthRepairServiceUrl: DEPTH_REPAIR_SERVICE_URL,
+});
 
 // auth
-registerAuthRoutes(app, { db, bcrypt, requireAdmin, DEFAULT_ADMIN_USERNAME });
+registerAuthRoutes(app, { db, bcrypt, requireAdmin, DEFAULT_ADMIN_USERNAME, projectSessionGuard });
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: '智能标注系统后端服务运行中' });
 });
 
 // projects
-registerProjectRoutes(app, { db, requireAdmin, requireProjectAccess, generateAccessCode });
+registerProjectRoutes(app, { db, requireAdmin, requireProjectAccess, generateAccessCode, projectSessionGuard });
+registerProjectSessionRoutes(app, { db, projectSessionGuard });
 
 // uploads + zip jobs
 registerUploadRoutes(app, { db, upload, getProjectUploadDir });
@@ -167,7 +181,7 @@ registerMeshRoutes(app, { db, computeObjBoundingBox, buildImageUrl, buildUploads
 // auto annotate + annotations
 registerAutoAnnotateRoutes(app, { db, buildImageUrl });
 registerAnnotationRoutes(app, { db, requireImageProjectAccess });
-registerImageRoutes(app, { db, buildImageUrl });
+registerImageRoutes(app, { db, buildImageUrl, projectSessionGuard });
 registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl: POSE_SERVICE_URL });
 registerDebugRoutes(app);
 

@@ -6,15 +6,18 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
 import { annotationApi, depthApi, meshApi, pose9dApi } from '../../services/api';
 import { toAbsoluteUrl } from '../../utils/urls';
+import { useAppAlert } from '../common/AppAlert';
 
 type Props = {
   visible: boolean;
   projectId: number | null;
   imageId: number | null;
+  depthMode?: 'raw' | 'fix';
   saveRequestId?: number;
   saveInitialRequestId?: number;
   cancelInitialRequestId?: number;
   clear6dRequestId?: number;
+  onSaveFinalPoseComplete?: (ok: boolean) => void;
 };
 
 type Intrinsics = {
@@ -96,15 +99,38 @@ const cvPoseToThree44ToMatrix = (pose44: number[][]): THREE.Matrix4 => {
 };
 
 type TransformHistoryEntry = {
+  instanceKey: string;
   meshId: number;
+  maskId: string | null;
   before: number[];
   after: number[];
 };
 
 type PoseMode = 'final' | 'initial';
 
+type InstancePosePair = {
+  initial: number[][] | null;
+  final: number[][] | null;
+};
+
+type InstanceMeta = {
+  instanceKey: string;
+  meshId: number;
+  maskId: string | null;
+  maskIndex: number | null;
+};
+
 const COLOR_FINAL = 0xff8a00;
 const COLOR_INITIAL = 0x22c55e;
+
+const normalizeMaskId = (v: any): string | null => {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s.length ? s : null;
+};
+
+const getInstanceKey = (meshId: number, maskId: string | null, fallback = 'nomask') =>
+  `mesh:${Number(meshId)}|mask:${maskId || fallback}`;
 
 type MaskPolygon = {
   points: Array<{ x: number; y: number }>;
@@ -184,11 +210,14 @@ const PosePointCloudLayer: React.FC<Props> = ({
   visible,
   projectId,
   imageId,
+  depthMode = 'raw',
   saveRequestId = 0,
   saveInitialRequestId = 0,
   cancelInitialRequestId = 0,
   clear6dRequestId = 0,
+  onSaveFinalPoseComplete,
 }) => {
+  const { confirm } = useAppAlert();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState('准备中...');
@@ -199,7 +228,7 @@ const PosePointCloudLayer: React.FC<Props> = ({
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [, setCancelInitialBusy] = useState(false);
   const [, setClear6dBusy] = useState(false);
-  const [activeMeshId, setActiveMeshId] = useState<number | null>(null);
+  const [activeInstanceKey, setActiveInstanceKey] = useState<string | null>(null);
   const [sceneRefreshId, setSceneRefreshId] = useState(0);
   const [matrixPos, setMatrixPos] = useState<{ x: number | null; y: number | null }>({ x: null, y: null });
   const [showMeshPicker, setShowMeshPicker] = useState(false);
@@ -207,23 +236,27 @@ const PosePointCloudLayer: React.FC<Props> = ({
   const [meshListLoading, setMeshListLoading] = useState(false);
   const [manualMeshIds, setManualMeshIds] = useState<number[]>([]);
   // 颜色/姿态渲染与可拖拽行为由每个 mesh 是否存在 initialPose 决定，无需额外模式开关
-  // 缓存每个 mesh 的初始位姿 / 最终位姿（用于切换“人工初始位姿”时刷新矩阵）
-  const pose44ByMeshIdRef = useRef<Record<number, { initial: number[][] | null; final: number[][] | null }>>({});
-  // 当前点云场景渲染的所有 meshId（用于“保存位置：保存所有最终位姿”）
-  const targetMeshIdsRef = useRef<number[]>([]);
+  // 缓存每个实例(image+mesh+mask)的初始位姿/最终位姿
+  const pose44ByInstanceRef = useRef<Record<string, InstancePosePair>>({});
+  // 当前点云场景渲染的所有实例
+  const targetInstancesRef = useRef<InstanceMeta[]>([]);
   const transformRef = useRef<TransformControls | null>(null);
   const meshObjRef = useRef<THREE.Object3D | null>(null);
-  const meshByIdRef = useRef<Map<number, THREE.Object3D>>(new Map());
+  const meshByInstanceRef = useRef<Map<string, THREE.Object3D>>(new Map());
   const undoStackRef = useRef<TransformHistoryEntry[]>([]);
   const redoStackRef = useRef<TransformHistoryEntry[]>([]);
   const dragStartMatrixRef = useRef<number[] | null>(null);
-  const materialEntriesRef = useRef<Array<{ mesh: THREE.Mesh; meshId: number; textured: THREE.Material | THREE.Material[]; wire: THREE.MeshBasicMaterial }>>([]);
+  const materialEntriesRef = useRef<
+    Array<{ mesh: THREE.Mesh; instanceKey: string; textured: THREE.Material | THREE.Material[]; wire: THREE.MeshBasicMaterial }>
+  >([]);
   const dragStateRef = useRef<{ dragging: boolean; offsetX: number; offsetY: number }>({ dragging: false, offsetX: 0, offsetY: 0 });
+  const lastHandledCancelInitialRequestIdRef = useRef(0);
+  const lastHandledClear6dRequestIdRef = useRef(0);
 
-  const activeMeshIdRef = useRef<number | null>(activeMeshId);
+  const activeInstanceKeyRef = useRef<string | null>(activeInstanceKey);
   useEffect(() => {
-    activeMeshIdRef.current = activeMeshId;
-  }, [activeMeshId]);
+    activeInstanceKeyRef.current = activeInstanceKey;
+  }, [activeInstanceKey]);
 
   const matrixText = useMemo(() => {
     const m = matrixValues;
@@ -239,9 +272,9 @@ const PosePointCloudLayer: React.FC<Props> = ({
       return;
     }
     const last = hist.pop()!;
-    const obj = meshByIdRef.current.get(last.meshId) || null;
+    const obj = meshByInstanceRef.current.get(last.instanceKey) || null;
     if (!obj) {
-      setStatus(`回退失败：场景中找不到 Mesh #${last.meshId}`);
+      setStatus(`回退失败：场景中找不到实例 ${last.instanceKey}`);
       return;
     }
     const m = new THREE.Matrix4();
@@ -251,11 +284,11 @@ const PosePointCloudLayer: React.FC<Props> = ({
     obj.updateMatrix();
     obj.updateMatrixWorld(true);
     meshObjRef.current = obj;
-    setActiveMeshId(last.meshId);
+    setActiveInstanceKey(last.instanceKey);
     setMatrixValues(obj.matrix.toArray());
     if (transformRef.current) transformRef.current.attach(obj);
     redoStackRef.current.push(last);
-    setStatus(`已回退 Mesh #${last.meshId} 上一步操作（可重做 ${redoStackRef.current.length} 步）`);
+    setStatus(`已回退实例(${last.meshId}${last.maskId ? `/${last.maskId}` : ''}) 上一步操作（可重做 ${redoStackRef.current.length} 步）`);
   }, []);
 
   const redoLastTransform = useCallback(() => {
@@ -265,9 +298,9 @@ const PosePointCloudLayer: React.FC<Props> = ({
       return;
     }
     const last = hist.pop()!;
-    const obj = meshByIdRef.current.get(last.meshId) || null;
+    const obj = meshByInstanceRef.current.get(last.instanceKey) || null;
     if (!obj) {
-      setStatus(`重做失败：场景中找不到 Mesh #${last.meshId}`);
+      setStatus(`重做失败：场景中找不到实例 ${last.instanceKey}`);
       return;
     }
     const m = new THREE.Matrix4();
@@ -277,11 +310,11 @@ const PosePointCloudLayer: React.FC<Props> = ({
     obj.updateMatrix();
     obj.updateMatrixWorld(true);
     meshObjRef.current = obj;
-    setActiveMeshId(last.meshId);
+    setActiveInstanceKey(last.instanceKey);
     setMatrixValues(obj.matrix.toArray());
     if (transformRef.current) transformRef.current.attach(obj);
     undoStackRef.current.push(last);
-    setStatus(`已重做 Mesh #${last.meshId} 上一步操作（可回退 ${undoStackRef.current.length} 步）`);
+    setStatus(`已重做实例(${last.meshId}${last.maskId ? `/${last.maskId}` : ''}) 上一步操作（可回退 ${undoStackRef.current.length} 步）`);
   }, []);
 
   useEffect(() => {
@@ -291,7 +324,7 @@ const PosePointCloudLayer: React.FC<Props> = ({
       // 颜色固定由“是否存在人工初始位姿”决定：
       // - 有初始位姿：绿色
       // - 无初始位姿：橙色
-      const pair = pose44ByMeshIdRef.current[e.meshId];
+      const pair = pose44ByInstanceRef.current[e.instanceKey];
       const shouldGreen = !!pair?.initial;
       e.wire.color.setHex(shouldGreen ? COLOR_INITIAL : COLOR_FINAL);
       if (!(e.mesh.material instanceof Array) && e.mesh.material === e.wire) {
@@ -350,11 +383,11 @@ const PosePointCloudLayer: React.FC<Props> = ({
     };
   }, [visible]);
 
-  const applyPoseToMesh = (meshId: number, targetMode: PoseMode) => {
-    const obj = meshByIdRef.current.get(meshId);
+  const applyPoseToInstance = (instanceKey: string, targetMode: PoseMode) => {
+    const obj = meshByInstanceRef.current.get(instanceKey);
     if (!obj) return false;
 
-    const pair = pose44ByMeshIdRef.current[meshId];
+    const pair = pose44ByInstanceRef.current[instanceKey];
     const pose44 = targetMode === 'initial' ? pair?.initial : pair?.final;
     if (!pose44) return false;
 
@@ -372,14 +405,14 @@ const PosePointCloudLayer: React.FC<Props> = ({
     return true;
   };
 
-  const updateWireColorForMesh = (meshId: number) => {
-    const pair = pose44ByMeshIdRef.current[meshId];
+  const updateWireColorForInstance = (instanceKey: string) => {
+    const pair = pose44ByInstanceRef.current[instanceKey];
     const shouldGreen = !!pair?.initial;
     const hex = shouldGreen ? COLOR_INITIAL : COLOR_FINAL;
     const entries = materialEntriesRef.current;
     if (!entries || entries.length === 0) return;
     for (const e of entries) {
-      if (e.meshId !== meshId) continue;
+      if (e.instanceKey !== instanceKey) continue;
       e.wire.color.setHex(hex);
       if (!(e.mesh.material instanceof Array) && e.mesh.material === e.wire) {
         e.mesh.material.needsUpdate = true;
@@ -410,6 +443,36 @@ const PosePointCloudLayer: React.FC<Props> = ({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
+    const fitCameraToObjects = (objects: THREE.Object3D[], padding = 1.35) => {
+      if (!objects || objects.length === 0) return;
+      const box = new THREE.Box3();
+      let hasValid = false;
+      for (const obj of objects) {
+        if (!obj) continue;
+        box.expandByObject(obj);
+        hasValid = true;
+      }
+      if (!hasValid || box.isEmpty()) return;
+
+      const center = new THREE.Vector3();
+      const size = new THREE.Vector3();
+      box.getCenter(center);
+      box.getSize(size);
+      const maxDim = Math.max(size.x, size.y, size.z, 1);
+      const fov = (camera.fov * Math.PI) / 180;
+      const fitDist = (maxDim / (2 * Math.tan(fov / 2))) * padding;
+
+      const dir = new THREE.Vector3().subVectors(camera.position, controls.target);
+      if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+      dir.normalize();
+
+      controls.target.copy(center);
+      camera.position.copy(center.clone().add(dir.multiplyScalar(fitDist)));
+      camera.near = Math.max(0.1, fitDist / 200);
+      camera.far = Math.max(5000, fitDist * 40);
+      camera.updateProjectionMatrix();
+      controls.update();
+    };
 
     scene.add(new THREE.AxesHelper(30));
     scene.add(new THREE.GridHelper(300, 20, 0x334155, 0x1e293b));
@@ -467,13 +530,17 @@ const PosePointCloudLayer: React.FC<Props> = ({
         setStatus('加载点云输入...');
         const depthRows = await depthApi.getDepth(projectId, imageId);
         const npy = (depthRows || []).find((d: any) =>
-          d?.modality === 'depth_raw' || String(d?.originalName || d?.filename || '').toLowerCase().endsWith('.npy'),
+          d?.modality === 'depth_raw' || String(d?.filename || '').toLowerCase().endsWith('.npy'),
         );
-        const intr = (depthRows || []).find((d: any) => d?.modality === 'intrinsics' || /intrinsics_/i.test(String(d?.originalName || d?.filename || '')));
-        if (!npy?.url) throw new Error('未找到 depth_raw npy');
+        const intr = (depthRows || []).find((d: any) => d?.modality === 'intrinsics' || /intrinsics_/i.test(String(d?.filename || '')));
+        const npyUrlCandidate =
+          depthMode === 'fix'
+            ? (npy as any)?.depthRawFixUrl || (npy as any)?.depthRawFixPath || null
+            : (npy as any)?.url || null;
+        if (!npyUrlCandidate) throw new Error(depthMode === 'fix' ? '未找到 depth_raw_fix npy（修复深度缺失）' : '未找到 depth_raw npy');
         if (!intr?.url) throw new Error('未找到 intrinsics json');
 
-        const npyUrl = toAbsoluteUrl(npy.url) || npy.url;
+        const npyUrl = toAbsoluteUrl(npyUrlCandidate) || npyUrlCandidate;
         const intrUrl = toAbsoluteUrl(intr.url) || intr.url;
 
         const [npyBuf, intrJs, annoResp] = await Promise.all([
@@ -550,37 +617,63 @@ const PosePointCloudLayer: React.FC<Props> = ({
           meshApi.getMeshes(projectId),
         ]);
         const poses = Array.isArray(posesResp?.poses) ? posesResp.poses : [];
-        const poseMeshIds = poses
-          .map((p: any) => Number(p?.meshId ?? p?.mesh_id ?? p?.mesh?.id ?? 0))
-          .filter((id: number) => Number.isFinite(id) && id > 0);
-        const targetMeshIds = Array.from(
-          new Set(
-            [...poseMeshIds, ...(manualMeshIds || [])]
-              .filter((id) => Number.isFinite(Number(id)) && Number(id) > 0)
-              .map((id) => Number(id)),
-          ),
-        );
-        if (targetMeshIds.length === 0) {
+        const dbInstances: InstanceMeta[] = poses
+          .map((p: any, idx: number) => {
+            const meshId = Number(p?.meshId ?? p?.mesh_id ?? p?.mesh?.id ?? 0);
+            const maskId = normalizeMaskId(p?.maskId ?? p?.mask_id ?? null);
+            const maskIndexRaw = p?.maskIndex ?? p?.mask_index ?? null;
+            const maskIndex = Number.isFinite(Number(maskIndexRaw)) ? Number(maskIndexRaw) : null;
+            if (!Number.isFinite(meshId) || meshId <= 0) return null;
+            return {
+              instanceKey: getInstanceKey(meshId, maskId, `row-${idx}`),
+              meshId,
+              maskId,
+              maskIndex,
+            } as InstanceMeta;
+          })
+          .filter((v: InstanceMeta | null): v is InstanceMeta => !!v);
+        const manualInstances: InstanceMeta[] = (manualMeshIds || [])
+          .map((mid) => Number(mid))
+          .filter((id) => Number.isFinite(id) && id > 0)
+          .filter((id) => !dbInstances.some((it) => it.meshId === id && !it.maskId))
+          .map((meshId) => ({
+            instanceKey: getInstanceKey(meshId, null, 'manual'),
+            meshId,
+            maskId: null,
+            maskIndex: null,
+          }));
+        const targetInstances: InstanceMeta[] = [...dbInstances, ...manualInstances];
+        if (targetInstances.length === 0) {
           setStatus('未找到 diffdope pose44，仅显示点云');
+          fitCameraToObjects([cloud]);
           renderLoop();
           return;
         }
-        targetMeshIdsRef.current = targetMeshIds;
-        meshByIdRef.current.clear();
+        targetInstancesRef.current = targetInstances;
+        meshByInstanceRef.current.clear();
         undoStackRef.current = [];
         redoStackRef.current = [];
-        const allMaterialEntries: Array<{ mesh: THREE.Mesh; meshId: number; textured: THREE.Material | THREE.Material[]; wire: THREE.MeshBasicMaterial }> = [];
-        pose44ByMeshIdRef.current = {};
+        const allMaterialEntries: Array<{
+          mesh: THREE.Mesh;
+          instanceKey: string;
+          textured: THREE.Material | THREE.Material[];
+          wire: THREE.MeshBasicMaterial;
+        }> = [];
+        pose44ByInstanceRef.current = {};
         let lastObj: THREE.Object3D | null = null;
         let lastMeshSize = new THREE.Vector3(0, 0, 0);
-        let lastActiveMeshId: number | null = null;
+        let lastActiveInstanceKey: string | null = null;
 
-        for (const meshId of targetMeshIds) {
-          const selectedPose =
-            poses.find((p: any) => Number(p?.meshId ?? p?.mesh_id ?? p?.mesh?.id) === Number(meshId)) || null;
+        for (const instance of targetInstances) {
+          const { instanceKey, meshId, maskId } = instance;
+          const selectedPose = poses.find((p: any) => {
+            const pmid = Number(p?.meshId ?? p?.mesh_id ?? p?.mesh?.id);
+            const pmask = normalizeMaskId(p?.maskId ?? p?.mask_id ?? null);
+            return pmid === Number(meshId) && pmask === maskId;
+          }) || null;
           const initialPose44 = Array.isArray(selectedPose?.initialPose?.pose44) ? selectedPose?.initialPose?.pose44 : null;
           const finalPose44 = Array.isArray(selectedPose?.diffdope?.pose44) ? selectedPose?.diffdope?.pose44 : null;
-          pose44ByMeshIdRef.current[Number(meshId)] = { initial: initialPose44, final: finalPose44 };
+          pose44ByInstanceRef.current[instanceKey] = { initial: initialPose44, final: finalPose44 };
           const mesh = (meshes || []).find((m: any) => Number(m?.id) === Number(meshId));
           const meshUrlRaw = mesh?.url || (mesh as any)?.filePath || (mesh as any)?.file_path || null;
           if (!meshUrlRaw) continue;
@@ -599,7 +692,12 @@ const PosePointCloudLayer: React.FC<Props> = ({
             }
           } catch (_) {}
           obj = await new Promise<THREE.Group>((resolve, reject) => loader.load(meshUrl, resolve, undefined, reject));
-          (obj as any).userData = { ...(obj as any).userData, meshId: Number(meshId) };
+          (obj as any).userData = {
+            ...(obj as any).userData,
+            meshId: Number(meshId),
+            maskId: maskId || null,
+            instanceKey,
+          };
 
           obj.traverse((c: any) => {
             if (c?.isMesh) {
@@ -615,7 +713,7 @@ const PosePointCloudLayer: React.FC<Props> = ({
               const textured = c.material;
               c.material = renderTextured ? textured : wire;
               c.renderOrder = 10;
-              allMaterialEntries.push({ mesh: c as THREE.Mesh, meshId: Number(meshId), textured, wire });
+              allMaterialEntries.push({ mesh: c as THREE.Mesh, instanceKey, textured, wire });
               pickTargets.push(c as THREE.Object3D);
               pickTargetToRoot.set((c as THREE.Object3D).uuid, obj);
             }
@@ -635,7 +733,7 @@ const PosePointCloudLayer: React.FC<Props> = ({
           obj.updateMatrix();
           obj.updateMatrixWorld(true);
           scene.add(obj);
-          meshByIdRef.current.set(Number(meshId), obj);
+          meshByInstanceRef.current.set(instanceKey, obj);
           selectableRoots.push(obj);
 
           const bb = new THREE.Box3().setFromObject(obj);
@@ -643,17 +741,18 @@ const PosePointCloudLayer: React.FC<Props> = ({
           bb.getSize(sz);
           lastObj = obj;
           lastMeshSize = sz;
-          lastActiveMeshId = Number(meshId);
+          lastActiveInstanceKey = instanceKey;
         }
 
         materialEntriesRef.current = allMaterialEntries;
         if (!lastObj) {
           setStatus('未找到可加载的 Mesh，仅显示点云');
+          fitCameraToObjects([cloud]);
           renderLoop();
           return;
         }
         // 进入点云后：初始化选中最后一个 mesh，并允许橙色/绿色都能被拖拽
-        setActiveMeshId(lastActiveMeshId);
+        setActiveInstanceKey(lastActiveInstanceKey);
         meshObj = lastObj;
         meshObjRef.current = lastObj;
 
@@ -670,11 +769,13 @@ const PosePointCloudLayer: React.FC<Props> = ({
           } else {
             const objNow = transform?.object;
             const mid = Number((objNow as any)?.userData?.meshId ?? 0);
+            const maskId = normalizeMaskId((objNow as any)?.userData?.maskId ?? null);
+            const instanceKey = String((objNow as any)?.userData?.instanceKey || getInstanceKey(mid, maskId, 'drag'));
             const before = dragStartMatrixRef.current;
             const after = objNow ? (objNow.matrix.toArray() as number[]) : null;
             if (Number.isFinite(mid) && mid > 0 && before && after && !matrixEquals(before, after)) {
               const stack = undoStackRef.current;
-              stack.push({ meshId: mid, before: [...before], after: [...after] });
+              stack.push({ instanceKey, meshId: mid, maskId, before: [...before], after: [...after] });
               if (stack.length > 100) stack.shift();
               // 产生新操作后，重做链失效
               redoStackRef.current = [];
@@ -692,6 +793,8 @@ const PosePointCloudLayer: React.FC<Props> = ({
         });
         scene.add(transform.getHelper());
         setMatrixValues(lastObj.matrix.toArray());
+        // 首次进入点云场景时，按点云+Mesh 的整体包围盒自动贴合相机距离
+        fitCameraToObjects([cloud, ...selectableRoots]);
         onPointerDown = (ev: PointerEvent) => {
           if (!renderer?.domElement || !transform) return;
           // 正在使用 TransformControls（拖拽或悬停到轴）时，不进行 mesh 重选，避免误切对象。
@@ -711,19 +814,21 @@ const PosePointCloudLayer: React.FC<Props> = ({
             null;
           if (!root) return;
           const mid = Number((root as any)?.userData?.meshId ?? 0);
+          const maskId = normalizeMaskId((root as any)?.userData?.maskId ?? null);
+          const instanceKey = String((root as any)?.userData?.instanceKey || getInstanceKey(mid, maskId, 'pick'));
           if (Number.isFinite(mid) && mid > 0) {
             transform.attach(root);
             meshObj = root;
             meshObjRef.current = root;
-            setActiveMeshId(mid);
+            setActiveInstanceKey(instanceKey);
             // 指针选中时不要强制“还原”到数据库 pose，避免覆盖未保存的拖拽结果
             setMatrixValues(root.matrix.toArray());
           }
-          setStatus(`已选中 Mesh #${Number.isFinite(mid) && mid > 0 ? mid : 'unknown'}（可拖拽编辑）`);
+          setStatus(`已选中实例 ${Number.isFinite(mid) && mid > 0 ? `${mid}${maskId ? `/${maskId}` : ''}` : 'unknown'}（可拖拽编辑）`);
         };
         renderer.domElement.addEventListener('pointerdown', onPointerDown);
         setStatus(
-          `点云场景就绪（单位: cm，W: 平移 / E或R: 旋转） | meshes=${targetMeshIds.length} | activeSize=(${lastMeshSize.x.toFixed(2)}, ${lastMeshSize.y.toFixed(2)}, ${lastMeshSize.z.toFixed(2)})`,
+          `点云场景就绪（单位: cm，W: 平移 / E或R: 旋转） | instances=${targetInstances.length} | activeSize=(${lastMeshSize.x.toFixed(2)}, ${lastMeshSize.y.toFixed(2)}, ${lastMeshSize.z.toFixed(2)})`,
         );
         renderLoop();
       } catch (e: any) {
@@ -771,19 +876,24 @@ const PosePointCloudLayer: React.FC<Props> = ({
         if (tag === 'input' || tag === 'textarea' || (target as any)?.isContentEditable) return;
 
         const mid = Number((meshObjRef.current as any)?.userData?.meshId ?? 0);
+        const maskId = normalizeMaskId((meshObjRef.current as any)?.userData?.maskId ?? null);
+        const instanceKey = String((meshObjRef.current as any)?.userData?.instanceKey || getInstanceKey(mid, maskId, 'delete'));
         if (Number.isFinite(mid) && mid > 0 && imageId) {
           ev.preventDefault();
           ev.stopPropagation();
           (async () => {
             try {
               setDeleteBusy(true);
-              const ok = window.confirm(`确定删除当前 Mesh 的 9D 标注（meshId=${mid}）并从场景移除？`);
+              const ok = await confirm(`确定删除当前实例的 9D 标注（meshId=${mid}${maskId ? `, maskId=${maskId}` : ''}）并从场景移除？`, {
+                title: '确认删除',
+              });
               if (!ok) return;
-              await pose9dApi.deletePose9D(imageId, mid);
+              await pose9dApi.deletePose9D(imageId, mid, maskId);
               setManualMeshIds((prev) => (prev || []).filter((id) => Number(id) !== mid));
-              setActiveMeshId(null);
+              setActiveInstanceKey(null);
               setMatrixValues(identity16());
-              setStatus(`已删除 Mesh #${mid} 的 9D 标注`);
+              setStatus(`已删除实例 ${mid}${maskId ? `/${maskId}` : ''} 的 9D 标注`);
+              meshByInstanceRef.current.delete(instanceKey);
               setSceneRefreshId((v) => v + 1);
             } catch (e: any) {
               console.error('[PosePointCloudLayer] 删除失败:', e);
@@ -813,7 +923,7 @@ const PosePointCloudLayer: React.FC<Props> = ({
       transform?.dispose();
       transformRef.current = null;
       meshObjRef.current = null;
-      meshByIdRef.current.clear();
+      meshByInstanceRef.current.clear();
       undoStackRef.current = [];
       redoStackRef.current = [];
       dragStartMatrixRef.current = null;
@@ -825,7 +935,7 @@ const PosePointCloudLayer: React.FC<Props> = ({
       } catch (_) {}
       if (cancelled) return;
     };
-  }, [visible, projectId, imageId, manualMeshIds, sceneRefreshId, deleteBusy, undoLastTransform, redoLastTransform]);
+  }, [visible, projectId, imageId, depthMode, manualMeshIds, sceneRefreshId, deleteBusy, undoLastTransform, redoLastTransform]);
 
   const matrixValuesToCvPose44 = () => {
     const m = new THREE.Matrix4();
@@ -893,43 +1003,48 @@ const PosePointCloudLayer: React.FC<Props> = ({
 
   const saveCurrentPose44 = async () => {
     if (!imageId || saveBusy) return;
-    const meshIds = targetMeshIdsRef.current || [];
-    if (!meshIds.length) {
-      setStatus('当前没有可保存的 Mesh');
+    const instances = targetInstancesRef.current || [];
+    if (!instances.length) {
+      setStatus('当前没有可保存的实例');
+      onSaveFinalPoseComplete?.(false);
       return;
     }
+    let ok = false;
     try {
       setSaveBusy(true);
-      // 保存“最终位姿”：对当前点云场景内的所有 Mesh 都写入 diffdope_json
-      for (const mid of meshIds) {
-        const obj = meshByIdRef.current.get(mid);
+      // 保存“最终位姿”：对当前点云场景内的所有实例都写入 diffdope_json
+      for (const inst of instances) {
+        const obj = meshByInstanceRef.current.get(inst.instanceKey);
         if (!obj) continue;
         obj.updateMatrixWorld(true);
         const matrixArr = obj.matrix.toArray() as number[];
         const cv = matrixArrayToCvPose44(matrixArr);
-        await pose9dApi.saveDiffdopePose44(imageId, mid, cv);
-        pose44ByMeshIdRef.current[mid] = { ...pose44ByMeshIdRef.current[mid], final: cv };
+        await pose9dApi.saveDiffdopePose44(imageId, inst.meshId, cv, inst.maskId);
+        pose44ByInstanceRef.current[inst.instanceKey] = { ...pose44ByInstanceRef.current[inst.instanceKey], final: cv };
       }
-      setStatus('所有 Mesh 的最终位姿已保存到数据库（diffdope_json）');
+      ok = true;
+      setStatus('所有实例的最终位姿已保存到数据库（diffdope_json）');
     } catch (e: any) {
       setStatus(e?.response?.data?.message || e?.message || '保存失败');
     } finally {
       setSaveBusy(false);
+      onSaveFinalPoseComplete?.(ok);
     }
   };
 
   const saveCurrentInitialPose44 = async () => {
-    if (!imageId || !activeMeshId || saveBusy) return;
+    if (!imageId || !activeInstanceKey || saveBusy) return;
     try {
       setSaveBusy(true);
       const cv = matrixValuesToCvPose44();
-      const mid = Number(activeMeshId);
-      await pose9dApi.saveInitialPose(imageId, { meshId: mid, pose44: cv });
-      pose44ByMeshIdRef.current[mid] = { ...pose44ByMeshIdRef.current[mid], initial: cv };
-      updateWireColorForMesh(mid);
-      // 确保该 Mesh 以“初始位姿（绿色）”的渲染姿态存在
-      applyPoseToMesh(mid, 'initial');
-      setStatus(`初始位姿已保存到数据库（Mesh #${mid} 变为绿色）`);
+      const inst = targetInstancesRef.current.find((x) => x.instanceKey === activeInstanceKey);
+      if (!inst) throw new Error('未找到当前选中实例');
+      await pose9dApi.saveInitialPose(imageId, { meshId: inst.meshId, maskId: inst.maskId, maskIndex: inst.maskIndex, pose44: cv });
+      pose44ByInstanceRef.current[inst.instanceKey] = { ...pose44ByInstanceRef.current[inst.instanceKey], initial: cv };
+      updateWireColorForInstance(inst.instanceKey);
+      // 确保该实例以“初始位姿（绿色）”渲染
+      applyPoseToInstance(inst.instanceKey, 'initial');
+      setStatus(`初始位姿已保存到数据库（实例 ${inst.meshId}${inst.maskId ? `/${inst.maskId}` : ''} 变为绿色）`);
     } catch (e: any) {
       setStatus(e?.response?.data?.message || e?.message || '保存初始位姿失败');
     } finally {
@@ -954,29 +1069,36 @@ const PosePointCloudLayer: React.FC<Props> = ({
   useEffect(() => {
     if (!visible) return;
     if (!cancelInitialRequestId) return;
+    if (cancelInitialRequestId === lastHandledCancelInitialRequestIdRef.current) return;
     if (!imageId) return;
+    lastHandledCancelInitialRequestIdRef.current = cancelInitialRequestId;
 
     (async () => {
-      const mid = activeMeshIdRef.current;
-      if (!mid) {
-        setStatus('未选中 Mesh，无法取消初始位姿');
+      const instanceKey = activeInstanceKeyRef.current;
+      if (!instanceKey) {
+        setStatus('未选中实例，无法取消初始位姿');
+        return;
+      }
+      const inst = targetInstancesRef.current.find((x) => x.instanceKey === instanceKey);
+      if (!inst) {
+        setStatus('未找到当前选中实例，无法取消初始位姿');
         return;
       }
 
-      const hasInitial = !!pose44ByMeshIdRef.current[Number(mid)]?.initial;
+      const hasInitial = !!pose44ByInstanceRef.current[instanceKey]?.initial;
       if (!hasInitial) {
-        setStatus(`Mesh #${mid} 没有人工初始位姿，无法取消`);
+        setStatus(`实例 ${inst.meshId}${inst.maskId ? `/${inst.maskId}` : ''} 没有人工初始位姿，无法取消`);
         return;
       }
 
       try {
         setCancelInitialBusy(true);
-        await pose9dApi.deleteInitialPose(imageId, mid);
-        pose44ByMeshIdRef.current[Number(mid)] = { ...pose44ByMeshIdRef.current[Number(mid)], initial: null };
-        updateWireColorForMesh(Number(mid));
+        await pose9dApi.deleteInitialPose(imageId, inst.meshId, inst.maskId);
+        pose44ByInstanceRef.current[instanceKey] = { ...pose44ByInstanceRef.current[instanceKey], initial: null };
+        updateWireColorForInstance(instanceKey);
         // 返回最终位姿（橙色渲染），并保持当前选中
-        applyPoseToMesh(Number(mid), 'final');
-        setStatus(`已取消 Mesh #${mid} 的人工初始位姿（模型回归橙色）`);
+        applyPoseToInstance(instanceKey, 'final');
+        setStatus(`已取消实例 ${inst.meshId}${inst.maskId ? `/${inst.maskId}` : ''} 的人工初始位姿（模型回归橙色）`);
       } catch (e: any) {
         setStatus(e?.response?.data?.message || e?.message || '取消人工初始位姿失败');
       } finally {
@@ -989,12 +1111,16 @@ const PosePointCloudLayer: React.FC<Props> = ({
   useEffect(() => {
     if (!visible) return;
     if (!clear6dRequestId) return;
+    if (clear6dRequestId === lastHandledClear6dRequestIdRef.current) return;
     if (!imageId) return;
+    lastHandledClear6dRequestIdRef.current = clear6dRequestId;
 
     (async () => {
       try {
         setClear6dBusy(true);
-        const ok = window.confirm('确定清除本图内所有 6D 姿态标注吗？此操作会删除 diffdope_json 与 initial_pose_json。');
+        const ok = await confirm('确定清除本图内所有 6D 姿态标注吗？此操作会删除 diffdope_json 与 initial_pose_json。', {
+          title: '确认清除',
+        });
         if (!ok) return;
         await pose9dApi.clear6dByImageId(imageId);
         // 触发完整重载，确保颜色/渲染姿态与 DB 同步。
@@ -1022,7 +1148,8 @@ const PosePointCloudLayer: React.FC<Props> = ({
           添加 Mesh
         </button>
         <div className="pose-pointcloud-meta">
-          模式：{mode === 'translate' ? '平移(W)' : '旋转(E/R)'} ｜ 当前选中：{activeMeshId && pose44ByMeshIdRef.current[Number(activeMeshId)]?.initial ? '人工初始位姿(绿)' : 'AI最终位姿(橙)'} ｜ 输出：Matrix4
+          模式：{mode === 'translate' ? '平移(W)' : '旋转(E/R)'} ｜ 当前选中：
+          {activeInstanceKey && pose44ByInstanceRef.current[activeInstanceKey]?.initial ? '人工初始位姿(绿)' : 'AI最终位姿(橙)'} ｜ 输出：Matrix4
           {' '}｜ 回退：Ctrl+Z ｜ 重做：Ctrl+Y / Ctrl+Shift+Z
         </div>
         <label style={{ marginLeft: '0.25rem', fontSize: '0.8rem', color: '#e5e7eb', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>

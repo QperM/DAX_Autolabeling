@@ -64,8 +64,13 @@ Desktop.ini
 # Local development files
 *.local
 
+# Local admin debug level config (optional)
+server/data/debug_settings.json
+server/data/*.local.json
+
 # Uploaded runtime files (should not be committed)
 server/uploads/
+dax-autolabel-data/
 
 # Python: bytecode & venvs
 __pycache__/
@@ -91,6 +96,11 @@ pip-wheel-metadata/
 server/pose-service/debug_outputs/
 server/pose-service/diff-dope/outputs/
 server/pose-service/diff-dope/multirun/
+
+# depthrepair-service: local model/checkpoints/debug artifacts
+server/depthrepair-service/lingbot-depth/model.pt
+server/depthrepair-service/lingbot-depth/checkpoints/
+server/depthrepair-service/debug_outputs/
 
 # Embedded SAM2 / checkpoints（仅本地使用，不入 Git）
 server/sam2-service/grounded-sam2/

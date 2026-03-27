@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 import torch
+import uvicorn
+import logging
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from omegaconf import OmegaConf
@@ -24,6 +26,69 @@ import diffdope as dd  # noqa: E402
 
 app = FastAPI(title="pose-service", version="1.0.0")
 _LOCK = threading.Lock()
+
+
+def _get_data_root_dir() -> Path:
+    configured = os.environ.get("DATA_ROOT") or os.environ.get("DAX_DATA_DIR")
+    if configured and str(configured).strip():
+        return Path(str(configured).strip()).resolve()
+    # server/pose-service/app.py -> server/pose-service -> server -> repo root
+    return ROOT.parent.parent / "dax-autolabel-data"
+
+
+def _get_uploads_root_dir() -> Path:
+    return _get_data_root_dir() / "uploads"
+
+# -----------------------------------------------------------------------------
+# 调试种类门控（管理员配置）：按 server/data/debug_settings.json 勾选的 kind 输出
+# service id：diffdope（对应客户端/管理员弹窗中的“姿态标注服务”）
+# -----------------------------------------------------------------------------
+_DEBUG_SETTINGS_PATH = ROOT.parent / "data" / "debug_settings.json"
+_DEBUG_CACHE: dict = {"ts": 0.0, "data": None}
+_DEBUG_CACHE_TTL_SEC = 2.0
+
+
+def _get_debug_settings() -> dict:
+    now = time.time()
+    cached = _DEBUG_CACHE.get("data")
+    if cached is not None and now - float(_DEBUG_CACHE.get("ts", 0.0)) < _DEBUG_CACHE_TTL_SEC:
+        return cached
+
+    data = None
+    try:
+        if _DEBUG_SETTINGS_PATH.exists():
+            data = json.loads(_DEBUG_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        data = None
+
+    if not isinstance(data, dict):
+        data = {}
+
+    _DEBUG_CACHE["ts"] = now
+    _DEBUG_CACHE["data"] = data
+    return data
+
+
+def _should_log(kind: str) -> bool:
+    settings = _get_debug_settings()
+    services = settings.get("services", {}) if isinstance(settings, dict) else {}
+    enabled = services.get("diffdope", []) if isinstance(services, dict) else []
+    if not isinstance(enabled, list):
+        return False
+    return kind in enabled
+
+
+def _log(kind: str, *args, **kwargs) -> None:
+    if _should_log(kind):
+        print(*args, **kwargs)
+
+
+class DiffDopeAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return _should_log("diffdopeAccessLog")
+        except Exception:
+            return False
 
 # -----------------------------------------------------------------------------
 # 两阶段超参数：请求体字段为 None 时的唯一回落表（与前端 DEFAULT_DIFFDOPE_PARAMS 语义应对齐）
@@ -125,6 +190,9 @@ class Estimate6DRequest(BaseModel):
     projectId: Optional[int] = None
     imageId: Optional[int] = None
     meshId: Optional[int] = None
+    imageOriginalName: Optional[str] = None
+    meshOriginalName: Optional[str] = None
+    meshSkuLabel: Optional[str] = None
 
     # --- 必选：路径与 mask ---
     rgbPath: str
@@ -318,7 +386,7 @@ def _save_fit_overlay(overlay_bgr: Optional[np.ndarray], project_id: Optional[in
     """统一落盘拟合图并返回相对路径。"""
     if overlay_bgr is None or not project_id:
         return None
-    fit_dir = ROOT.parent / "uploads" / f"project_{int(project_id)}" / "pose-fit-overlays"
+    fit_dir = _get_uploads_root_dir() / f"project_{int(project_id)}" / "pose-fit-overlays"
     fit_dir.mkdir(parents=True, exist_ok=True)
     img_id = int(image_id or 0)
     if suffix:
@@ -439,12 +507,15 @@ def _forward_render_rgb(ddope: Any, result: Dict[str, Any]) -> Tuple[Any, Any]:
 class RenderFitObject(BaseModel):
     meshId: Optional[int] = None
     meshPath: str
+    meshOriginalName: Optional[str] = None
+    meshSkuLabel: Optional[str] = None
     pose44: List[List[float]]
 
 
 class RenderFitOverlayRequest(BaseModel):
     projectId: Optional[int] = None
     imageId: Optional[int] = None
+    imageOriginalName: Optional[str] = None
     rgbPath: str
     depthPath: Optional[str] = None
     intrinsicsPath: str
@@ -485,83 +556,191 @@ def render_fit_overlay(req: RenderFitOverlayRequest):
 
             composed = base_rgb.copy()
             rendered = 0
+            failed = 0
             rgb_s = str(rgb_path)
             for item in req.objects:
                 mesh_path = Path(item.meshPath)
-                if not mesh_path.exists():
-                    continue
-                pose44 = item.pose44
-                if (
-                    not isinstance(pose44, list)
-                    or len(pose44) < 4
-                    or any((not isinstance(r, list) or len(r) < 4) for r in pose44[:4])
-                ):
-                    continue
+                meshId = item.meshId
+                meshName = item.meshOriginalName
+                meshSku = item.meshSkuLabel
 
-                pos_gl, rot_gl = _cv_pose44_to_gl_rt(pose44)
-                if req.debug:
-                    Mdbg = np.asarray(pose44, dtype=np.float64)
-                    print(
-                        "[pose-service][render-fit-overlay][debug]",
-                        {"meshId": item.meshId, "t_cv": Mdbg[:3, 3].tolist(), "tr_Rcv": float(np.trace(Mdbg[:3, :3]))},
-                    )
+                try:
+                    if not mesh_path.exists():
+                        failed += 1
+                        if _should_log("renderFitOverlay"):
+                            print(
+                                "[pose-service][render-fit-overlay]",
+                                "❌",
+                                {
+                                    "projectId": req.projectId,
+                                    "imageId": req.imageId,
+                                    "imageOriginalName": req.imageOriginalName,
+                                    "meshId": meshId,
+                                    "meshOriginalName": meshName,
+                                    "meshSkuLabel": meshSku,
+                                    "reason": "meshPath not exists",
+                                },
+                            )
+                        continue
 
-                cfg = _diffdope_cfg_fresh()
-                _apply_camera_scene_intrinsics(cfg, intr, w, h, rgb_s)
+                    pose44 = item.pose44
+                    if (
+                        not isinstance(pose44, list)
+                        or len(pose44) < 4
+                        or any((not isinstance(r, list) or len(r) < 4) for r in pose44[:4])
+                    ):
+                        failed += 1
+                        if _should_log("renderFitOverlay"):
+                            print(
+                                "[pose-service][render-fit-overlay]",
+                                "❌",
+                                {
+                                    "projectId": req.projectId,
+                                    "imageId": req.imageId,
+                                    "imageOriginalName": req.imageOriginalName,
+                                    "meshId": meshId,
+                                    "meshOriginalName": meshName,
+                                    "meshSkuLabel": meshSku,
+                                    "reason": "invalid pose44",
+                                },
+                            )
+                        continue
+
+                    pos_gl, rot_gl = _cv_pose44_to_gl_rt(pose44)
+
+                    # Extra debug numbers (only when enabled), shown in render-fit-overlay per-item logs.
+                    t_cv = None
+                    tr_Rcv = None
+                    if _should_log("renderFitOverlay"):
+                        Mdbg = np.asarray(pose44, dtype=np.float64)
+                        t_cv = Mdbg[:3, 3].tolist()
+                        tr_Rcv = float(np.trace(Mdbg[:3, :3]))
+
+                    cfg = _diffdope_cfg_fresh()
+                    _apply_camera_scene_intrinsics(cfg, intr, w, h, rgb_s)
                 # 勿覆盖 diffdope.yaml 的 render_images.flip_result：须与 estimate6d 的 render_img 一致（Scene 竖翻 + make_grid 再翻回磁盘行序）。
-                cfg.render_images.add_background = False
-                cfg.render_images.add_countour = True
-                cfg.hyperparameters.batchsize = 1
-                cfg.hyperparameters.nb_iterations = 1
-                cfg.hyperparameters.base_lr = 0.0
-                cfg.hyperparameters.lr_decay = 1.0
-                cfg.losses.l1_mask = False
-                cfg.losses.l1_depth_with_mask = False
-                cfg.losses.l1_rgb_with_mask = True
-                cfg.losses.weight_mask = 0.0
-                cfg.losses.weight_depth = 0.0
-                cfg.losses.weight_rgb = 1.0
-                cfg.object3d.model_path = str(mesh_path)
-                cfg.object3d.scale = 100.0
+                    cfg.render_images.add_background = False
+                    cfg.render_images.add_countour = True
+                    cfg.hyperparameters.batchsize = 1
+                    cfg.hyperparameters.nb_iterations = 1
+                    cfg.hyperparameters.base_lr = 0.0
+                    cfg.hyperparameters.lr_decay = 1.0
+                    cfg.losses.l1_mask = False
+                    cfg.losses.l1_depth_with_mask = False
+                    cfg.losses.l1_rgb_with_mask = True
+                    cfg.losses.weight_mask = 0.0
+                    cfg.losses.weight_depth = 0.0
+                    cfg.losses.weight_rgb = 1.0
+                    cfg.object3d.model_path = str(mesh_path)
+                    cfg.object3d.scale = 100.0
 
-                ddope = dd.DiffDope(cfg=cfg)
-                scene = dd.Scene(path_img=rgb_s, path_depth=None, path_segmentation=None, image_resize=1.0)
-                scene.cuda()
-                mesh = dd.Mesh(str(mesh_path), scale=100.0)
-                mesh.cuda()
-                obj = dd.Object3D(
-                    position=pos_gl,
-                    rotation=rot_gl,
-                    batchsize=1,
-                    opencv2opengl=False,
-                    scale=1.0,
-                )
-                obj.mesh = mesh
-                obj.mesh.set_batchsize(1)
-                obj.cuda()
+                    ddope = dd.DiffDope(cfg=cfg)
+                    scene = dd.Scene(path_img=rgb_s, path_depth=None, path_segmentation=None, image_resize=1.0)
+                    scene.cuda()
+                    mesh = dd.Mesh(str(mesh_path), scale=100.0)
+                    mesh.cuda()
+                    obj = dd.Object3D(
+                        position=pos_gl,
+                        rotation=rot_gl,
+                        batchsize=1,
+                        opencv2opengl=False,
+                        scale=1.0,
+                    )
+                    obj.mesh = mesh
+                    obj.mesh.set_batchsize(1)
+                    obj.cuda()
 
-                ddope.scene = scene
-                ddope.object3d = obj
-                ddope.set_batchsize(1)
-                with torch.no_grad():
-                    result = ddope.object3d()
-                    renders, mtx_gu = _forward_render_rgb(ddope, result)
-                    ddope.optimization_results = [{
-                        "rgb": renders["rgb"].detach().cpu(),
-                        "depth": renders["depth"].detach().cpu(),
-                        "mtx": mtx_gu.detach().cpu(),
-                    }]
+                    ddope.scene = scene
+                    ddope.object3d = obj
+                    ddope.set_batchsize(1)
+                    with torch.no_grad():
+                        result = ddope.object3d()
+                        renders, mtx_gu = _forward_render_rgb(ddope, result)
+                        ddope.optimization_results = [{
+                            "rgb": renders["rgb"].detach().cpu(),
+                            "depth": renders["depth"].detach().cpu(),
+                            "mtx": mtx_gu.detach().cpu(),
+                        }]
 
-                fg = ddope.render_img(batch_index=0, render_selection="rgb")
-                if fg is not None:
-                    composed = _overlay_non_black(composed, fg)
-                    rendered += 1
+                    fg = ddope.render_img(batch_index=0, render_selection="rgb")
+                    if fg is not None:
+                        composed = _overlay_non_black(composed, fg)
+                        rendered += 1
+                        if _should_log("renderFitOverlay"):
+                            print(
+                                "[pose-service][render-fit-overlay]",
+                                "✅",
+                                {
+                                    "projectId": req.projectId,
+                                    "imageId": req.imageId,
+                                    "imageOriginalName": req.imageOriginalName,
+                                    "meshId": meshId,
+                                    "meshOriginalName": meshName,
+                                    "meshSkuLabel": meshSku,
+                                    "result": "rendered",
+                                    "t_cv": t_cv,
+                                    "tr_Rcv": tr_Rcv,
+                                },
+                            )
+                    else:
+                        failed += 1
+                        if _should_log("renderFitOverlay"):
+                            print(
+                                "[pose-service][render-fit-overlay]",
+                                "❌",
+                                {
+                                    "projectId": req.projectId,
+                                    "imageId": req.imageId,
+                                    "imageOriginalName": req.imageOriginalName,
+                                    "meshId": meshId,
+                                    "meshOriginalName": meshName,
+                                    "meshSkuLabel": meshSku,
+                                    "reason": "render_img returned None",
+                                    "t_cv": t_cv,
+                                    "tr_Rcv": tr_Rcv,
+                                },
+                            )
+                except Exception as e:
+                    failed += 1
+                    if _should_log("renderFitOverlay"):
+                        print(
+                            "[pose-service][render-fit-overlay]",
+                            "❌",
+                            {
+                                "projectId": req.projectId,
+                                "imageId": req.imageId,
+                                "imageOriginalName": req.imageOriginalName,
+                                "meshId": meshId,
+                                "meshOriginalName": meshName,
+                                "meshSkuLabel": meshSku,
+                                "error": str(e),
+                            },
+                        )
+                    continue
 
             fit_overlay_rel_path = _save_fit_overlay(composed, req.projectId, req.imageId, None, suffix="composite")
+            if _should_log("renderFitOverlay"):
+                # Render phase: treat everything as either "rendered" or "failed".
+                overall_symbol = "✅" if rendered > 0 and failed == 0 else "❌"
+                print(
+                    "[pose-service][render-fit-overlay]",
+                    overall_symbol,
+                    {
+                        "projectId": req.projectId,
+                        "imageId": req.imageId,
+                        "imageOriginalName": req.imageOriginalName,
+                        "objectsCount": len(req.objects),
+                        "renderedCount": rendered,
+                        "failedCount": failed,
+                        "fitOverlayPath": fit_overlay_rel_path,
+                        "timingSec": round(float(time.time() - t0), 4),
+                    },
+                )
             return {
-                "success": True,
+                "success": rendered > 0 and failed == 0,
                 "fitOverlayPath": fit_overlay_rel_path,
                 "renderedCount": int(rendered),
+                "failedCount": int(failed),
                 "timingSec": round(float(time.time() - t0), 4),
             }
         except Exception as e:
@@ -579,6 +758,18 @@ def render_fit_overlay(req: RenderFitOverlayRequest):
                 obj = None
             except Exception:
                 pass
+
+
+if __name__ == "__main__":
+    host = os.getenv("POSE_SERVICE_HOST", "0.0.0.0")
+    port = int(os.getenv("POSE_SERVICE_PORT", "7900"))
+    reload_flag = os.getenv("POSE_SERVICE_RELOAD", "0").lower() in {"1", "true", "yes", "on"}
+    # Access log is dynamically gated by DebugSettingsModal (services.diffdope).
+    try:
+        logging.getLogger("uvicorn.access").addFilter(DiffDopeAccessLogFilter())
+    except Exception:
+        pass
+    uvicorn.run("app:app", host=host, port=port, reload=reload_flag, access_log=True, log_level="info")
 
 
 @app.post("/diffdope/estimate6d")
@@ -669,33 +860,6 @@ def estimate6d(req: Estimate6DRequest):
                         initial_pose_source = "request-init-pos-quat-cv"
             skip_stage1 = bool(req.skipStage1 and used_initial_pose)
 
-            if req.debug:
-                print("=== DEBUG INIT (pose-service) ===")
-                print(f"rgbPath={rgb_path}")
-                print(f"depthPath={depth_path}")
-                print(f"intrinsicsPath={intr_path}")
-                print(f"meshPath={mesh_path}")
-                print(f"camera fx/fy/cx/cy=({fx}, {fy}, {cx}, {cy})")
-                print(f"mask center (u,v)=({u}, {v}), mask pixels={int(len(xs))}")
-                print(f"median depth z_cm={z_cm} (mask 内有效深度点数={len(valid_depth)})")
-                print(f"init xyz(cm)={init_xyz}")
-                print(f"init quat(xyzw)={init_quat}")
-                print(
-                    "[pose-service][estimate6d][trace] init_source",
-                    json.dumps(
-                        {
-                            "usedInitialPose": used_initial_pose,
-                            "initialPoseSource": initial_pose_source,
-                            "skipStage1Requested": bool(req.skipStage1),
-                            "skipStage1Applied": skip_stage1,
-                            "object3dPosition": obj_position,
-                            "object3dRotationLen": len(obj_rotation),
-                            "object3dOpenCv2OpenGl": obj_opencv2opengl,
-                        },
-                        ensure_ascii=False,
-                    ),
-                )
-
             cfg = _diffdope_cfg_fresh()
             _apply_camera_scene_intrinsics(cfg, intr, w, h, str(rgb_path))
 
@@ -706,10 +870,23 @@ def estimate6d(req: Estimate6DRequest):
 
             cfg.hyperparameters.batchsize = int(max(1, min(64, req.batchSize or 8)))
             p = _resolve_two_stage_params(req)
-            if req.debug:
+            if _should_log("estimate6d_lossPbar"):
+                # Help correlate the tqdm loss lines with the current image/mesh.
                 print(
-                    "[pose-service][estimate6d][trace] resolved_two_stage_params",
-                    json.dumps(p, default=str, ensure_ascii=False),
+                    "[pose-service][estimate6d][loss-pbar]",
+                    "▶️",
+                    {
+                        "projectId": req.projectId,
+                        "imageId": req.imageId,
+                        "imageOriginalName": req.imageOriginalName,
+                        "meshId": req.meshId,
+                        "meshOriginalName": req.meshOriginalName,
+                        "meshSkuLabel": req.meshSkuLabel,
+                        "skipStage1": bool(req.skipStage1),
+                        "s1Iters": p.get("s1_iters", None),
+                        "s2Iters": p.get("s2_iters", None),
+                        "batchSize": req.batchSize,
+                    },
                 )
             # 初始模板与第一轮一致（实例化 DiffDope 前写入，避免与遗留 iters/use*Loss 混用）
             cfg.hyperparameters.nb_iterations = p["s1_iters"]
@@ -773,55 +950,8 @@ def estimate6d(req: Estimate6DRequest):
                     weight_depth=0.0,
                     weight_rgb=p["s1_w_rgb"],
                 )
-                if req.debug:
-                    print(
-                        "[pose-service][estimate6d][trace] stage1_loss_setup",
-                        json.dumps(
-                            {
-                                "loss_functions": _loss_function_labels(ddope),
-                                "cfg_flags": {
-                                    "l1_mask": bool(ddope.cfg.losses.l1_mask),
-                                    "l1_depth_with_mask": bool(ddope.cfg.losses.l1_depth_with_mask),
-                                    "l1_rgb_with_mask": bool(ddope.cfg.losses.l1_rgb_with_mask),
-                                    "weight_mask": float(ddope.cfg.losses.weight_mask),
-                                    "weight_depth": float(ddope.cfg.losses.weight_depth),
-                                    "weight_rgb": float(ddope.cfg.losses.weight_rgb),
-                                },
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
                 ddope.run_optimization()
-                if req.debug:
-                    try:
-                        am1 = int(ddope.get_argmin())
-                        m1 = np.asarray(ddope.get_pose(batch_index=am1), dtype=np.float64)
-                        s1_terms: Dict[str, float] = {}
-                        for key, tensor in ddope.losses_values.items():
-                            try:
-                                s1_terms[str(key)] = float(tensor[-1][am1].item())
-                            except Exception:
-                                pass
-                        print(
-                            "[pose-service][estimate6d][trace] after_stage1",
-                            json.dumps(
-                                {
-                                    "argmin": am1,
-                                    "stage1_final_scalar_loss": float(ddope.final_loss_scalar)
-                                    if ddope.final_loss_scalar is not None
-                                    else None,
-                                    "loss_term_keys": list(ddope.losses_values.keys()),
-                                    "loss_terms_at_argmin": s1_terms,
-                                    "pose_gl_summary": _summarize_gl_pose44(m1),
-                                    "object3d_params": _object3d_param_snapshot(ddope, am1),
-                                },
-                                ensure_ascii=False,
-                            ),
-                        )
-                    except Exception as _e:
-                        print("[pose-service][estimate6d][trace] after_stage1 (snapshot failed)", str(_e))
-            elif req.debug:
-                print("[pose-service][estimate6d][trace] stage1_skipped_by_request")
+            
 
             ddope.cfg.hyperparameters.nb_iterations = p["s2_iters"]
             ddope.cfg.hyperparameters.early_stop_loss = p["s2_early"]
@@ -836,53 +966,7 @@ def estimate6d(req: Estimate6DRequest):
                 weight_depth=p["s2_w_depth"],
                 weight_rgb=p["s2_w_rgb"],
             )
-            if req.debug:
-                print(
-                    "[pose-service][estimate6d][trace] stage2_loss_setup",
-                    json.dumps(
-                        {
-                            "loss_functions": _loss_function_labels(ddope),
-                            "cfg_flags": {
-                                "l1_mask": bool(ddope.cfg.losses.l1_mask),
-                                "l1_depth_with_mask": bool(ddope.cfg.losses.l1_depth_with_mask),
-                                "l1_rgb_with_mask": bool(ddope.cfg.losses.l1_rgb_with_mask),
-                                "weight_mask": float(ddope.cfg.losses.weight_mask),
-                                "weight_depth": float(ddope.cfg.losses.weight_depth),
-                                "weight_rgb": float(ddope.cfg.losses.weight_rgb),
-                            },
-                        },
-                        ensure_ascii=False,
-                    ),
-                )
             ddope.run_optimization()
-            if req.debug:
-                try:
-                    am2 = int(ddope.get_argmin())
-                    m2 = np.asarray(ddope.get_pose(batch_index=am2), dtype=np.float64)
-                    s2_terms_pre: Dict[str, float] = {}
-                    for key, tensor in ddope.losses_values.items():
-                        try:
-                            s2_terms_pre[str(key)] = float(tensor[-1][am2].item())
-                        except Exception:
-                            pass
-                    print(
-                        "[pose-service][estimate6d][trace] after_stage2",
-                        json.dumps(
-                            {
-                                "argmin": am2,
-                                "stage2_final_scalar_loss": float(ddope.final_loss_scalar)
-                                if ddope.final_loss_scalar is not None
-                                else None,
-                                "loss_term_keys": list(ddope.losses_values.keys()),
-                                "loss_terms_at_argmin": s2_terms_pre,
-                                "pose_gl_summary": _summarize_gl_pose44(m2),
-                                "object3d_params": _object3d_param_snapshot(ddope, am2),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
-                except Exception as _e:
-                    print("[pose-service][estimate6d][trace] after_stage2 (snapshot failed)", str(_e))
             stage2_scalar_loss = (
                 float(ddope.final_loss_scalar)
                 if getattr(ddope, "final_loss_scalar", None) is not None
@@ -923,21 +1007,6 @@ def estimate6d(req: Estimate6DRequest):
                 if (max_allowed_final_loss is None or stage2_scalar_loss is None)
                 else (stage2_scalar_loss <= max_allowed_final_loss)
             )
-            # 始终打印质量门槛诊断，便于排查“为何没有报错”
-            print(
-                "[pose-service][quality-gate]",
-                {
-                    "imageId": req.imageId,
-                    "meshId": req.meshId,
-                    "stage2ScalarLoss": stage2_scalar_loss,
-                    "stage2BatchMeanLoss": stage2_batch_mean_loss,
-                    "finalArgminLoss": final_total_loss_argmin,
-                    "maxAllowedFinalLoss": max_allowed_final_loss,
-                    "passed": quality_gate_passed,
-                    "lossTermsBatchMean": final_batch_mean_terms_by_key,
-                    "lossTermsArgmin": final_argmin_terms_by_key,
-                },
-            )
             if (
                 max_allowed_final_loss is not None
                 and stage2_scalar_loss is not None
@@ -946,8 +1015,7 @@ def estimate6d(req: Estimate6DRequest):
                 # 质量门槛未通过时，主动清理对应 overlay，避免前端看到历史旧图误判为“本次成功产物”。
                 if req.projectId and req.imageId and req.meshId:
                     stale_overlay = (
-                        ROOT.parent
-                        / "uploads"
+                        _get_uploads_root_dir()
                         / f"project_{int(req.projectId)}"
                         / "pose-fit-overlays"
                         / f"fit_image_{int(req.imageId)}_mesh_{int(req.meshId)}.png"
@@ -957,6 +1025,25 @@ def estimate6d(req: Estimate6DRequest):
                             stale_overlay.unlink()
                     except Exception:
                         pass
+
+                if _should_log("estimate6dResult"):
+                    print(
+                        "[pose-service][estimate6d][result]",
+                        {
+                            "projectId": req.projectId,
+                            "imageId": req.imageId,
+                            "imageOriginalName": req.imageOriginalName,
+                            "meshId": req.meshId,
+                            "meshOriginalName": req.meshOriginalName,
+                            "meshSkuLabel": req.meshSkuLabel,
+                            "success": False,
+                            "error": "LOSS_EXCEEDS_THRESHOLD",
+                            "stage2ScalarLoss": stage2_scalar_loss,
+                            "maxAllowedFinalLoss": max_allowed_final_loss,
+                            "qualityGatePassed": False,
+                            "timingSec": round(float(time.time() - t0), 4),
+                        },
+                    )
                 return {
                     "success": False,
                     "error": f"第二阶段 loss={stage2_scalar_loss:.4f} 超过阈值 {max_allowed_final_loss:.4f}",
@@ -980,22 +1067,24 @@ def estimate6d(req: Estimate6DRequest):
             # 统一由 Node 层按 image 聚合所有 pose44 后调用 /diffdope/render-fit-overlay 生成单图。
             fit_overlay_rel_path: Optional[str] = None
 
-            debug_paths: Dict[str, Optional[str]] = {"mask": None, "overlay": None}
-            if req.debug:
-                debug_root = ROOT / "debug_outputs"
-                debug_root.mkdir(parents=True, exist_ok=True)
-                run_dir = debug_root / f"api_{int(time.time() * 1000)}_{os.getpid()}"
-                run_dir.mkdir(parents=True, exist_ok=True)
-                mask_path = run_dir / "mask_api.png"
-                overlay_path = run_dir / "overlay_api.png"
-                cv2.imwrite(str(mask_path), mask)
-                if overlay is not None:
-                    cv2.imwrite(str(overlay_path), overlay)
-                debug_paths["mask"] = str(mask_path)
-                debug_paths["overlay"] = str(overlay_path) if overlay is not None else None
-                print("=== DEBUG ARTIFACTS (pose-service) ===")
-                print(f"mask saved: {debug_paths['mask']}")
-                print(f"overlay saved: {debug_paths['overlay']}")
+            if _should_log("estimate6dResult"):
+                # A compact summary for each /diffdope/estimate6d call (useful for batch status debugging).
+                print(
+                    "[pose-service][estimate6d][result]",
+                    {
+                        "projectId": req.projectId,
+                        "imageId": req.imageId,
+                        "imageOriginalName": req.imageOriginalName,
+                        "meshId": req.meshId,
+                        "meshOriginalName": req.meshOriginalName,
+                        "meshSkuLabel": req.meshSkuLabel,
+                        "success": True,
+                        "qualityGatePassed": bool(quality_gate_passed),
+                        "stage2ScalarLoss": stage2_scalar_loss,
+                        "maxAllowedFinalLoss": max_allowed_final_loss,
+                        "timingSec": round(float(time.time() - t0), 4),
+                    },
+                )
 
             return {
                 "success": True,
@@ -1061,10 +1150,24 @@ def estimate6d(req: Estimate6DRequest):
                             "lossTermsArgmin": final_argmin_terms_by_key,
                         },
                     },
-                    "debugArtifacts": debug_paths if req.debug else None,
                 },
             }
         except Exception as e:
+            if _should_log("estimate6dResult"):
+                print(
+                    "[pose-service][estimate6d][result]",
+                    {
+                        "projectId": getattr(req, "projectId", None),
+                        "imageId": getattr(req, "imageId", None),
+                        "imageOriginalName": getattr(req, "imageOriginalName", None),
+                        "meshId": getattr(req, "meshId", None),
+                        "meshOriginalName": getattr(req, "meshOriginalName", None),
+                        "meshSkuLabel": getattr(req, "meshSkuLabel", None),
+                        "success": False,
+                        "error": str(e),
+                        "timingSec": round(float(time.time() - t0), 4),
+                    },
+                )
             return {
                 "success": False,
                 "error": str(e),

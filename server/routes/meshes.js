@@ -2,6 +2,8 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { getUploadsRootDir } = require('../utils/dataPaths');
+const { debugLog } = require('../utils/debugSettingsStore');
 
 function registerMeshRoutes(app, { db, computeObjBoundingBox, buildImageUrl, buildUploadsDirUrl }) {
   const router = express.Router();
@@ -9,7 +11,7 @@ function registerMeshRoutes(app, { db, computeObjBoundingBox, buildImageUrl, bui
   // Mesh upload storage（先落盘到 uploads 根目录，后续移动到项目目录）
   const meshStorage = multer.diskStorage({
     destination: (req, file, cb) => {
-      const uploadDir = path.join(__dirname, '..', 'uploads');
+      const uploadDir = getUploadsRootDir();
       if (!fs.existsSync(uploadDir)) {
         fs.mkdirSync(uploadDir, { recursive: true });
       }
@@ -37,13 +39,18 @@ function registerMeshRoutes(app, { db, computeObjBoundingBox, buildImageUrl, bui
 
   router.post('/upload', meshUpload.array('meshes', 50), async (req, res) => {
     try {
+      debugLog('node', 'node9DMeshUpload', {
+        stage: 'received',
+        filesCount: Array.isArray(req.files) ? req.files.length : 0,
+        projectId: req.body?.projectId ?? null,
+      });
       const projectIdRaw = req.body?.projectId;
       const projectId = projectIdRaw != null ? Number(projectIdRaw) : NaN;
       if (!projectId || Number.isNaN(projectId)) {
         return res.status(400).json({ success: false, message: '缺少或非法的 projectId' });
       }
 
-      const baseUploadsDir = path.join(__dirname, '..', 'uploads');
+      const baseUploadsDir = getUploadsRootDir();
       const projectMeshDir = path.join(baseUploadsDir, `project_${projectId}`, 'meshes');
       if (!fs.existsSync(projectMeshDir)) {
         fs.mkdirSync(projectMeshDir, { recursive: true });
@@ -128,9 +135,18 @@ function registerMeshRoutes(app, { db, computeObjBoundingBox, buildImageUrl, bui
         }
       }
 
+      debugLog('node', 'node9DMeshUpload', {
+        stage: 'completed',
+        projectId,
+        savedMeshes: files.length,
+      });
       return res.json({ success: true, files });
     } catch (error) {
       console.error('❌ /api/meshes/upload 处理失败:', error);
+      debugLog('node', 'node9DMeshUpload', {
+        stage: 'error',
+        message: error?.message || String(error),
+      });
       return res.status(500).json({ success: false, message: error?.message || 'Mesh 上传失败' });
     }
   });

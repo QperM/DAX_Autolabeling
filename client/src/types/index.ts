@@ -2,8 +2,9 @@
 export interface Image {
   id: number;
   filename: string;
-  url: string;
+  /** 上传时的客户端原始路径/文件名（可重复、可很长）；磁盘与 DB.filename 为 rgb_img{id}_… 稳定名 */
   originalName: string;
+  url: string;
   size?: number;
   width?: number;
   height?: number;

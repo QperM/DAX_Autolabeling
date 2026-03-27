@@ -1,18 +1,21 @@
-﻿import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { setCurrentImage } from '../../store/annotationSlice';
 import type { Image, Mask, BoundingBox, Polygon } from '../../types';
-import { annotationApi, authApi } from '../../services/api';
+import { annotationApi, authApi, projectApi } from '../../services/api';
 import AnnotationCanvas from './AnnotationCanvas';
-import { getStoredCurrentProject } from '../../tabStorage';
+import { getStoredCurrentProject } from '../../utils/tabStorage';
 import { toAbsoluteUrl } from '../../utils/urls';
-import './ManualAnnotation.css';
+import './2DManualAnnotation.css';
+import { useAppAlert } from '../common/AppAlert';
+import { useProjectSessionGuard } from '../../utils/projectSessionGuard';
 
 const ManualAnnotation: React.FC = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { currentImage, images, annotations } = useSelector((state: any) => state.annotation);
+  const appAlert = useAppAlert();
   const [selectedTool, setSelectedTool] = useState<'eraser' | 'mask' | 'point' | 'draw'>('mask');
   const [brushSize, setBrushSize] = useState(20);
   // 需求：每次进入人工标注页，默认显示“标注图层”
@@ -28,6 +31,9 @@ const ManualAnnotation: React.FC = () => {
   const eraserWrapperRef = useRef<HTMLDivElement | null>(null);
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(true); // 默认开启自动保存
   const lastKeyNavigateAtRef = useRef<number | null>(null); // 记录上一次键盘切图时间，用于限速
+  const [projectLabelMappings, setProjectLabelMappings] = useState<Array<{ label: string; color: string; usageOrder?: number }>>([]);
+  const projectId = getStoredCurrentProject<any>()?.id;
+  useProjectSessionGuard(projectId ? Number(projectId) : null, !!projectId);
 
   // 权限检查和图片检查
   useEffect(() => {
@@ -49,7 +55,7 @@ const ManualAnnotation: React.FC = () => {
               const accessibleProjects = await authApi.getAccessibleProjects();
               const hasAccess = accessibleProjects.some(p => p.id === project.id);
               if (!hasAccess) {
-                alert('您没有访问该项目的权限，请重新输入验证码');
+                await appAlert.alert('您没有访问该项目的权限，请重新输入验证码');
                 navigate('/');
                 return;
               }
@@ -94,12 +100,9 @@ const ManualAnnotation: React.FC = () => {
       }
 
       try {
-        console.log('[ManualAnnotation] 开始加载当前图片的标注数据, imageId =', currentImage.id);
-
         // 优先从 Redux 中读（如果之前已经加载过）
         const cached = annotations?.[currentImage.id];
         if (cached) {
-          console.log('[ManualAnnotation] 使用 Redux 中缓存的标注数据:', cached);
           const nextMasks = cached.masks || [];
           const nextBBoxes = cached.boundingBoxes || [];
           const nextPolygons = cached.polygons || [];
@@ -114,7 +117,6 @@ const ManualAnnotation: React.FC = () => {
         // 否则从后端拉取
         const resp = await annotationApi.getAnnotation(currentImage.id);
         const anno = resp?.annotation;
-        console.log('[ManualAnnotation] 从后端获取到的标注响应:', resp);
 
         if (anno) {
           const nextMasks = anno.masks || [];
@@ -126,7 +128,6 @@ const ManualAnnotation: React.FC = () => {
           setHistory([{ masks: nextMasks, boundingBoxes: nextBBoxes, polygons: nextPolygons }]);
           setHistoryIndex(0);
         } else {
-          console.warn('[ManualAnnotation] 当前图片暂无标注数据, imageId =', currentImage.id);
           const emptyMasks: Mask[] = [];
           const emptyBBoxes: BoundingBox[] = [];
           const emptyPolygons: Polygon[] = [];
@@ -154,6 +155,8 @@ const ManualAnnotation: React.FC = () => {
 
   const handleToolSelect = (tool: 'eraser' | 'mask' | 'point' | 'draw') => {
     setSelectedTool(tool);
+    // 用户切换工具后，统一回到 Mask 图层，避免停留在背景/BBox 图层导致“工具无效”的误解。
+    setActiveLayer('annotation');
   };
 
   // 点击外部时关闭橡皮擦笔刷下拉
@@ -269,75 +272,53 @@ const ManualAnnotation: React.FC = () => {
     polygons,
   ]);
 
-  /**
-   * 将当前图片中实际使用到的「标签-颜色」写入项目级的 labelColorMap / labelUsageOrder。
-   * 只在“保存标注（JSON）”成功后调用，保证未保存的改名不会影响其他图片的下拉选项。
-   */
-  const persistProjectLabelMapsFromCurrentImage = () => {
+  // 将当前图片中实际使用到的「标签-颜色」写入后端项目映射表。
+  const persistProjectLabelMapsFromCurrentImage = async () => {
     try {
       const savedProject = getStoredCurrentProject<any>();
       if (!savedProject) return;
       const p = savedProject;
       const projectId = p && typeof p.id === 'number' ? p.id : null;
       if (!projectId) return;
+      const entries = new Map<string, { label: string; color: string; usageOrder?: number }>();
 
-      const mapKey = `labelColorMap:${projectId}`;
-      const usageKey = `labelUsageOrder:${projectId}`;
-
-      // 读取已有的映射
-      const labelMap = new Map<string, string>();
-      const rawMap = localStorage.getItem(mapKey);
-      if (rawMap) {
-        const obj = JSON.parse(rawMap) as Record<string, string>;
-        Object.entries(obj).forEach(([label, color]) => {
-          if (label && color) {
-            labelMap.set(label, color);
-          }
-        });
-      }
-
-      // 收集当前图片中实际使用到的标签及颜色
-      const usedLabels: string[] = [];
+      // 先放入当前项目已存在映射，避免“仅保存当前图片”时把别的图片标签覆盖掉
+      projectLabelMappings.forEach((item) => {
+        const label = String(item?.label || '').trim();
+        const color = String(item?.color || '').trim();
+        if (!label || !color) return;
+        const key = label.toLowerCase().replace(/\s+/g, ' ');
+        if (!entries.has(key)) {
+          entries.set(key, { label, color, usageOrder: Number(item?.usageOrder || 0) });
+        }
+      });
 
       masks.forEach((mask) => {
         const label = (mask.label || '').trim();
         const color = mask.color;
         if (!label || !color) return;
-        if (!labelMap.has(label)) {
-          labelMap.set(label, color);
-        }
-        usedLabels.push(label);
+        const key = label.toLowerCase().replace(/\s+/g, ' ');
+        if (!entries.has(key)) entries.set(key, { label, color });
       });
 
       boundingBoxes.forEach((bbox) => {
         const label = (bbox.label || '').trim();
         const color = bbox.color;
         if (!label || !color) return;
-        if (!labelMap.has(label)) {
-          labelMap.set(label, color);
-        }
-        usedLabels.push(label);
+        const key = label.toLowerCase().replace(/\s+/g, ' ');
+        if (!entries.has(key)) entries.set(key, { label, color });
       });
-
-      // 写回 labelColorMap
-      const objToSave: Record<string, string> = {};
-      labelMap.forEach((value, keyLabel) => {
-        objToSave[keyLabel] = value;
-      });
-      localStorage.setItem(mapKey, JSON.stringify(objToSave));
-
-      // 更新最近使用标签顺序（将本次保存中出现的标签移到前面）
-      const rawUsage = localStorage.getItem(usageKey);
-      let usageOrder: string[] = rawUsage ? JSON.parse(rawUsage) : [];
-      const uniqueUsedLabels = Array.from(new Set(usedLabels));
-      uniqueUsedLabels.forEach((label) => {
-        usageOrder = usageOrder.filter((l) => l !== label);
-        usageOrder.unshift(label);
-      });
-      if (usageOrder.length > 50) {
-        usageOrder = usageOrder.slice(0, 50);
-      }
-      localStorage.setItem(usageKey, JSON.stringify(usageOrder));
+      const payload = Array.from(entries.values())
+        .sort((a, b) => Number(a.usageOrder ?? 9999) - Number(b.usageOrder ?? 9999))
+        .map((v, idx) => ({ label: v.label, color: v.color, usageOrder: Number.isFinite(Number(v.usageOrder)) ? Number(v.usageOrder) : idx }));
+      await projectApi.saveLabelColors(projectId, payload);
+      setProjectLabelMappings(
+        payload.map((v) => ({
+          label: String(v.label || ''),
+          color: String(v.color || ''),
+          usageOrder: Number(v.usageOrder || 0),
+        })),
+      );
     } catch (err) {
       console.warn('[ManualAnnotation] 持久化项目级标签映射失败', err);
     }
@@ -347,7 +328,6 @@ const ManualAnnotation: React.FC = () => {
     if (!currentImage) return false;
     const silent = options?.silent ?? false;
     try {
-      console.log('[ManualAnnotation] 保存标注，imageId =', currentImage.id);
       await annotationApi.saveAnnotation(currentImage.id, {
         masks,
         boundingBoxes,
@@ -355,21 +335,42 @@ const ManualAnnotation: React.FC = () => {
       });
       // 标注保存成功后，再把当前图片中实际使用到的“标签-颜色”写入项目级映射，
       // 这样新标签只会在保存之后才出现在其他图片的下拉框中。
-      persistProjectLabelMapsFromCurrentImage();
+      await persistProjectLabelMapsFromCurrentImage();
       if (!silent) {
-        alert('标注已保存');
+        await appAlert.alert('标注已保存');
       }
       return true;
     } catch (e: any) {
       console.error('[ManualAnnotation] 保存标注失败:', e);
       if (!silent) {
-        alert(e?.message || '保存标注失败');
+        await appAlert.alert(e?.message || '保存标注失败');
       } else {
-        alert(e?.message || '自动保存失败，请稍后重试手动保存');
+        void appAlert.alert(e?.message || '自动保存失败，请稍后重试手动保存');
       }
       return false;
     }
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadMappings = async () => {
+      try {
+        const savedProject = getStoredCurrentProject<any>();
+        const projectId = savedProject && typeof savedProject.id === 'number' ? savedProject.id : null;
+        if (!projectId) return;
+        const mappings = await projectApi.getLabelColors(projectId);
+        if (!cancelled) setProjectLabelMappings((mappings || []).map((m: any) => ({
+          label: String(m?.label || ''),
+          color: String(m?.color || ''),
+          usageOrder: Number(m?.usageOrder || 0),
+        })));
+      } catch (_) {}
+    };
+    void loadMappings();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentImage?.id]);
 
   // ------- 本地操作栈：撤销 / 重做 -------
   const pushHistory = (nextMasks: Mask[], nextBBoxes: BoundingBox[], nextPolygons: Polygon[]) => {
@@ -465,7 +466,7 @@ const ManualAnnotation: React.FC = () => {
           </button>
           <h1>人工标注</h1>
           <span className="current-image-name">
-            {currentImage.originalName}
+            {currentImage.originalName || currentImage.filename}
           </span>
         </div>
         <div className="header-right">
@@ -616,20 +617,18 @@ const ManualAnnotation: React.FC = () => {
               }
               brushSize={brushSize}
               onMaskUpdate={(updatedMasks) => {
-                console.log('[ManualAnnotation] onMaskUpdate, count =', updatedMasks.length);
                 setMasks(updatedMasks);
                 pushHistory(updatedMasks, boundingBoxes, polygons);
               }}
               onBoundingBoxUpdate={(updatedBBoxes) => {
-                console.log('[ManualAnnotation] onBoundingBoxUpdate, count =', updatedBBoxes.length);
                 setBoundingBoxes(updatedBBoxes);
                 pushHistory(masks, updatedBBoxes, polygons);
               }}
               onPolygonUpdate={(updatedPolygons) => {
-                console.log('[ManualAnnotation] onPolygonUpdate, count =', updatedPolygons.length);
                 setPolygons(updatedPolygons);
                 pushHistory(masks, boundingBoxes, updatedPolygons);
               }}
+              projectLabelMappings={projectLabelMappings}
             />
           </div>
         </div>
@@ -674,7 +673,6 @@ const ManualAnnotation: React.FC = () => {
                 <div
                   className={`layer-item ${activeLayer === 'background' ? 'active' : ''}`}
                   onClick={() => {
-                    console.log('[ManualAnnotation] 切换图层: background');
                     setActiveLayer('background');
                   }}
                 >
@@ -684,7 +682,6 @@ const ManualAnnotation: React.FC = () => {
                 <div
                   className={`layer-item ${activeLayer === 'annotation' ? 'active' : ''}`}
                   onClick={() => {
-                    console.log('[ManualAnnotation] 切换图层: annotation');
                     setActiveLayer('annotation');
                   }}
                 >
@@ -694,7 +691,6 @@ const ManualAnnotation: React.FC = () => {
                 <div
                   className={`layer-item ${activeLayer === 'bbox' ? 'active' : ''}`}
                   onClick={() => {
-                    console.log('[ManualAnnotation] 切换图层: bbox');
                     setActiveLayer('bbox');
                   }}
                 >

@@ -1,9 +1,12 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { useDispatch } from 'react-redux';
 import { imageApi, uploadJobApi } from '../../services/api';
 import { addImage, setLoading, setError } from '../../store/annotationSlice';
 import type { Image } from '../../types';
+import { debugLog } from '../../utils/debugSettings';
+import { ProgressPopupModal, type ProgressPopupBar } from '../common/ProgressPopupModal';
+import { useAppAlert } from '../common/AppAlert';
 
 interface ImageUploaderProps {
   onUploadComplete?: (images: Image[]) => void;
@@ -12,6 +15,7 @@ interface ImageUploaderProps {
 
 const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, projectId }) => {
   const dispatch = useDispatch();
+  const { alert } = useAppAlert();
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [extractJobId, setExtractJobId] = useState<string | null>(null);
   const [extractProgress, setExtractProgress] = useState<number | null>(null);
@@ -87,6 +91,7 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     try {
       if (!projectId) {
+        debugLog('frontend', 'frontend2DUpload', '[ImageUploader] missing projectId');
         alert('请先选择项目后再上传图片');
         return;
       }
@@ -97,21 +102,19 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
         return;
       }
 
-      console.log('📁 接收到文件:', acceptedFiles.map(f => f.name));
       dispatch(setLoading(true));
       dispatch(setError(null));
       setUploadProgress(0);
+      debugLog('frontend', 'frontend2DUpload', '[ImageUploader] start upload', { projectId, count: acceptedFiles.length });
       
       // 上传文件到服务器
-      console.log('📤 开始上传文件...，projectId =', projectId);
       const response = await imageApi.uploadImages(acceptedFiles, projectId, (pct) => {
         setUploadProgress(pct);
       });
-      console.log('📥 上传响应:', response);
+      debugLog('frontend', 'frontend2DUpload', '[ImageUploader] upload response', { files: response?.files?.length || 0, zipJobs: response?.zipJobs?.length || 0 });
       
       // 将上传的图像添加到状态中
       response.files.forEach(image => {
-        console.log('➕ 添加图片到状态:', image);
         dispatch(addImage(image));
       });
       
@@ -125,9 +128,9 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
         startPollJob(response.zipJobs[0].jobId);
       }
       
-      console.log(`${response.files.length}个文件上传成功`);
     } catch (error: any) {
       console.error('❌ 上传失败:', error);
+      debugLog('frontend', 'frontend2DUpload', '[ImageUploader] upload error', error?.message || String(error));
       const serverMessage =
         error?.response?.data?.message ||
         error.message ||
@@ -146,7 +149,11 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
     accept: {
       'image/*': ['.jpeg', '.jpg', '.png', '.gif', '.bmp', '.tiff', '.webp'],
       'application/zip': ['.zip'],
-      'application/x-zip-compressed': ['.zip']
+      'application/x-zip-compressed': ['.zip'],
+      // Windows 上 7z 常见 mime；加上后文件选择器才能看到 .7z
+      'application/x-7z-compressed': ['.7z'],
+      // 某些环境会把 7z 识别为 octet-stream
+      'application/octet-stream': ['.7z'],
     },
     // 移除文件数量限制，支持大量文件上传
     // maxFiles: 50,
@@ -170,35 +177,37 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
         )}
       </div>
 
-      {hasActiveProgress && (
-        <div className="upload-progress-panel">
-          {uploadProgress !== null && (
-            <div className="upload-progress-row">
-              <div className="upload-progress-title">上传进度</div>
-              <div className="upload-progress-bar">
-                <div className="upload-progress-fill" style={{ width: `${uploadProgress}%` }} />
-              </div>
-              <div className="upload-progress-pct">{uploadProgress}%</div>
-            </div>
-          )}
+      <ProgressPopupModal
+        open={hasActiveProgress}
+        title="图片上传 / 解压进度"
+        bars={(() => {
+          const bars: ProgressPopupBar[] = [];
+          if (uploadProgress !== null) {
+            bars.push({
+              key: 'upload',
+              title: '上传进度',
+              percent: uploadProgress,
+              tone: 'primary',
+            });
+          }
 
-          {extracting && (
-            <div className="upload-progress-row">
-              <div className="upload-progress-title">解压进度</div>
-              <div className="upload-progress-bar">
-                <div className="upload-progress-fill extract" style={{ width: `${extractProgress ?? 0}%` }} />
-              </div>
-              <div className="upload-progress-pct">{extractProgress ?? 0}%</div>
-            </div>
-          )}
+          if (extracting || extractProgress !== null) {
+            bars.push({
+              key: 'extract',
+              title: '解压进度',
+              percent: extractProgress ?? 0,
+              tone: 'extract',
+            });
+          }
 
-          {extractMessage && (
-            <div className="upload-progress-msg">
-              {extractMessage}{extractJobId ? `（${extractJobId}）` : ''}
-            </div>
-          )}
-        </div>
-      )}
+          return bars;
+        })()}
+        message={
+          extractMessage
+            ? `${extractMessage}${extractJobId ? `（${extractJobId}）` : ''}`
+            : undefined
+        }
+      />
     </div>
   );
 };

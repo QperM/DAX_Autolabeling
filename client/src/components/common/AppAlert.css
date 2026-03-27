@@ -1,0 +1,74 @@
+.app-alert-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1600;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  box-sizing: border-box;
+  background: rgba(2, 6, 23, 0.35);
+  backdrop-filter: blur(2px);
+}
+
+.app-alert-modal {
+  width: min(520px, 100%);
+  max-height: calc(100% - 40px);
+  overflow: auto;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(226, 232, 240, 1);
+  border-radius: 14px;
+  box-shadow: 0 12px 38px rgba(0, 0, 0, 0.18);
+  padding: 14px 14px 12px 14px;
+  color: #0f172a;
+}
+
+.app-alert-title {
+  font-size: 1rem;
+  font-weight: 800;
+  color: #0f172a;
+  margin-bottom: 10px;
+}
+
+.app-alert-body {
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: #334155;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.app-alert-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+  gap: 10px;
+}
+
+.app-alert-btn {
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  font-weight: 700;
+  padding: 0.5rem 0.9rem;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.app-alert-btn--secondary {
+  background: rgba(241, 245, 249, 1);
+  color: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.55);
+}
+
+.app-alert-btn--secondary:hover {
+  filter: brightness(0.99);
+}
+
+.app-alert-btn:hover {
+  filter: brightness(1.03);
+}
+
+.app-alert-btn:active {
+  transform: translateY(0.5px);
+}
+

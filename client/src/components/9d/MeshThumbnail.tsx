@@ -215,6 +215,9 @@ const MeshThumbnail: React.FC<Props> = ({ meshUrl, label, assetDirUrl, assets, s
       } catch {
         // ignore
       }
+      try {
+        (renderer as any).forceContextLoss?.();
+      } catch (_) {}
       renderer.dispose();
     };
   }, [meshUrl, assetDirUrl, assets]);

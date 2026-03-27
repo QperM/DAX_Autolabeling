@@ -12,6 +12,12 @@ html, body {
   overflow: hidden;
 }
 
+#root {
+  height: 100%;
+  width: 100%;
+  position: relative; /* AppAlert overlay anchors to root */
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
@@ -497,6 +503,7 @@ body {
 /* 图片上传器 */
 .image-uploader {
   margin-top: 2rem;
+  width: 100%;
 }
 
 .mesh-depth-dropzones {
@@ -534,6 +541,19 @@ body {
   cursor: pointer;
   transition: all 0.2s ease;
   background: white;
+}
+
+.image-uploader .dropzone {
+  /* 拖拽进入/离开时文案会变化，固定最小高度避免 welcome-content 抖动 */
+  min-height: 150px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.image-uploader .dropzone > p,
+.image-uploader .dropzone .upload-prompt {
+  width: 100%;
 }
 
 .dropzone-title {

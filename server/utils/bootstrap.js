@@ -1,5 +1,5 @@
 const bcrypt = require('bcrypt');
-const db = require('./database');
+const db = require('../database');
 
 async function initializeDefaultAdmin({ username, password }) {
   try {
@@ -44,4 +44,3 @@ async function startServer(app, { port, defaultAdminUsername, defaultAdminPasswo
 }
 
 module.exports = { startServer };
-

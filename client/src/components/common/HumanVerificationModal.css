@@ -1,0 +1,166 @@
+.human-verify-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 11000;
+  backdrop-filter: blur(4px);
+  padding: 1rem;
+}
+
+.human-verify-modal {
+  width: 100%;
+  max-width: 520px;
+  background: rgba(255, 255, 255, 0.98);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  overflow: hidden;
+  animation: hv-slide-in 0.25s ease;
+}
+
+@keyframes hv-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.human-verify-header {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 0.9rem 1.1rem;
+  background: rgba(102, 126, 234, 0.08);
+  border-bottom: 1px solid rgba(102, 126, 234, 0.16);
+}
+
+.human-verify-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #111827;
+}
+
+.human-verify-body {
+  padding: 1rem 1.1rem;
+}
+
+.human-verify-lead {
+  margin: 0 0 1rem 0;
+  color: #4b5563;
+  line-height: 1.4;
+  font-size: 0.95rem;
+}
+
+.human-verify-slider-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 0.25rem 0;
+}
+
+.human-verify-captcha-host {
+  /* jigsaw 默认宽高：310x155，这里只做居中容器 */
+  width: 310px;
+  /* 不能写死高度：SliderJigsawCaptcha 里 canvas 之后还有滑块条（含 margin-top），
+     如果固定高度会导致验证码溢出覆盖到下方按钮。 */
+  height: auto;
+}
+
+.human-verify-loading {
+  color: #4b5563;
+  font-weight: 600;
+}
+
+.human-verify-challenge {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.human-verify-question {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #111827;
+  text-align: center;
+}
+
+.human-verify-input {
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border-radius: 10px;
+  border: 2px solid #e5e7eb;
+  font-size: 1rem;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  text-align: center;
+}
+
+.human-verify-input:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.18);
+}
+
+.human-verify-input:disabled {
+  opacity: 0.75;
+}
+
+.human-verify-error {
+  margin-top: 0.9rem;
+  color: #dc3545;
+  font-size: 0.9rem;
+  text-align: center;
+  font-weight: 600;
+}
+
+.human-verify-actions {
+  padding: 0.85rem 1.1rem 1.05rem;
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+.human-verify-btn {
+  min-width: 160px;
+  padding: 0.75rem 1.2rem;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 1rem;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.human-verify-btn.primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+}
+
+.human-verify-btn.secondary {
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #e5e7eb;
+}
+
+.human-verify-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(102, 126, 234, 0.25);
+}
+
+.human-verify-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.human-verify-verifying {
+  margin-top: 0.6rem;
+  text-align: center;
+}
+

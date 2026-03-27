@@ -34,9 +34,6 @@
    # GPU 版（需要 NVIDIA Driver + NVIDIA Container Toolkit）
    docker compose -f Docker/docker-compose.gpu.yml up -d
 
-   # 或 CPU 版
-   docker compose -f Docker/docker-compose.cpu.yml up -d
-   ```
 
 3. 打开浏览器或使用 `Docker/smoke-test.ps1` 做健康检查，确保 **web / api / sam2** 三个服务都能正常工作。
 

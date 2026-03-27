@@ -10,11 +10,14 @@ import sys
 import math
 import pathlib
 import random
+import json
+import time
 import warnings
 from dataclasses import dataclass
 from itertools import repeat
 from types import FunctionType
 from typing import Any, BinaryIO, List, Optional, Tuple, Union
+from pathlib import Path
 
 import cv2
 import hydra
@@ -41,6 +44,42 @@ if not hasattr(sys, 'ps1'):
 
 # A logger for this file
 log = logging.getLogger(__name__)
+
+_DEBUG_SETTINGS_PATH = Path(__file__).resolve().parents[3] / "data" / "debug_settings.json"
+_DEBUG_CACHE: dict = {"ts": 0.0, "data": None}
+_DEBUG_CACHE_TTL_SEC = 2.0
+
+
+def _get_debug_settings() -> dict:
+    now = time.time()
+    cached = _DEBUG_CACHE.get("data")
+    if cached is not None and now - float(_DEBUG_CACHE.get("ts", 0.0)) < _DEBUG_CACHE_TTL_SEC:
+        return cached
+
+    data = {}
+    try:
+        if _DEBUG_SETTINGS_PATH.exists():
+            data = json.loads(_DEBUG_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+
+    _DEBUG_CACHE["ts"] = now
+    _DEBUG_CACHE["data"] = data
+    return data
+
+
+def _should_log(kind: str) -> bool:
+    # pose-service uses service id "diffdope" for these kinds
+    settings = _get_debug_settings()
+    services = settings.get("services", {}) if isinstance(settings, dict) else {}
+    enabled = services.get("diffdope", []) if isinstance(services, dict) else []
+    if not isinstance(enabled, list):
+        return False
+    return kind in enabled
+
+
+def _tqdm_disable_for_loss_progress() -> bool:
+    return not _should_log("estimate6d_lossPbar")
 
 
 def matrix_batch_44_from_position_quat(q, p):
@@ -1541,7 +1580,7 @@ class DiffDope:
             batch_index = self.get_argmin()
 
         # Loop through the list of images and add each frame to the video
-        pbar = tqdm(range(self.cfg.hyperparameters.nb_iterations + 1))
+        pbar = tqdm(range(self.cfg.hyperparameters.nb_iterations + 1), disable=_tqdm_disable_for_loss_progress())
         for iteration_now in pbar:
             pbar.set_description("making video")
             # Ensure the image is in BGR format (OpenCV default)
@@ -1653,7 +1692,7 @@ class DiffDope:
             self.gt_tensors["segmentation"] = self.scene.tensor_segmentation.img_tensor
 
 
-        pbar = tqdm(range(self.cfg.hyperparameters.nb_iterations + 1))
+        pbar = tqdm(range(self.cfg.hyperparameters.nb_iterations + 1), disable=_tqdm_disable_for_loss_progress())
 
         # Optional early-stop threshold. If configured and current total loss
         # is already below threshold, stop this stage immediately.

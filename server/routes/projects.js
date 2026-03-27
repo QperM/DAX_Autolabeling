@@ -1,6 +1,8 @@
 const express = require('express');
+const { getDebugSettings, setDebugSettings } = require('../utils/debugSettingsStore');
+const { debugLog } = require('../utils/debugSettingsStore');
 
-function registerProjectRoutes(app, { db, requireAdmin, requireProjectAccess, generateAccessCode }) {
+function registerProjectRoutes(app, { db, requireAdmin, requireProjectAccess, generateAccessCode, projectSessionGuard }) {
   const router = express.Router();
   const admin = express.Router();
 
@@ -64,6 +66,13 @@ function registerProjectRoutes(app, { db, requireAdmin, requireProjectAccess, ge
 
       const newLocked = !project.locked;
       const updatedProject = await db.toggleProjectLock(projectId, newLocked);
+      if (newLocked && projectSessionGuard) {
+        projectSessionGuard.invalidateProject({
+          projectId,
+          code: 'PROJECT_LOCKED',
+          message: '项目已被管理员锁定，当前连接已断开。',
+        });
+      }
       const formattedProject = {
         ...updatedProject,
         locked: updatedProject.locked === 1 || updatedProject.locked === true,
@@ -160,6 +169,13 @@ function registerProjectRoutes(app, { db, requireAdmin, requireProjectAccess, ge
   router.delete('/:id', requireAdmin, async (req, res) => {
     try {
       const projectId = req.params.id;
+      if (projectSessionGuard) {
+        projectSessionGuard.invalidateProject({
+          projectId: Number(projectId),
+          code: 'PROJECT_DELETED',
+          message: '项目已被管理员删除，当前连接已断开。',
+        });
+      }
       db.deleteProjectWithRelated(projectId, (err, changes) => {
         if (err) {
           return res.status(500).json({ error: err.message || '删除项目失败' });
@@ -202,6 +218,89 @@ function registerProjectRoutes(app, { db, requireAdmin, requireProjectAccess, ge
         message: '获取项目标注汇总失败',
         error: error.message,
       });
+    }
+  });
+
+  router.get('/:id/label-colors', requireProjectAccess, (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      if (!projectId || Number.isNaN(projectId)) {
+        return res.status(400).json({ success: false, message: '无效的项目ID' });
+      }
+      db.listProjectLabelColors(projectId, (err, rows) => {
+        if (err) {
+          debugLog('node', 'nodeProjectLabelColors', '[GET /projects/:id/label-colors] failed', {
+            projectId,
+            error: String(err.message || err),
+          });
+          return res.status(500).json({ success: false, message: '读取项目标签颜色映射失败', error: err.message });
+        }
+        debugLog('node', 'nodeProjectLabelColors', '[GET /projects/:id/label-colors] success', {
+          projectId,
+          count: Array.isArray(rows) ? rows.length : 0,
+        });
+        return res.json({ success: true, mappings: rows || [] });
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: '读取项目标签颜色映射失败', error: error.message });
+    }
+  });
+
+  router.put('/:id/label-colors', requireProjectAccess, (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      if (!projectId || Number.isNaN(projectId)) {
+        return res.status(400).json({ success: false, message: '无效的项目ID' });
+      }
+      const mappings = Array.isArray(req.body?.mappings) ? req.body.mappings : [];
+      debugLog('node', 'nodeProjectLabelColors', '[PUT /projects/:id/label-colors] received', {
+        projectId,
+        incomingCount: mappings.length,
+      });
+      db.replaceProjectLabelColors(projectId, mappings, (err, count) => {
+        if (err) {
+          debugLog('node', 'nodeProjectLabelColors', '[PUT /projects/:id/label-colors] replace failed', {
+            projectId,
+            error: String(err.message || err),
+          });
+          return res.status(500).json({ success: false, message: '保存项目标签颜色映射失败', error: err.message });
+        }
+        db.listProjectLabelColors(projectId, (qErr, rows) => {
+          if (qErr) {
+            debugLog('node', 'nodeProjectLabelColors', '[PUT /projects/:id/label-colors] list failed', {
+              projectId,
+              error: String(qErr.message || qErr),
+            });
+            return res.status(500).json({ success: false, message: '读取项目标签颜色映射失败', error: qErr.message });
+          }
+          debugLog('node', 'nodeProjectLabelColors', '[PUT /projects/:id/label-colors] success', {
+            projectId,
+            replaced: Number(count || 0),
+            currentCount: Array.isArray(rows) ? rows.length : 0,
+          });
+          return res.json({ success: true, upserted: Number(count || 0), mappings: rows || [] });
+        });
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: '保存项目标签颜色映射失败', error: error.message });
+    }
+  });
+
+  // 管理员：全应用调试分级（各服务独立阈值，持久化 server/data/debug_settings.json）
+  admin.get('/debug-settings', requireAdmin, (req, res) => {
+    try {
+      return res.json(getDebugSettings());
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  });
+
+  admin.put('/debug-settings', requireAdmin, (req, res) => {
+    try {
+      const next = setDebugSettings(req.body || {});
+      return res.json(next);
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
     }
   });
 

@@ -52,11 +52,12 @@ const PoseImagePreviewPanel: React.FC<Props> = ({
       try {
         const resp = await pose9dApi.listPose9D(selectedPreviewImage.id);
         const rows = Array.isArray(resp?.poses) ? resp.poses : [];
-        const withOverlay = rows.filter((p: any) => p?.fitOverlayPath);
+        const withOverlay = rows.filter((p: any) => p?.fitOverlayPath || p?.fit_overlay_path);
         const pick = withOverlay
           .slice()
           .sort((a: any, b: any) => String(b?.updatedAt || '').localeCompare(String(a?.updatedAt || '')))[0];
-        const u = pick?.fitOverlayPath ? (toAbsoluteUrl(pick.fitOverlayPath) || pick.fitOverlayPath) : null;
+        const fitPath = pick?.fitOverlayPath || pick?.fit_overlay_path || null;
+        const u = fitPath ? (toAbsoluteUrl(fitPath) || fitPath) : null;
         if (!cancelled) setPreviewFitOverlayUrl(u);
       } catch (_) {
         if (!cancelled) setPreviewFitOverlayUrl(null);
@@ -157,7 +158,7 @@ const PoseImagePreviewPanel: React.FC<Props> = ({
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <button
             type="button"
-            className="ai-prompt-modal-btn secondary"
+            className="ai-annotation-btn pose-ai-annotate-btn"
             disabled={estimating6d}
             onClick={onEstimate6D}
             title="调用 Diff-DOPE 进行 AI 6D 姿态标注"

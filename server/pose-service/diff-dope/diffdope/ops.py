@@ -9,6 +9,9 @@
 
 import os
 import sys
+import time
+import json
+import contextlib
 
 import numpy as np
 import torch
@@ -18,6 +21,39 @@ import torch.utils.cpp_extension
 # C++/Cuda plugin compiler/loader.
 
 _cached_plugin = None
+
+
+_DEBUG_SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "debug_settings.json")
+_DEBUG_CACHE = {"ts": 0.0, "data": None}
+_DEBUG_CACHE_TTL_SEC = 2.0
+
+
+def _get_debug_settings():
+    now = time.time()
+    cached = _DEBUG_CACHE.get("data")
+    if cached is not None and now - float(_DEBUG_CACHE.get("ts", 0.0)) < _DEBUG_CACHE_TTL_SEC:
+        return cached
+    data = None
+    try:
+        if os.path.exists(_DEBUG_SETTINGS_PATH):
+            with open(_DEBUG_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        data = {}
+    _DEBUG_CACHE["ts"] = now
+    _DEBUG_CACHE["data"] = data
+    return data
+
+
+def _should_log(kind: str) -> bool:
+    settings = _get_debug_settings()
+    services = settings.get("services", {}) if isinstance(settings, dict) else {}
+    enabled = services.get("diffdope", []) if isinstance(services, dict) else []
+    if not isinstance(enabled, list):
+        return False
+    return kind in enabled
 
 
 def _get_plugin():
@@ -80,15 +116,22 @@ def _get_plugin():
 
     # Compile and load.
     source_paths = [os.path.join(os.path.dirname(__file__), fn) for fn in source_files]
-    torch.utils.cpp_extension.load(
-        name="renderutils_plugin",
-        sources=source_paths,
-        extra_cflags=opts,
-        extra_cuda_cflags=opts,
-        extra_ldflags=ldflags,
-        with_cuda=True,
-        verbose=True,
-    )
+    verbose_build = _should_log("diffdopeTorchExtensionsBuild")
+    with contextlib.ExitStack() as stack:
+        if not verbose_build:
+            devnull = open(os.devnull, "w")
+            stack.callback(devnull.close)
+            stack.enter_context(contextlib.redirect_stdout(devnull))
+            stack.enter_context(contextlib.redirect_stderr(devnull))
+        torch.utils.cpp_extension.load(
+            name="renderutils_plugin",
+            sources=source_paths,
+            extra_cflags=opts,
+            extra_cuda_cflags=opts,
+            extra_ldflags=ldflags,
+            with_cuda=True,
+            verbose=bool(verbose_build),
+        )
 
     # Import, cache, and return the compiled module.
     import renderutils_plugin

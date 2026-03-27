@@ -100,6 +100,11 @@ function makeProjectsRepo(db, { deleteProjectFolder }) {
 
     deleteProjectWithRelated: (projectId, callback) => {
       db.serialize(() => {
+        // 显式清理访问记录：老库或外键未生效时可能残留 project_access 行
+        db.run('DELETE FROM project_access WHERE project_id = ?', [projectId], (paErr) => {
+          if (paErr) console.error('删除 project_access 失败:', paErr);
+        });
+
         const sqlImages = `
           SELECT DISTINCT i.id, i.file_path
           FROM images i
@@ -176,6 +181,7 @@ function makeProjectsRepo(db, { deleteProjectFolder }) {
         });
       });
     },
+
   };
 }
 

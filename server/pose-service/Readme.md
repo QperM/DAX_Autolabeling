@@ -140,11 +140,10 @@
 
 ---
 
-## 7. `debug` 模式
+## 7. 诊断输出说明
 
-- `req.debug=True` 时：控制台打印初始化信息；在 `pose-service/debug_outputs/api_*` 下保存 mask 与 overlay；`meta.debugArtifacts` 返回路径。
-
----
+- 本仓库当前的 `pose-service` 主要输出“结果摘要”（如成功/失败与 quality gate 通过情况），用于调试定位问题图片/模型。
+- 更细粒度的初始化/两阶段细节/中间产物保存等调试开关已从调试控制面板移除，对应后端实现也已不再保留。
 
 ## 8. 与上游约定小结
 

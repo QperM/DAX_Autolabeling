@@ -1,9 +1,10 @@
 const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
 const fs = require('fs');
+const path = require('path');
+const { getDatabaseDir } = require('../utils/dataPaths');
 
 function ensureDbDir() {
-  const dbDir = path.join(__dirname, '../../database');
+  const dbDir = getDatabaseDir();
   if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });
   }
@@ -12,7 +13,7 @@ function ensureDbDir() {
 
 function getDefaultDbPath() {
   const dbDir = ensureDbDir();
-  return path.join(dbDir, 'annotations.db');
+  return path.join(dbDir, 'dax-autolabel.db');
 }
 
 function createConnection(dbPath = getDefaultDbPath()) {

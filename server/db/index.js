@@ -8,6 +8,7 @@ const { makeCamerasRepo } = require('./repos/camerasRepo');
 const { makeAnnotationsRepo } = require('./repos/annotationsRepo');
 const { makePose9dRepo } = require('./repos/pose9dRepo');
 const { makeProjectsRepo } = require('./repos/projectsRepo');
+const { makeProjectLabelColorsRepo } = require('./repos/projectLabelColorsRepo');
 const { makeAuthRepo } = require('./repos/authRepo');
 
 const dbPath = getDefaultDbPath();
@@ -44,6 +45,7 @@ const camerasRepo = makeCamerasRepo(db);
 const annotationsRepo = makeAnnotationsRepo(db);
 const pose9dRepo = makePose9dRepo(db);
 const projectsRepo = makeProjectsRepo(db, { deleteProjectFolder });
+const projectLabelColorsRepo = makeProjectLabelColorsRepo(db);
 const authRepo = makeAuthRepo(db);
 
 const api = {
@@ -70,6 +72,7 @@ const api = {
 
   // system
   ...projectsRepo,
+  ...projectLabelColorsRepo,
   ...authRepo,
 };
 

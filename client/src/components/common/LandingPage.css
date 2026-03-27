@@ -8,6 +8,32 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 1rem;
+  gap: 1rem;
+}
+
+.project-selection-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.debug-settings-open-btn {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #475569;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.debug-settings-open-btn:hover {
+  background: #fff;
+  border-color: #667eea;
+  color: #334155;
 }
 
 .project-selection-header-right {
@@ -772,6 +798,56 @@
 
 .access-code-body {
   margin-bottom: 1.5rem;
+}
+
+.access-code-split {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.access-code-split-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.access-code-split-label {
+  font-size: 0.75rem;
+  color: #888;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* 与两侧输入框底边对齐（含标签的整列以底部对齐，避免相对整列垂直居中显得偏上） */
+.access-code-split-sep {
+  align-self: flex-end;
+  line-height: 1;
+  padding-bottom: 0; /* 与 input 外框底边对齐 */
+  font-size: 1.25rem;
+  color: #bbb;
+  font-weight: 300;
+  user-select: none;
+}
+
+.access-code-input.code-input.access-code-part {
+  width: 100%;
+  max-width: 100%;
+}
+
+.access-code-input.code-input.access-code-part-head {
+  min-width: 10.5rem;
+  max-width: 14rem;
+}
+
+.access-code-input.code-input.access-code-part-tail {
+  min-width: 5rem;
+  max-width: 7rem;
+  letter-spacing: 0.35rem;
 }
 
 /* 基础输入框样式 */

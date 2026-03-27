@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState } fro
 import { createPortal } from 'react-dom';
 import { meshApi } from '../../services/api';
 import MeshThumbnail from './MeshThumbnail';
+import { useAppAlert } from '../common/AppAlert';
 
 export type MeshLabelMappingRow = {
   id?: number;
@@ -33,6 +34,7 @@ export const MeshLabelMappingModal: React.FC<Props> = ({
   projectLabelOptions,
   onMeshesUpdated,
 }) => {
+  const { alert } = useAppAlert();
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [saving, setSaving] = useState(false);
   /** 哪一行正在展开「带颜色的 Label 建议」面板（原生 datalist 无法按项着色） */

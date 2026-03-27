@@ -2,6 +2,23 @@
 
 ## 开发进展
 
+### V2.8 最新进展（2026年3月27日）
+- [x] **项目会话独占控制（Project Session Guard）**：
+  - 新增 `/api/project-session/claim|status|release`，进入项目后声明控制权并定时保活
+  - 同一项目同一时刻仅允许一个活跃会话控制；被接管/锁定/删除时返回断开信号
+  - 前后端新增 `projectSessionGuard` 相关工具与调用链，降低多人并发误操作风险
+- [x] **前端通用能力增强（common 组件）**：
+  - 新增 `AppAlert` 全局提示体系，统一成功/失败反馈
+  - 新增 `HumanVerificationModal` + `SliderJigsawCaptcha`，支持滑块拼图人机验证流程
+  - 新增 `DebugSettingsModal`，支持按服务与调试种类管理日志输出（frontend/node/sam2/diffdope/depthRepair）
+- [x] **深度数据链路增强（9D）**：
+  - 新增 `BatchDepthCompletionButton` 与批量补全流程，调用 Node `/api/depth/repair/batch`
+  - 后端 `depth` 路由支持深度包 `.zip/.7z` 严格校验解压、RGB 命名匹配校验、intrinsics/camera 绑定
+  - 新增 `server/depthrepair-service/`（FastAPI + LingBot-Depth），提供 `/api/repair-depth` 服务
+- [x] **结构与命名整理**：
+  - 2D 页面组件统一为 `2DAnnotationPage` / `2DManualAnnotation` 命名
+  - 启动与初始化脚本路径整理：`server/utils/bootstrap.js`；新增 `start_sam2.bat` / `start_diffdope.bat` / `start_depthrepair.bat`
+
 ### V2.7 最新进展（2026年3月23日）
 - [x] **仓库卫生与文档**：
   - 更新根目录 `.gitignore`：Python `__pycache__`/venv、pose-service `debug_outputs`、`diff-dope` 本地 `outputs`/`multirun`、`tempfile/` 等，减少误提交

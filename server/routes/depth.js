@@ -1,12 +1,19 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const { spawn } = require('child_process');
 const multer = require('multer');
+const axios = require('axios');
+const { getUploadsRootDir } = require('../utils/dataPaths');
+const { debugLog } = require('../utils/debugSettingsStore');
+const AdmZip = require('adm-zip');
+const { path7za } = require('7zip-bin');
 
 function createDepthUpload() {
   const depthStorage = multer.diskStorage({
     destination: (req, file, cb) => {
-      const uploadDir = path.join(__dirname, '..', 'uploads');
+      const uploadDir = getUploadsRootDir();
       if (!fs.existsSync(uploadDir)) {
         fs.mkdirSync(uploadDir, { recursive: true });
       }
@@ -16,8 +23,8 @@ function createDepthUpload() {
       const original = String(file.originalname || 'depth.dat');
       const ext = (path.extname(original) || '').toLowerCase();
       const base = path.basename(original, ext || undefined).replace(/[^\w.\-() ]+/g, '_');
-      const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-      cb(null, `${base}-${uniqueSuffix}${ext || ''}`);
+      // Deterministic filename: do not append timestamp/random suffix.
+      cb(null, `${base}${ext || ''}`);
     },
   });
 
@@ -29,18 +36,213 @@ function createDepthUpload() {
       if (['.png', '.tif', '.tiff'].includes(ext)) return cb(null, true);
       if (ext === '.npy') return cb(null, true);
       if (ext === '.json') return cb(null, true);
-      cb(new Error('仅支持深度图 PNG/TIFF、.npy 原始深度数据或 intrinsics_*.json 相机内参'));
+      // allow archives (depth only)
+      if (ext === '.zip' || ext === '.7z') return cb(null, true);
+      cb(new Error('仅支持深度图 PNG/TIFF、.npy 原始深度数据、intrinsics_*.json 相机内参，以及 .zip/.7z 压缩包'));
     },
   });
 }
 
-function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename, buildImageUrl }) {
+function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename, buildImageUrl, depthRepairServiceUrl }) {
   const router = express.Router();
   const depthUpload = createDepthUpload();
+  const isZipName = (name) => path.extname(name || '').toLowerCase() === '.zip';
+  const is7zName = (name) => path.extname(name || '').toLowerCase() === '.7z';
+
+  // archive internal rules (strict):
+  // - depth PNG/TIFF: depth_*.png / depth_*.tif / depth_*.tiff
+  // - depth raw: depth_raw_*.npy
+  // - intrinsics: intrinsics_*.json
+  function isAllowedDepthArchiveEntry(entryName) {
+    const base = path.basename(String(entryName || '')).toLowerCase();
+    const ext = path.extname(base);
+    if (!['.png', '.tif', '.tiff', '.npy', '.json'].includes(ext)) return false;
+    if (ext === '.json') return /^intrinsics_/i.test(base);
+    if (ext === '.npy') return /^depth_raw_/i.test(base);
+    // png/tif/tiff
+    // exclude depth_raw_*.png by requiring depth_ not followed by raw_
+    return /^depth_(?!raw_)/i.test(base);
+  }
+
+  function listZipFileEntries(zipPath) {
+    const zip = new AdmZip(zipPath);
+    return zip
+      .getEntries()
+      .filter((e) => !e.isDirectory)
+      .map((e) => String(e.entryName || '').replace(/\\/g, '/'))
+      .filter(Boolean);
+  }
+
+  function list7zFileEntries(archivePath) {
+    return new Promise((resolve, reject) => {
+      const args = ['l', '-slt', archivePath];
+      const p = spawn(path7za, args, { windowsHide: true });
+      let stdout = '';
+      let stderr = '';
+      p.stdout.on('data', (d) => (stdout += String(d || '')));
+      p.stderr.on('data', (d) => (stderr += String(d || '')));
+      p.on('error', reject);
+      p.on('close', (code) => {
+        if (code !== 0) return reject(new Error(stderr || `7za list exit code ${code}`));
+
+        const files = [];
+        const blocks = stdout.split(/\r?\n\r?\n/);
+        for (const b of blocks) {
+          const lines = b.split(/\r?\n/).map((l) => l.trim());
+          let pLine = null;
+          let folder = null;
+          let type = null;
+          for (const line of lines) {
+            if (line.startsWith('Path = ')) pLine = line.slice('Path = '.length);
+            if (line.startsWith('Folder = ')) folder = line.slice('Folder = '.length);
+            if (line.startsWith('Type = ')) type = line.slice('Type = '.length);
+          }
+          if (!pLine) continue;
+          if (folder === '+') continue;
+          // 7za -slt 会包含一条 “归档本身”的记录（Type = 7z）
+          if (String(type || '').toLowerCase() === '7z') continue;
+          if (pLine === path.basename(archivePath)) continue;
+          files.push(String(pLine).replace(/\\/g, '/'));
+        }
+        resolve(files);
+      });
+    });
+  }
+
+  function run7zaExtract({ archivePath, outDir }) {
+    return new Promise((resolve, reject) => {
+      const args = ['x', archivePath, `-o${outDir}`, '-y', '-aoa'];
+      const p = spawn(path7za, args, { windowsHide: true });
+      let stderr = '';
+      p.stderr.on('data', (d) => (stderr += String(d || '')));
+      p.on('error', reject);
+      p.on('close', (code) => {
+        if (code === 0) return resolve();
+        reject(new Error(stderr || `7za exit code ${code}`));
+      });
+    });
+  }
+
+  async function expandDepthArchives(filesRaw) {
+    const uploadedFiles = Array.isArray(filesRaw) ? filesRaw : [];
+    const archives = [];
+    const regular = [];
+    for (const f of uploadedFiles) {
+      const originalName = String(f?.originalname || '');
+      if (isZipName(originalName) || is7zName(originalName)) archives.push(f);
+      else regular.push(f);
+    }
+
+    if (archives.length === 0) return uploadedFiles;
+
+    const expanded = [...regular];
+    const tmpBase = path.join(os.tmpdir(), 'dax_depth_upload_extract');
+
+    for (let aIdx = 0; aIdx < archives.length; aIdx++) {
+      const archive = archives[aIdx];
+      const archivePath = archive?.path;
+      if (!archivePath) continue;
+
+      const archiveName = String(archive?.originalname || '');
+      const entries = isZipName(archiveName) ? listZipFileEntries(archivePath) : await list7zFileEntries(archivePath);
+
+      const illegalEntries = entries.filter((e) => !isAllowedDepthArchiveEntry(e));
+      if (illegalEntries.length > 0) {
+        // strict: reject the whole request
+        const show = illegalEntries.slice(0, 40).join('\n');
+        const more = illegalEntries.length > 40 ? `\n（另外还有 ${illegalEntries.length - 40} 个未展示）` : '';
+        const err = new Error(`深度压缩包包含非法文件，已拒绝本次上传。\n\n非法条目：\n${show}${more}`);
+        err.code = 'DEPTH_UPLOAD_ILLEGAL_ARCHIVE_CONTENT';
+        throw err;
+      }
+
+      if (entries.length === 0) {
+        const err = new Error('深度压缩包为空或无法读取，已拒绝本次上传。');
+        err.code = 'DEPTH_UPLOAD_ILLEGAL_ARCHIVE_CONTENT';
+        throw err;
+      }
+
+      const tmpDir = path.join(tmpBase, `${Date.now()}_${Math.round(Math.random() * 1e9)}_${aIdx}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+
+      // extract allowed entries
+      if (isZipName(archiveName)) {
+        const zip = new AdmZip(archivePath);
+        const allowed = entries.filter((e) => isAllowedDepthArchiveEntry(e));
+        for (let i = 0; i < allowed.length; i++) {
+          const entryName = allowed[i];
+          const entry = zip.getEntry(entryName);
+          if (!entry) continue;
+          const data = entry.getData();
+          const baseName = path.basename(entryName);
+          const ext = path.extname(baseName);
+          const baseNoExt = path.basename(baseName, ext).replace(/[^\w.\-() ]+/g, '_');
+          const filename = `__depth_zip_${aIdx}_${i}_${baseNoExt}${ext}`;
+          const outPath = path.join(tmpDir, filename);
+          fs.writeFileSync(outPath, data);
+
+          const st = fs.statSync(outPath);
+          expanded.push({
+            originalname: entryName,
+            filename,
+            path: outPath,
+            size: Number(st.size || 0),
+          });
+        }
+      } else {
+        // 7z
+        const allowed = entries.filter((e) => isAllowedDepthArchiveEntry(e));
+        await run7zaExtract({ archivePath, outDir: tmpDir });
+        for (let i = 0; i < allowed.length; i++) {
+          const entryName = allowed[i];
+          const extractedPath = path.join(tmpDir, ...String(entryName).split('/'));
+          if (!fs.existsSync(extractedPath)) continue;
+          const st = fs.statSync(extractedPath);
+          const baseName = path.basename(entryName);
+          const ext = path.extname(baseName);
+          const baseNoExt = path.basename(baseName, ext).replace(/[^\w.\-() ]+/g, '_');
+          const filename = `__depth_7z_${aIdx}_${i}_${baseNoExt}${ext}`;
+          expanded.push({
+            originalname: entryName,
+            filename,
+            path: extractedPath,
+            size: Number(st.size || 0),
+          });
+        }
+      }
+
+      // cleanup archive file itself (uploaded temp)
+      try {
+        fs.unlinkSync(archivePath);
+      } catch (_) {}
+    }
+
+    return expanded;
+  }
+
+  const extractImageSequenceToken = (img) => {
+    const candidates = [
+      img?.original_name,
+      img?.filename,
+      img?.file_path ? path.basename(String(img.file_path)) : null,
+    ].filter(Boolean);
+    for (const raw of candidates) {
+      const noExt = path.basename(String(raw), path.extname(String(raw)));
+      // Keep the right-most numeric token as-is (preserve zero-padding, e.g. 012)
+      const m = noExt.match(/(\d+)(?!.*\d)/);
+      if (m?.[1]) return m[1];
+    }
+    return String(Number(img?.id || 0) || 0);
+  };
 
   // 上传深度图 / 深度原始数据 / intrinsics_*.json
   router.post('/upload', depthUpload.array('depthFiles', 2000), async (req, res) => {
     try {
+      debugLog('node', 'node9DDepthUpload', {
+        stage: 'received',
+        filesCount: Array.isArray(req.files) ? req.files.length : 0,
+        projectId: req.body?.projectId ?? null,
+      });
       const projectIdRaw = req.body?.projectId;
       const projectId = projectIdRaw != null ? Number(projectIdRaw) : NaN;
       if (!projectId || Number.isNaN(projectId)) {
@@ -62,13 +264,13 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
         if (!cameraByRole.has(r)) cameraByRole.set(r, c);
       }
 
-      const baseUploadsDir = path.join(__dirname, '..', 'uploads');
+      const baseUploadsDir = getUploadsRootDir();
       const projectDepthDir = path.join(baseUploadsDir, `project_${projectId}`, 'depth');
       if (!fs.existsSync(projectDepthDir)) {
         fs.mkdirSync(projectDepthDir, { recursive: true });
       }
 
-      // 预加载该项目下的所有图片，用于按 original_name 绑定 image_id
+      // 预加载该项目下的所有图片，用于按 RGB 文件名 key 绑定 image_id
       const projectImages = await new Promise((resolve, reject) => {
         db.getImagesByProjectId(projectId, (err, rows) => {
           if (err) return reject(err);
@@ -79,11 +281,14 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
       // 预构建项目中所有 RGB 图片的 key -> imageId 映射
       const imageKeyMap = new Map();
       projectImages.forEach((img) => {
-        const key = normalizeDepthKey(img.original_name || img.filename);
-        if (!key) return;
-        if (!imageKeyMap.has(key)) {
-          imageKeyMap.set(key, img.id);
-        }
+        const keys = [img.original_name, img.filename, img.file_path ? path.basename(String(img.file_path)) : null].filter(Boolean);
+        const seen = new Set();
+        keys.forEach((raw) => {
+          const key = normalizeDepthKey(raw);
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          if (!imageKeyMap.has(key)) imageKeyMap.set(key, img.id);
+        });
       });
 
       const findImageIdForDepth = (origName) => {
@@ -92,7 +297,7 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
         return imageKeyMap.get(key) || null;
       };
 
-      const filesRaw = req.files || [];
+      let filesRaw = req.files || [];
       if (!filesRaw || filesRaw.length === 0) {
         return res.json({ success: true, files: [] });
       }
@@ -104,6 +309,21 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
           } catch (_) {}
         }
       };
+
+      // Expand depth zip/7z archives (strict validation + reject with rollback).
+      // After expansion, `filesRaw` contains only:
+      // - regular depth/intrinsics files uploaded directly
+      // - extracted archive internal files (only depth + intrinsics)
+      try {
+        filesRaw = await expandDepthArchives(filesRaw);
+      } catch (e) {
+        // rollback: delete all uploaded temp files (including archives)
+        deleteTempFiles(req.files || []);
+        return res.status(400).json({
+          success: false,
+          message: e?.message || '深度压缩包上传失败',
+        });
+      }
 
       // 强校验：除 intrinsics_* 外，都必须匹配到 RGB
       const unmatched = [];
@@ -121,16 +341,23 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
 
       if (unmatched.length > 0) {
         deleteTempFiles(filesRaw);
-
+        const mismatchMessage =
+          `深度数据与当前项目 RGB 图片不匹配，请检查后重试。\n\n` +
+          `命名要求（key 必须一致）：\n` +
+          `- rgb_<key>.<ext>\n` +
+          `- depth_<key>.png\n` +
+          `- depth_raw_<key>.npy\n\n` +
+          `未匹配文件：\n- ${unmatched.join('\n- ')}`;
+        debugLog('node', 'node9DDepthUpload', {
+          stage: 'rejected-unmatched-rgb',
+          projectId,
+          unmatchedCount: unmatched.length,
+          unmatched: unmatched.slice(0, 20),
+        });
         return res.status(400).json({
           success: false,
-          message:
-            `深度数据上传失败：存在未匹配到 RGB 的文件（请检查命名格式）。\n\n` +
-            `命名要求（key 必须一致）：\n` +
-            `- rgb_<key>.<ext>\n` +
-            `- depth_<key>.png\n` +
-            `- depth_raw_<key>.npy\n\n` +
-            `未匹配文件：\n- ${unmatched.join('\n- ')}`,
+          code: 'DEPTH_RGB_MISMATCH',
+          message: mismatchMessage,
         });
       }
 
@@ -150,6 +377,7 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
         // move to project depth dir
         const finalPath = path.join(projectDepthDir, f.filename);
         try {
+          if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
           fs.renameSync(f.path, finalPath);
         } catch (moveErr) {
           console.error('移动 Depth 文件到项目目录失败:', moveErr);
@@ -194,7 +422,6 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
                 role,
                 intrinsicsJson: intrinsicsObj,
                 intrinsicsFilePath: finalPath,
-                intrinsicsOriginalName: f.originalname,
                 intrinsicsFileSize: f.size,
               },
               (err, id) => {
@@ -214,7 +441,6 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
           files.push({
             id: null,
             filename: f.filename,
-            originalName: f.originalname,
             size: f.size,
             url,
             role,
@@ -266,6 +492,7 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
         // move to project depth dir
         const finalPath = path.join(projectDepthDir, f.filename);
         try {
+          if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
           fs.renameSync(f.path, finalPath);
         } catch (moveErr) {
           console.error('移动 Depth 文件到项目目录失败:', moveErr);
@@ -290,9 +517,9 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
         const cameraId = role ? (cameraByRole.get(role)?.id ?? null) : null;
 
         // 这里不做兜底：上面已严格校验，缺失则直接 400
-        console.log('[depth/upload][bindCamera]', {
+        debugLog('node', 'nodeDepthMatch', {
           projectId,
-          originalName: f.originalname,
+          clientOriginalName: f.originalname,
           filename: f.filename,
           inferredRole: inferRoleFromFilename(f.originalname),
           finalRole: role || null,
@@ -307,7 +534,6 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
           role,
           modality,
           filename: f.filename,
-          originalName: f.originalname,
           path: finalPath,
           size: f.size,
           uploadTime: new Date().toISOString(),
@@ -323,7 +549,6 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
         files.push({
           id: depthId,
           filename: f.filename,
-          originalName: f.originalname,
           size: f.size,
           url,
           role,
@@ -333,9 +558,18 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
         });
       }
 
+      debugLog('node', 'node9DDepthUpload', {
+        stage: 'completed',
+        projectId,
+        savedCount: files.length,
+      });
       return res.json({ success: true, files });
     } catch (error) {
       console.error('❌ /api/depth/upload 处理失败:', error);
+      debugLog('node', 'node9DDepthUpload', {
+        stage: 'error',
+        message: error?.message || String(error),
+      });
       return res.status(500).json({ success: false, message: error?.message || '深度数据上传失败' });
     }
   });
@@ -361,10 +595,17 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
           role: row.role,
           modality: row.modality,
           filename: row.filename,
-          originalName: row.original_name,
           size: row.file_size,
           uploadTime: row.upload_time,
           url: buildImageUrl(row.file_path, row.filename),
+          depthRawFixPath: row.depth_raw_fix_path || null,
+          depthPngFixPath: row.depth_png_fix_path || null,
+          depthRawFixUrl: row.depth_raw_fix_path
+            ? buildImageUrl(row.depth_raw_fix_path, path.basename(String(row.depth_raw_fix_path)))
+            : null,
+          depthPngFixUrl: row.depth_png_fix_path
+            ? buildImageUrl(row.depth_png_fix_path, path.basename(String(row.depth_png_fix_path)))
+            : null,
         }));
       };
 
@@ -417,7 +658,6 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
             role: c.role,
             modality: 'intrinsics',
             filename: path.basename(String(c.intrinsics_file_path || 'intrinsics.json')),
-            originalName: c.intrinsics_original_name || path.basename(String(c.intrinsics_file_path || 'intrinsics.json')),
             size: c.intrinsics_file_size || null,
             uploadTime: c.updated_at || null,
             url: buildImageUrl(c.intrinsics_file_path, path.basename(String(c.intrinsics_file_path || 'intrinsics.json'))),
@@ -434,6 +674,279 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
     } catch (error) {
       console.error('❌ GET /api/depth 处理失败:', error);
       return res.status(500).json({ success: false, message: '获取 Depth 列表失败' });
+    }
+  });
+
+  // 批量补全深度信息：调用 depthrepair-service 推理并回写 *_fix 路径
+  router.post('/repair/batch', async (req, res) => {
+    try {
+      debugLog('node', 'nodeDepthRepairRequest', {
+        stage: 'received',
+        projectId: req.body?.projectId ?? null,
+      });
+      const projectIdRaw = req.body?.projectId;
+      const projectId = projectIdRaw != null ? Number(projectIdRaw) : NaN;
+      if (!projectId || Number.isNaN(projectId)) {
+        return res.status(400).json({ success: false, message: '缺少或非法的 projectId' });
+      }
+
+      const images = await new Promise((resolve, reject) => {
+        db.getImagesByProjectId(projectId, (err, rows) => {
+          if (err) return reject(err);
+          return resolve(Array.isArray(rows) ? rows : []);
+        });
+      });
+      const cameras = await new Promise((resolve) => {
+        db.listCamerasByProjectId(projectId, (err, rows) => {
+          if (err) return resolve([]);
+          return resolve(Array.isArray(rows) ? rows : []);
+        });
+      });
+      const cameraByRole = new Map();
+      for (const c of cameras) {
+        const r = String(c?.role || '').trim().toLowerCase();
+        if (!r) continue;
+        if (c?.intrinsics_file_path) cameraByRole.set(r, c);
+      }
+
+      const projectDepthDir = path.join(getUploadsRootDir(), `project_${projectId}`, 'depth');
+      if (!fs.existsSync(projectDepthDir)) {
+        fs.mkdirSync(projectDepthDir, { recursive: true });
+      }
+
+      let upserted = 0;
+      /** 仅统计「至少有一条成功」的图像 id（避免 upserted 按 role 累计被当成「张数」） */
+      const repairedImageIds = new Set();
+      let skipped = 0;
+      let failed = 0;
+      const failedDetails = [];
+
+      for (const img of images) {
+        try {
+          const rgbPath = img?.file_path || null;
+          if (!rgbPath || !fs.existsSync(rgbPath)) {
+            skipped += 1;
+            continue;
+          }
+
+          // eslint-disable-next-line no-await-in-loop
+          const depthRows = await new Promise((resolve, reject) => {
+            db.getDepthMapsByImageId(projectId, img.id, (err, rows) => {
+              if (err) return reject(err);
+              return resolve(Array.isArray(rows) ? rows : []);
+            });
+          });
+
+          const byRole = new Map();
+          for (const row of depthRows) {
+            const role = String(row?.role || 'head').trim().toLowerCase();
+            if (!byRole.has(role)) byRole.set(role, []);
+            byRole.get(role).push(row);
+          }
+
+          if (byRole.size === 0) {
+            skipped += 1;
+            continue;
+          }
+
+          for (const [role, rows] of byRole.entries()) {
+            const depthRaw = rows.find(
+              (d) => d?.modality === 'depth_raw' || String(d?.filename || '').toLowerCase().endsWith('.npy'),
+            );
+            const depthPng = rows.find(
+              (d) => d?.modality === 'depth_png' || String(d?.filename || '').toLowerCase().endsWith('.png'),
+            );
+
+            const depthRawPath = depthRaw?.file_path || null;
+            const depthPngPath = depthPng?.file_path || null;
+            const intrinsicsPath = cameraByRole.get(String(role).trim().toLowerCase())?.intrinsics_file_path || null;
+            const depthInputPath =
+              depthRawPath && fs.existsSync(depthRawPath)
+                ? depthRawPath
+                : depthPngPath && fs.existsSync(depthPngPath)
+                  ? depthPngPath
+                  : null;
+            if (!depthInputPath) {
+              skipped += 1;
+              continue;
+            }
+            if (!intrinsicsPath) {
+              failed += 1;
+              failedDetails.push(`[${img.original_name || img.filename}][${role}] 缺少 intrinsics`);
+              continue;
+            }
+
+            const safeRole = String(role || 'head').replace(/[^\w\-]/g, '_');
+            const imageSeqToken = extractImageSequenceToken(img);
+            const depthRawFixPath = path.join(projectDepthDir, `depth_raw_fix_${safeRole}_${imageSeqToken}.npy`);
+            const depthPngFixPath = path.join(projectDepthDir, `depth_fix_${safeRole}_${imageSeqToken}.png`);
+
+            try {
+              debugLog('node', 'nodeDepthRepairRequest', {
+                stage: 'per-image-role',
+                projectId,
+                imageId: img.id,
+                role,
+              });
+              // eslint-disable-next-line no-await-in-loop
+              await axios.post(
+                `${String(depthRepairServiceUrl || 'http://localhost:7870').replace(/\/+$/, '')}/api/repair-depth`,
+                {
+                  rgbPath,
+                  depthPath: depthInputPath,
+                  intrinsicsPath,
+                  imageId: img.id,
+                  imageOriginalName: img.original_name || img.filename,
+                  outputDepthNpyPath: depthRawFixPath,
+                  outputDepthPngPath: depthPngFixPath,
+                  device: 'auto',
+                  noMask: false,
+                  depthPngScale: 1000,
+                },
+                { timeout: 10 * 60 * 1000 },
+              );
+
+              // eslint-disable-next-line no-await-in-loop
+              await new Promise((resolve, reject) => {
+                db.updateDepthFixPathsByProjectImageRole(
+                  projectId,
+                  img.id,
+                  role,
+                  depthRawFixPath,
+                  depthPngFixPath,
+                  (err) => (err ? reject(err) : resolve(null)),
+                );
+              });
+
+              // eslint-disable-next-line no-await-in-loop
+              await new Promise((resolve, reject) => {
+                db.upsertDepthRepairRecord(
+                  {
+                    projectId,
+                    imageId: img.id,
+                    role,
+                    depthRawPath,
+                    depthPngPath,
+                    depthRawFixPath,
+                    depthPngFixPath,
+                    status: 'done',
+                    note: null,
+                  },
+                  (err) => (err ? reject(err) : resolve(null)),
+                );
+              });
+              upserted += 1;
+              repairedImageIds.add(Number(img.id));
+            } catch (e) {
+              failed += 1;
+              failedDetails.push(
+                `[${img.original_name || img.filename}][${role}] ${e?.response?.data?.detail || e?.response?.data?.message || e?.message || 'repair failed'}`,
+              );
+              // eslint-disable-next-line no-await-in-loop
+              await new Promise((resolve) => {
+                db.upsertDepthRepairRecord(
+                  {
+                    projectId,
+                    imageId: img.id,
+                    role,
+                    depthRawPath,
+                    depthPngPath,
+                    depthRawFixPath,
+                    depthPngFixPath,
+                    status: 'failed',
+                    note: String(e?.response?.data?.detail || e?.message || 'repair failed'),
+                  },
+                  () => resolve(null),
+                );
+              });
+            }
+          }
+        } catch (e) {
+          failed += 1;
+        }
+      }
+
+      const payload = {
+        success: true,
+        projectId,
+        totalImages: images.length,
+        /** 成功写入的 depth 条目数（按 project+image+role 计，多角色时可能 > 图像数） */
+        upserted,
+        /** 至少有一条深度条目成功写入的图像张数 */
+        repairedImages: repairedImageIds.size,
+        skipped,
+        failed,
+        failedDetails,
+      };
+      debugLog('node', 'nodeDepthRepairResult', {
+        stage: 'completed',
+        projectId,
+        totalImages: payload.totalImages,
+        repairedImages: payload.repairedImages,
+        failed: payload.failed,
+      });
+      return res.json(payload);
+    } catch (error) {
+      console.error('❌ /api/depth/repair/batch 处理失败:', error);
+      debugLog('node', 'nodeDepthRepairResult', {
+        stage: 'error',
+        message: error?.message || String(error),
+      });
+      return res.status(500).json({ success: false, message: error?.message || '批量补全深度信息失败' });
+    }
+  });
+
+  // 批量补全深度的进行中进度（轮询）
+  // 说明：/repair/batch 是同步长任务，但 depth_repair_records 会在执行过程中逐步写入，
+  // 因此可以通过 updated_at + sinceMs 统计“本次批量”已处理过的图像数量。
+  router.get('/repair/batch/status', async (req, res) => {
+    try {
+      const projectIdRaw = req.query?.projectId;
+      const sinceMsRaw = req.query?.sinceMs;
+      const projectId = projectIdRaw != null ? Number(projectIdRaw) : NaN;
+      const sinceMs = sinceMsRaw != null ? Number(sinceMsRaw) : NaN;
+
+      if (!projectId || Number.isNaN(projectId)) {
+        return res.status(400).json({ success: false, message: '缺少或非法的 projectId' });
+      }
+      if (!Number.isFinite(sinceMs) || sinceMs <= 0) {
+        return res.status(400).json({ success: false, message: '缺少或非法的 sinceMs' });
+      }
+
+      const sinceIso = new Date(sinceMs).toISOString();
+
+      const totalImages = await new Promise((resolve, reject) => {
+        db.countImagesByProjectId(projectId, (err, cnt) => {
+          if (err) return reject(err);
+          return resolve(Number(cnt || 0));
+        });
+      });
+
+      const progress = await new Promise((resolve, reject) => {
+        db.getDepthRepairBatchProgressBySince(projectId, sinceIso, (err, row) => {
+          if (err) return reject(err);
+          return resolve(row || { doneImages: 0, failedImages: 0, processedImages: 0 });
+        });
+      });
+
+      const processedImages = Number(progress?.processedImages || 0);
+      const doneImages = Number(progress?.doneImages || 0);
+      const failedImages = Number(progress?.failedImages || 0);
+
+      return res.json({
+        success: true,
+        projectId,
+        totalImages,
+        processedImages,
+        doneImages,
+        failedImages,
+      });
+    } catch (error) {
+      debugLog('node', 'nodeDepthRepairResult', {
+        message: error?.message || String(error),
+      });
+      // 保留错误信息给客户端（同时可通过调试面板打开 debugLog 获取更多细节）
+      return res.status(500).json({ success: false, message: error?.message || '获取进度失败' });
     }
   });
 
@@ -461,7 +974,6 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
             projectId: r.project_id,
             role: r.role,
             intrinsics,
-            intrinsicsOriginalName: r.intrinsics_original_name,
             intrinsicsFileSize: r.intrinsics_file_size,
             updatedAt: r.updated_at,
           };

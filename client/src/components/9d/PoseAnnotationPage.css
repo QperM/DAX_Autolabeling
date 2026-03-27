@@ -1,0 +1,265 @@
+@import '../common/AnnotationPageBase.css';
+@import '../common/AnnotationActions.css';
+@import '../common/AnnotationPreview.css';
+@import '../common/AnnotationPageShared.css';
+
+/* 9D 页面样式覆盖（独立于 2D 页面维护） */
+.annotation-page.pose-annotation-page .welcome-layout {
+  grid-template-columns: 40% 60%;
+  /* 略收左边距，左侧卡片靠左、右侧预览区更宽 */
+  padding-left: 1rem;
+  padding-right: 2rem;
+}
+
+.annotation-page.pose-annotation-page .welcome-left-top {
+  justify-self: stretch;
+  min-width: 0;
+}
+
+.annotation-page.pose-annotation-page .welcome-content.pose-welcome-content {
+  width: 100%;
+  max-width: 100%;
+  margin-left: 0;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+
+/* 在较窄横向屏幕下避免左侧卡片过窄：
+ * 通用样式里有 1200/768 的堆叠媒体查询，但这里使用了更高优先级的选择器覆盖了它，
+ * 因此需要在 Pose 页面显式补齐。
+ */
+@media (max-width: 1200px) {
+  .annotation-page.pose-annotation-page .welcome-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+    padding-left: 1rem;
+    padding-right: 1rem;
+    gap: 1.5rem;
+  }
+
+  .annotation-page.pose-annotation-page .welcome-left-top,
+  .annotation-page.pose-annotation-page .welcome-right-top,
+  .annotation-page.pose-annotation-page .welcome-bottom {
+    grid-column: 1;
+  }
+
+  .annotation-page.pose-annotation-page .welcome-left-top {
+    grid-row: 1;
+  }
+
+  .annotation-page.pose-annotation-page .welcome-right-top {
+    grid-row: 2;
+    min-height: 300px;
+  }
+
+  .annotation-page.pose-annotation-page .welcome-bottom {
+    grid-row: 3;
+  }
+}
+
+@media (max-width: 768px) {
+  .annotation-page.pose-annotation-page .welcome-layout {
+    grid-template-rows: auto auto 1fr;
+    gap: 1rem;
+    padding: 0 1rem;
+  }
+}
+
+/* Pose 页：Mesh Label 对照表（缩略图 + SKU，复用 label-mapping 弹窗结构） */
+.mesh-label-mapping-list {
+  max-height: min(60vh, 520px);
+}
+
+.mesh-label-mapping-item {
+  align-items: stretch;
+  gap: 1rem;
+}
+
+.mesh-label-mapping-thumb-wrap {
+  width: 140px;
+  height: 140px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #020617;
+  border: 1px solid #e2e8f0;
+}
+
+.mesh-label-mapping-fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  justify-content: center;
+}
+
+.mesh-label-mapping-filename {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #334155;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mesh-label-mapping-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mesh-label-mapping-combo-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.mesh-label-mapping-select-anchor {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.mesh-label-mapping-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 38px;
+  padding: 0.45rem 0.65rem;
+  box-sizing: border-box;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  font-size: 0.9rem;
+  color: #1e293b;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.mesh-label-mapping-select-trigger:hover:not(:disabled) {
+  border-color: #94a3b8;
+}
+
+.mesh-label-mapping-select-trigger:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.mesh-label-mapping-select-trigger:disabled {
+  opacity: 0.75;
+  cursor: not-allowed;
+  background: #f8fafc;
+}
+
+.mesh-label-mapping-select-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.mesh-label-mapping-select-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesh-label-mapping-select-text--warn {
+  color: #b45309;
+}
+
+.mesh-label-mapping-select-caret {
+  flex-shrink: 0;
+  font-size: 0.85rem;
+  color: #64748b;
+  line-height: 1;
+}
+
+.mesh-label-mapping-dropdown-portal .mesh-label-mapping-dropdown {
+  margin: 0;
+  padding: 0.35rem 0;
+  list-style: none;
+  max-height: min(40vh, 280px);
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
+}
+
+.mesh-label-mapping-dropdown-empty {
+  padding: 0.65rem 0.85rem;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.mesh-label-mapping-suggestion-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.45rem 0.65rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.9rem;
+  color: #1e293b;
+  transition: background 0.12s ease;
+}
+
+.mesh-label-mapping-suggestion-btn:hover {
+  background: #f1f5f9;
+}
+
+.mesh-label-mapping-suggestion-clear {
+  color: #64748b;
+  font-style: italic;
+}
+
+.mesh-label-mapping-suggestion-clear:hover {
+  background: #f8fafc;
+}
+
+.mesh-label-mapping-suggestion-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-sizing: border-box;
+}
+
+.mesh-label-mapping-suggestion-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesh-label-mapping-input {
+  min-width: 0;
+}
+
+/* PoseAnnotationPage: Mesh 预览 - 尺寸浮窗（位于 Texture 按钮下方） */
+.mesh-dims-panel {
+  padding: 0.45rem 0.6rem;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  line-height: 1.25;
+  backdrop-filter: blur(6px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  pointer-events: none;
+}

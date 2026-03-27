@@ -1,7 +1,12 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const { spawn } = require('child_process');
 const AdmZip = require('adm-zip');
+const { path7za } = require('7zip-bin');
+const { buildImageUrl } = require('../utils/uploads');
+const { debugLog } = require('../utils/debugSettingsStore');
 
 function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
   const router = express.Router();
@@ -19,9 +24,132 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
     return ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'tif', 'webp'].includes(ext);
   }
 
-  function safeBaseName(name) {
-    const base = path.basename(name || 'image');
-    return base.replace(/[^\w.\-()\s]/g, '_');
+  function isZipName(name) {
+    return path.extname(name || '').toLowerCase() === '.zip';
+  }
+
+  function is7zName(name) {
+    return path.extname(name || '').toLowerCase() === '.7z';
+  }
+
+  function safeUnlink(filePath) {
+    if (!filePath) return;
+    try {
+      fs.unlinkSync(filePath);
+    } catch (_) {}
+  }
+
+  function makeIllegalItem(containerName, innerPath) {
+    return {
+      container: containerName || null, // null 表示直接上传的单文件
+      path: String(innerPath || ''),
+    };
+  }
+
+  function listZipFileEntries(zipPath) {
+    const zip = new AdmZip(zipPath);
+    return zip
+      .getEntries()
+      .filter((e) => !e.isDirectory)
+      .map((e) => String(e.entryName || '').replace(/\\/g, '/'))
+      .filter(Boolean);
+  }
+
+  function list7zFileEntries(archivePath) {
+    return new Promise((resolve, reject) => {
+      const args = ['l', '-slt', archivePath];
+      const p = spawn(path7za, args, { windowsHide: true });
+      let stdout = '';
+      let stderr = '';
+      p.stdout.on('data', (d) => (stdout += String(d || '')));
+      p.stderr.on('data', (d) => (stderr += String(d || '')));
+      p.on('error', reject);
+      p.on('close', (code) => {
+        if (code !== 0) return reject(new Error(stderr || `7za list exit code ${code}`));
+
+        const files = [];
+        const blocks = stdout.split(/\r?\n\r?\n/);
+        for (const b of blocks) {
+          const lines = b.split(/\r?\n/).map((l) => l.trim());
+          let pLine = null;
+          let folder = null;
+          let type = null;
+          for (const line of lines) {
+            if (line.startsWith('Path = ')) pLine = line.slice('Path = '.length);
+            if (line.startsWith('Folder = ')) folder = line.slice('Folder = '.length);
+            if (line.startsWith('Type = ')) type = line.slice('Type = '.length);
+          }
+          if (!pLine) continue;
+          if (folder === '+') continue;
+          // 7za -slt 会包含一条 “归档本身” 的记录（Type = 7z，Path = <archive>），不能当成内部文件
+          if (String(type || '').toLowerCase() === '7z') continue;
+          if (pLine === path.basename(archivePath)) continue;
+          files.push(String(pLine).replace(/\\/g, '/'));
+        }
+        resolve(files);
+      });
+    });
+  }
+
+  async function validateIncomingUploadOrThrow(files) {
+    const illegal = [];
+
+    for (const f of files) {
+      const original = String(f.originalname || '');
+      const isDirectImage = getIsImageFile(original);
+      const isZip = isZipName(original);
+      const is7z = is7zName(original);
+
+      // 允许：直接图片 / zip / 7z（压缩包内必须全是图片）
+      if (!isDirectImage && !isZip && !is7z) {
+        illegal.push(makeIllegalItem(null, original));
+        continue;
+      }
+
+      if (isZip) {
+        const entries = listZipFileEntries(f.path);
+        const bad = entries.filter((p) => !getIsImageFile(p));
+        bad.forEach((p) => illegal.push(makeIllegalItem(original, p)));
+      }
+
+      if (is7z) {
+        const entries = await list7zFileEntries(f.path);
+        const bad = entries.filter((p) => !getIsImageFile(p));
+        bad.forEach((p) => illegal.push(makeIllegalItem(original, p)));
+      }
+    }
+
+    if (illegal.length > 0) {
+      const MAX_SHOW = 40;
+      const preview = illegal.slice(0, MAX_SHOW);
+      const more = illegal.length > MAX_SHOW ? `（另外还有 ${illegal.length - MAX_SHOW} 个未展示）` : '';
+      const desc =
+        preview
+          .map((it) => (it.container ? `${it.container} -> ${it.path}` : `${it.path}`))
+          .join('\n') + (more ? `\n${more}` : '');
+
+      const err = new Error(
+        `上传内容不合规：只允许上传常见图片（png/jpg/jpeg/webp/gif/bmp/tiff）。\n` +
+          `压缩包内也必须全部为图片；发现以下非法条目：\n\n${desc}`
+      );
+      err.code = 'UPLOAD_CONTAINS_NON_IMAGE';
+      err.illegal = illegal;
+      throw err;
+    }
+  }
+
+  function finalizeUploadedRgb(imageId, fileInfo) {
+    return new Promise((resolve) => {
+      db.finalizeRgbImageStorage(imageId, fileInfo.originalName, fileInfo.path, (err, meta) => {
+        if (err) console.error('[upload] finalizeRgbImageStorage:', err);
+        if (meta) {
+          fileInfo.filename = meta.filename;
+          fileInfo.path = meta.path;
+          fileInfo.url = buildImageUrl(meta.path, meta.filename);
+        }
+        resolve();
+      });
+    });
   }
 
   function insertImageAsync(fileInfo) {
@@ -43,6 +171,164 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
     });
   }
 
+  function getProjectImagesDir(projectId) {
+    if (!projectId) return getProjectUploadDir(projectId);
+    const imagesDir = path.join(getProjectUploadDir(projectId), 'images');
+    if (!fs.existsSync(imagesDir)) {
+      fs.mkdirSync(imagesDir, { recursive: true });
+    }
+    return imagesDir;
+  }
+
+  function safeRmDir(dirPath) {
+    if (!dirPath) return;
+    try {
+      fs.rmSync(dirPath, { recursive: true, force: true });
+    } catch (_) {}
+  }
+
+  function listFilesRecursive(rootDir) {
+    const out = [];
+    const stack = [rootDir];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur) continue;
+      let entries;
+      try {
+        entries = fs.readdirSync(cur, { withFileTypes: true });
+      } catch (_) {
+        continue;
+      }
+      for (const ent of entries) {
+        const full = path.join(cur, ent.name);
+        if (ent.isDirectory()) {
+          stack.push(full);
+        } else if (ent.isFile()) {
+          out.push(full);
+        }
+      }
+    }
+    return out;
+  }
+
+  function run7zaExtract({ archivePath, outDir }) {
+    return new Promise((resolve, reject) => {
+      const args = ['x', archivePath, `-o${outDir}`, '-y', '-aoa'];
+      const p = spawn(path7za, args, { windowsHide: true });
+      let stderr = '';
+      p.stderr.on('data', (d) => {
+        stderr += String(d || '');
+      });
+      p.on('error', reject);
+      p.on('close', (code) => {
+        if (code === 0) return resolve();
+        reject(new Error(stderr || `7za exit code ${code}`));
+      });
+    });
+  }
+
+  async function run7zExtractJob({ jobId, archivePath, archiveOriginalName, projectId }) {
+    const job = uploadJobs.get(jobId);
+    if (!job) return;
+
+    job.status = 'extracting';
+    job.message = '正在解压...';
+
+    const uploadDir = getProjectImagesDir(projectId);
+    const tmpBase = path.join(os.tmpdir(), 'dax_upload_extract');
+    const tmpDir = path.join(tmpBase, `${jobId}_${Date.now()}`);
+    try {
+      fs.mkdirSync(tmpDir, { recursive: true });
+      await run7zaExtract({ archivePath, outDir: tmpDir });
+
+      const allFiles = listFilesRecursive(tmpDir);
+      // 严格限制：解压出来的文件必须全部是图片（否则拒绝整批）
+      const nonImageFiles = allFiles.filter((p) => !getIsImageFile(p));
+      if (nonImageFiles.length > 0) {
+        const show = nonImageFiles
+          .slice(0, 40)
+          .map((p) => path.relative(tmpDir, p).replace(/\\/g, '/'))
+          .join('\n');
+        const more = nonImageFiles.length > 40 ? `\n（另外还有 ${nonImageFiles.length - 40} 个未展示）` : '';
+        throw new Error(`压缩包包含非图片文件，已拒绝本次上传：\n${show}${more}`);
+      }
+
+      const imageFiles = allFiles.filter((p) => getIsImageFile(p)).slice(0, 2000);
+
+      const MAX_TOTAL_UNCOMPRESSED = 3 * 1024 * 1024 * 1024; // 3GB
+      let totalBytes = 0;
+      for (const p of imageFiles) {
+        const st = fs.statSync(p);
+        totalBytes += Number(st.size || 0);
+        if (totalBytes > MAX_TOTAL_UNCOMPRESSED) {
+          throw new Error('压缩包内容过大（解压后体积超过限制），请拆分后再上传');
+        }
+      }
+
+      job.total = imageFiles.length;
+      job.processed = 0;
+      job.files = [];
+
+      if (job.total === 0) {
+        job.status = 'completed';
+        job.message = '压缩包中未找到可用图片';
+        return;
+      }
+
+      for (const filePath of imageFiles) {
+        const dotExt = path.extname(filePath || '').toLowerCase() || '.png';
+        const staging = `__7z_${job.processed}_${Math.round(Math.random() * 1e9)}${dotExt}`;
+        const outPath = path.join(uploadDir, staging);
+
+        try {
+          if (fs.existsSync(outPath)) {
+            try {
+              fs.unlinkSync(outPath);
+            } catch (_) {}
+          }
+          fs.renameSync(filePath, outPath);
+        } catch (_) {
+          // fallback: copy
+          fs.copyFileSync(filePath, outPath);
+        }
+
+        const st = fs.statSync(outPath);
+        const originalName = path.basename(filePath);
+
+        const fileInfo = {
+          filename: staging,
+          originalName,
+          path: outPath,
+          url: buildImageUrl(outPath, staging),
+          size: Number(st.size || 0),
+          uploadTime: new Date().toISOString(),
+        };
+
+        const imageId = await insertImageAsync(fileInfo);
+        await linkImageToProjectAsync(projectId, imageId);
+        await finalizeUploadedRgb(imageId, fileInfo);
+        fileInfo.id = imageId;
+
+        job.files.push(fileInfo);
+        job.processed += 1;
+        job.message = `正在解压... (${job.processed}/${job.total})`;
+      }
+
+      job.status = 'completed';
+      job.message = '解压完成';
+    } catch (e) {
+      console.error('[7Z] 解压失败:', e);
+      job.status = 'error';
+      job.error = e?.message || String(e);
+      job.message = '解压失败';
+    } finally {
+      safeRmDir(tmpDir);
+      try {
+        fs.unlinkSync(archivePath);
+      } catch (_) {}
+    }
+  }
+
   async function runZipExtractJob({ jobId, zipPath, zipOriginalName, projectId }) {
     const job = uploadJobs.get(jobId);
     if (!job) return;
@@ -50,10 +336,21 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
     job.status = 'extracting';
     job.message = '正在解压...';
 
-    const uploadDir = getProjectUploadDir(projectId);
+    const uploadDir = getProjectImagesDir(projectId);
     try {
       const zip = new AdmZip(zipPath);
       const entries = zip.getEntries().filter((e) => !e.isDirectory);
+
+      // 严格限制：压缩包内必须全部是图片（否则拒绝整批）
+      const illegalEntries = entries
+        .map((e) => String(e.entryName || '').replace(/\\/g, '/'))
+        .filter(Boolean)
+        .filter((p) => !getIsImageFile(p));
+      if (illegalEntries.length > 0) {
+        const show = illegalEntries.slice(0, 40).join('\n');
+        const more = illegalEntries.length > 40 ? `\n（另外还有 ${illegalEntries.length - 40} 个未展示）` : '';
+        throw new Error(`压缩包包含非图片文件，已拒绝本次上传：\n${show}${more}`);
+      }
 
       const MAX_FILES = 2000;
       const MAX_TOTAL_UNCOMPRESSED = 3 * 1024 * 1024 * 1024; // 3GB
@@ -79,30 +376,28 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
       }
 
       for (const entry of imageEntries) {
-        const orig = safeBaseName(entry.entryName);
-        const ext = path.extname(orig);
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        const filename = `images-${uniqueSuffix}${ext}`;
-        const outPath = path.join(uploadDir, filename);
+        const dotExt = path.extname(entry.entryName || '').toLowerCase() || '.png';
+        const staging = `__zip_${job.processed}_${Math.round(Math.random() * 1e9)}${dotExt}`;
+        const outPath = path.join(uploadDir, staging);
 
         const data = entry.getData();
         fs.writeFileSync(outPath, data);
 
-        // 构建相对路径的URL（如果是在项目文件夹中，需要包含项目文件夹路径）
-        const relativePath = projectId ? `project_${projectId}/${filename}` : filename;
+        const originalName = String(entry.entryName || `image${dotExt}`).replace(/\\/g, '/');
 
         const fileInfo = {
-          filename,
-          originalName: orig,
+          filename: staging,
+          originalName,
           path: outPath,
-          url: `/uploads/${encodeURIComponent(relativePath)}`,
+          url: buildImageUrl(outPath, staging),
           size: data.length,
           uploadTime: new Date().toISOString(),
         };
 
         const imageId = await insertImageAsync(fileInfo);
-        fileInfo.id = imageId;
         await linkImageToProjectAsync(projectId, imageId);
+        await finalizeUploadedRgb(imageId, fileInfo);
+        fileInfo.id = imageId;
 
         job.files.push(fileInfo);
         job.processed += 1;
@@ -126,6 +421,11 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
   // 文件上传接口（需要项目访问权限）
   router.post('/upload', upload.array('images', 2000), async (req, res) => {
     try {
+      debugLog('node', 'node2DUpload', {
+        stage: 'received',
+        filesCount: Array.isArray(req.files) ? req.files.length : 0,
+        projectId: req.body?.projectId ?? null,
+      });
       const files = req.files;
       const uploadedFiles = [];
       const { projectId } = req.body;
@@ -163,10 +463,26 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
         return res.json({ success: true, files: [], zipJobs: [], message: '未选择任何文件' });
       }
 
-      files.forEach((file) => {
-        const isZip = path.extname(file.originalname || '').toLowerCase() === '.zip';
+      // 严格校验：本次上传任何非图片内容都会导致整批失败，并清空本次上传
+      try {
+        await validateIncomingUploadOrThrow(files);
+      } catch (vErr) {
+        try {
+          files.forEach((f) => safeUnlink(f.path));
+        } catch (_) {}
+        return res.status(400).json({
+          success: false,
+          error: vErr.code || 'UPLOAD_INVALID_CONTENT',
+          message: vErr.message || '上传内容不合规',
+          illegal: Array.isArray(vErr.illegal) ? vErr.illegal : [],
+        });
+      }
 
-        if (isZip) {
+      files.forEach((file) => {
+        const isZip = isZipName(file.originalname || '');
+        const is7z = is7zName(file.originalname || '');
+
+        if (isZip || is7z) {
           const jobId = makeJobId();
           uploadJobs.set(jobId, {
             id: jobId,
@@ -183,26 +499,35 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
             originalName: file.originalname,
           });
 
-          let finalZipPath = file.path;
+          let finalArchivePath = file.path;
           if (projectIdNum) {
             const projectDir = getProjectUploadDir(projectIdNum);
-            const zipFilename = path.basename(file.path);
-            finalZipPath = path.join(projectDir, zipFilename);
+            const archiveFilename = path.basename(file.path);
+            finalArchivePath = path.join(projectDir, archiveFilename);
             try {
-              fs.renameSync(file.path, finalZipPath);
+              fs.renameSync(file.path, finalArchivePath);
             } catch (err) {
-              console.error('移动ZIP文件到项目文件夹失败:', err);
-              finalZipPath = file.path;
+              console.error('移动压缩包文件到项目文件夹失败:', err);
+              finalArchivePath = file.path;
             }
           }
 
           setTimeout(() => {
-            runZipExtractJob({
-              jobId,
-              zipPath: finalZipPath,
-              zipOriginalName: file.originalname,
-              projectId: projectIdNum,
-            });
+            if (isZip) {
+              runZipExtractJob({
+                jobId,
+                zipPath: finalArchivePath,
+                zipOriginalName: file.originalname,
+                projectId: projectIdNum,
+              });
+            } else {
+              run7zExtractJob({
+                jobId,
+                archivePath: finalArchivePath,
+                archiveOriginalName: file.originalname,
+                projectId: projectIdNum,
+              });
+            }
           }, 50);
 
           completed++;
@@ -213,21 +538,29 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
               zipJobs,
               message: `上传完成：图片 ${uploadedFiles.length} 个，压缩包 ${zipJobs.length} 个（解压中）`,
             });
+            debugLog('node', 'node2DUpload', {
+              stage: 'completed',
+              uploadedImages: uploadedFiles.length,
+              zipJobs: zipJobs.length,
+            });
           }
           return;
         }
 
         // 普通图片：移动到项目目录
         let finalPath = file.path;
-        let finalUrl = `/uploads/${encodeURIComponent(file.filename)}`;
 
         if (projectIdNum) {
-          const projectDir = getProjectUploadDir(projectIdNum);
+          const projectDir = getProjectImagesDir(projectIdNum);
           const finalFilename = path.basename(file.path);
           finalPath = path.join(projectDir, finalFilename);
           try {
+            if (fs.existsSync(finalPath)) {
+              try {
+                fs.unlinkSync(finalPath);
+              } catch (_) {}
+            }
             fs.renameSync(file.path, finalPath);
-            finalUrl = `/uploads/project_${projectIdNum}/${encodeURIComponent(finalFilename)}`;
           } catch (err) {
             console.error('移动文件到项目文件夹失败:', err);
             finalPath = file.path;
@@ -238,7 +571,7 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
           filename: path.basename(finalPath),
           originalName: file.originalname,
           path: finalPath,
-          url: finalUrl,
+          url: buildImageUrl(finalPath, path.basename(finalPath)),
           size: file.size,
           uploadTime: new Date().toISOString(),
         };
@@ -254,11 +587,14 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
                 zipJobs,
                 message: `上传完成：图片 ${uploadedFiles.length} 个，压缩包 ${zipJobs.length} 个（部分图片可能保存失败）`,
               });
+              debugLog('node', 'node2DUpload', {
+                stage: 'completed-with-errors',
+                uploadedImages: uploadedFiles.length,
+                zipJobs: zipJobs.length,
+              });
             }
             return;
           }
-
-          fileInfo.id = imageId;
 
           const finishOne = () => {
             uploadedFiles.push(fileInfo);
@@ -270,21 +606,37 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
                 zipJobs,
                 message: `上传完成：图片 ${uploadedFiles.length} 个，压缩包 ${zipJobs.length} 个`,
               });
+              debugLog('node', 'node2DUpload', {
+                stage: 'completed',
+                uploadedImages: uploadedFiles.length,
+                zipJobs: zipJobs.length,
+              });
             }
+          };
+
+          const afterLink = () => {
+            finalizeUploadedRgb(imageId, fileInfo).then(() => {
+              fileInfo.id = imageId;
+              finishOne();
+            });
           };
 
           if (projectIdNum) {
             db.linkImageToProject(projectIdNum, imageId, (linkErr) => {
               if (linkErr) console.error('关联图片到项目失败:', linkErr);
-              finishOne();
+              afterLink();
             });
           } else {
-            finishOne();
+            afterLink();
           }
         });
       });
     } catch (error) {
       console.error('❌ /api/upload 处理失败:', error);
+      debugLog('node', 'node2DUpload', {
+        stage: 'error',
+        message: error?.message || String(error),
+      });
 
       if (error && error.name === 'MulterError') {
         if (error.code === 'LIMIT_FILE_SIZE') {

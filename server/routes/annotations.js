@@ -1,4 +1,5 @@
 const express = require('express');
+const { debugLog } = require('../utils/debugSettingsStore');
 
 function registerAnnotationRoutes(app, { db, requireImageProjectAccess }) {
   const router = express.Router();
@@ -21,11 +22,27 @@ function registerAnnotationRoutes(app, { db, requireImageProjectAccess }) {
             error: err.message,
           });
         }
-
-        return res.json({
-          success: true,
-          annotationId,
-          message: '标注保存成功',
+        // SAM2 重新生成 mask 后，实例顺序与 id 可能变化；同步清空该图历史 6D/9D 结果，避免旧结果错绑新 mask。
+        db.clearPose9DByImageId(imageId, async () => {
+          try {
+            const projectIds = await db.getProjectIdsByImageId(Number(imageId));
+            const projectId = Array.isArray(projectIds) && projectIds.length ? Number(projectIds[0]) : null;
+            if (projectId) {
+              db.upsertProjectLabelColorsFromAnnotation(projectId, annotationData, (mapErr, upserted) => {
+                debugLog('node', 'nodeProjectLabelColors', '[annotations.save] upsert from annotation', {
+                  imageId: Number(imageId),
+                  projectId,
+                  upserted: Number(upserted || 0),
+                  error: mapErr ? String(mapErr.message || mapErr) : null,
+                });
+              });
+            }
+          } catch (_) {}
+          return res.json({
+            success: true,
+            annotationId,
+            message: '标注保存成功',
+          });
         });
       });
     } catch (error) {
@@ -55,11 +72,27 @@ function registerAnnotationRoutes(app, { db, requireImageProjectAccess }) {
             error: err.message,
           });
         }
-
-        return res.json({
-          success: true,
-          changes,
-          message: '标注更新成功',
+        // 更新 2D mask 后，清理该图历史姿态结果，确保后续 diffdope 以新实例集重算。
+        db.clearPose9DByImageId(imageId, async () => {
+          try {
+            const projectIds = await db.getProjectIdsByImageId(Number(imageId));
+            const projectId = Array.isArray(projectIds) && projectIds.length ? Number(projectIds[0]) : null;
+            if (projectId) {
+              db.upsertProjectLabelColorsFromAnnotation(projectId, annotationData, (mapErr, upserted) => {
+                debugLog('node', 'nodeProjectLabelColors', '[annotations.update] upsert from annotation', {
+                  imageId: Number(imageId),
+                  projectId,
+                  upserted: Number(upserted || 0),
+                  error: mapErr ? String(mapErr.message || mapErr) : null,
+                });
+              });
+            }
+          } catch (_) {}
+          return res.json({
+            success: true,
+            changes,
+            message: '标注更新成功',
+          });
         });
       });
     } catch (error) {

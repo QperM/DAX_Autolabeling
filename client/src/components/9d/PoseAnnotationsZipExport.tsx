@@ -2,6 +2,8 @@ import React, { useCallback, useState } from 'react';
 import JSZip from 'jszip';
 import { pose9dApi } from '../../services/api';
 import type { Image } from '../../types';
+import { ProgressPopupModal, type ProgressPopupBar } from '../common/ProgressPopupModal';
+import { useAppAlert } from '../common/AppAlert';
 
 /** 与 Pose 页 mesh 列表一致的最小字段 */
 export type PoseExportMesh = {
@@ -37,7 +39,8 @@ export function stripExtension(name: string): string {
 export function poseImageJsonFileName(image: Pick<Image, 'id' | 'filename' | 'originalName'>): string {
   const base = stripExtension(image.originalName || image.filename || `image_${image.id}`);
   const safe = safeZipBaseName(base, `image_${image.id}`);
-  return `image_${image.id}_${safe}.json`;
+  // 优先使用“原始文件名（去后缀）”做匹配，便于用户快速配对。
+  return `${safe}.json`;
 }
 
 export function buildPoseExportDocumentForImage(
@@ -87,7 +90,7 @@ export function buildPoseExportDocumentForImage(
     kind: 'dax_pose_per_image',
     exportedAt,
     coordinateNote:
-      'pose44 为 4×4 齐次变换矩阵；与系统内 Diff-DOPE / 人工标注保存格式一致（通常为 OpenCV 相机坐标系）。',
+      'pose44 为 OpenCV 相机坐标系下的 4×4 齐次变换矩阵 T_cam_obj（物体坐标 -> 相机坐标）。轴方向约定：+X 向右、+Y 向下、+Z 指向相机前方（离相机更远）。与系统内 Diff-DOPE / 人工标注保存格式一致。',
     project: {
       id: project.id,
       name: project.name ?? '',
@@ -154,19 +157,6 @@ export async function buildPoseAnnotationsZipBlob(options: {
     posesFolder?.file(fileName, JSON.stringify(doc, null, 2));
   }
 
-  const manifest = {
-    schemaVersion: SCHEMA_VERSION,
-    kind: 'dax_pose_zip_manifest',
-    exportedAt: new Date().toISOString(),
-    project: { id: project.id, name: project.name ?? '' },
-    imageCount: images.length,
-    contents: {
-      posesFolder: 'poses/',
-      perImageJson: '每图一个 JSON，instances 为该图下多个物体（按 mesh 区分），含 label 与 pose44。',
-    },
-  };
-  zip.file('manifest.json', JSON.stringify(manifest, null, 2));
-
   onProgress?.({ phase: 'running', message: '正在打包 ZIP…', done: total, total });
 
   const blob = await zip.generateAsync({ type: 'blob' });
@@ -200,20 +190,16 @@ export const PoseAnnotationsZipExportButton: React.FC<PoseAnnotationsZipExportBu
   project,
   images,
   meshes,
-  isAdmin,
   className,
   disabled,
   onExportStart,
   onExportEnd,
 }) => {
+  const { alert } = useAppAlert();
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState<ExportPoseZipProgress | null>(null);
 
   const handleClick = useCallback(async () => {
-    if (!isAdmin) {
-      alert('当前账号无权限导出标注数据，请联系管理员操作');
-      return;
-    }
     if (!project?.id) {
       alert('请先选择项目');
       return;
@@ -237,7 +223,7 @@ export const PoseAnnotationsZipExportButton: React.FC<PoseAnnotationsZipExportBu
       const day = new Date().toISOString().split('T')[0];
       const projSafe = safeZipBaseName(project.name || `project_${project.id}`, `project_${project.id}`);
       triggerDownload(blob, `pose_annotations_${projSafe}_${day}.zip`);
-      alert(`已导出 ZIP：共 ${images.length} 个 JSON（目录 poses/），含 6D pose44 与模型/图片原始名称。`);
+      alert(`已导出 ZIP：共 ${images.length} 个 JSON（目录 poses/），含 6D pose44 与模型/图片文件名。`);
     } catch (e: any) {
       console.error('[PoseAnnotationsZipExport]', e);
       alert(e?.message || '导出失败');
@@ -247,23 +233,47 @@ export const PoseAnnotationsZipExportButton: React.FC<PoseAnnotationsZipExportBu
       onExportEnd?.();
       setTimeout(() => setProgress(null), 1500);
     }
-  }, [isAdmin, project, images, meshes, onExportStart, onExportEnd]);
+  }, [project, images, meshes, onExportStart, onExportEnd]);
 
   const title =
-    '导出 6D Pose 标注：ZIP 内 manifest.json + poses/ 每图一 JSON（多物体在 instances 中，含 label、mesh 与图片原始文件名）';
+    '导出 6D Pose 标注：ZIP 内 poses/ 每图一 JSON（多物体在 instances 中，含 label、mesh 与图片文件名）';
+
+  const total = progress?.total ?? 0;
+  const done = progress?.done ?? 0;
+  const percent = total > 0 ? Math.round((done / total) * 100) : 0;
 
   return (
-    <button
-      type="button"
-      className={className ?? 'ai-annotation-btn export-btn'}
-      disabled={disabled || exporting || !project || images.length === 0}
-      title={title}
-      onClick={handleClick}
-    >
-      {exporting
-        ? `导出中…${progress && progress.total > 0 ? ` (${Math.min(progress.done + 1, progress.total)}/${progress.total})` : ''}`
-        : '📥 导出标注数据'}
-    </button>
+    <>
+      <button
+        type="button"
+        className={className ?? 'ai-annotation-btn export-btn'}
+        disabled={disabled || exporting || !project || images.length === 0}
+        title={title}
+        onClick={handleClick}
+      >
+        {exporting ? '导出中…' : '📥 导出标注数据'}
+      </button>
+
+      <ProgressPopupModal
+        open={exporting && progress != null && progress.phase !== 'idle'}
+        title="6D Pose 导出进度"
+        bars={[
+          {
+            key: 'pose-export',
+            title: '导出进度',
+            percent,
+            currentText: progress?.message || undefined,
+          } satisfies ProgressPopupBar,
+        ]}
+        summary={
+          total > 0 ? (
+            <div>
+              {done}/{total}
+            </div>
+          ) : undefined
+        }
+      />
+    </>
   );
 };
 

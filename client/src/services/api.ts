@@ -1,5 +1,6 @@
 import axios from 'axios';
 import type { Image, UploadResponse, AutoAnnotationResponse } from '../types';
+import type { DebugSettingsPayload } from '../utils/debugSettings';
 
 // 项目类型定义
 export interface Project {
@@ -17,6 +18,16 @@ export interface ProjectAnnotationSummary {
   annotatedImages: number;
   latestAnnotatedImageId: number | null;
   latestUpdatedAt: string | null;
+}
+
+export interface ProjectLabelColorMapping {
+  projectId: number;
+  label: string;
+  labelKey: string;
+  color: string;
+  usageOrder: number;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 }
 
 interface CreateProjectRequest {
@@ -235,7 +246,6 @@ export const depthApi = {
     files: Array<{
       id?: number | null;
       filename: string;
-      originalName: string;
       size?: number;
       url: string;
       role?: string;
@@ -280,6 +290,13 @@ export const depthApi = {
         },
       });
       return response.data;
+    } catch (error: any) {
+      const serverMsg =
+        error?.response?.data?.message ||
+        error?.response?.data?.error ||
+        error?.message ||
+        'Depth 上传失败';
+      throw new Error(String(serverMsg));
     } finally {
       clearInterval(inactivityTimer);
     }
@@ -288,11 +305,58 @@ export const depthApi = {
   getDepth: async (
     projectId: number | string,
     imageId?: number | string
-  ): Promise<Array<{ id: number; filename: string; originalName: string; size?: number; url: string; role?: string; modality?: string; uploadTime?: string; imageId?: number }>> => {
+  ): Promise<
+    Array<{
+      id: number;
+      filename: string;
+      size?: number;
+      url: string;
+      role?: string;
+      modality?: string;
+      uploadTime?: string;
+      imageId?: number;
+      depthRawFixUrl?: string | null;
+      depthPngFixUrl?: string | null;
+    }>
+  > => {
     const params: any = { projectId };
     if (imageId != null) params.imageId = imageId;
     const response = await apiClient.get<{ success: boolean; depth: any[] }>('/depth', { params });
     return response.data.depth || [];
+  },
+
+  batchRepairDepth: async (projectId: number | string): Promise<{
+    success: boolean;
+    projectId: number;
+    totalImages: number;
+    /** 成功写入的 depth 条目数（按 role） */
+    upserted: number;
+    /** 至少有一条成功的图像张数 */
+    repairedImages?: number;
+    skipped: number;
+    failed: number;
+    failedDetails?: string[];
+  }> => {
+    const response = await apiClient.post('/depth/repair/batch', { projectId }, { timeout: 10 * 60 * 1000 });
+    return response.data;
+  },
+
+  // 查询批量补全深度的进行中进度（轮询 depth_repair_records）
+  getBatchRepairStatus: async (
+    projectId: number | string,
+    sinceMs: number,
+  ): Promise<{
+    success: boolean;
+    projectId: number | string;
+    totalImages: number;
+    processedImages: number;
+    doneImages: number;
+    failedImages: number;
+  }> => {
+    const response = await apiClient.get('/depth/repair/batch/status', {
+      params: { projectId, sinceMs },
+    });
+    return response.data;
   },
 };
 
@@ -348,20 +412,40 @@ export const pose9dApi = {
     const response = await apiClient.post(`/pose9d/${imageId}/initial-pose`, payload);
     return response.data;
   },
-  deleteInitialPose: async (imageId: number | string, meshId: number | string): Promise<any> => {
-    const response = await apiClient.delete(`/pose9d/${imageId}/initial-pose`, { params: { meshId } });
+  deleteInitialPose: async (
+    imageId: number | string,
+    meshId: number | string,
+    maskId?: string | null,
+  ): Promise<any> => {
+    const params: any = { meshId };
+    if (maskId != null && String(maskId).trim()) params.maskId = String(maskId).trim();
+    const response = await apiClient.delete(`/pose9d/${imageId}/initial-pose`, { params });
     return response.data;
   },
-  getPose9D: async (imageId: number | string, meshId?: number | string | null): Promise<any> => {
-    const response = await apiClient.get(`/pose9d/${imageId}`, { params: meshId != null ? { meshId } : undefined });
+  getPose9D: async (
+    imageId: number | string,
+    meshId?: number | string | null,
+    maskId?: string | null,
+  ): Promise<any> => {
+    const params: any = {};
+    if (meshId != null) params.meshId = meshId;
+    if (maskId != null && String(maskId).trim()) params.maskId = String(maskId).trim();
+    const response = await apiClient.get(`/pose9d/${imageId}`, { params: Object.keys(params).length ? params : undefined });
     return response.data;
   },
   listPose9D: async (imageId: number | string): Promise<any> => {
     const response = await apiClient.get(`/pose9d/${imageId}/all`);
     return response.data;
   },
-  deletePose9D: async (imageId: number | string, meshId?: number | string | null): Promise<any> => {
-    const response = await apiClient.delete(`/pose9d/${imageId}`, { params: meshId != null ? { meshId } : undefined });
+  deletePose9D: async (
+    imageId: number | string,
+    meshId?: number | string | null,
+    maskId?: string | null,
+  ): Promise<any> => {
+    const params: any = {};
+    if (meshId != null) params.meshId = meshId;
+    if (maskId != null && String(maskId).trim()) params.maskId = String(maskId).trim();
+    const response = await apiClient.delete(`/pose9d/${imageId}`, { params: Object.keys(params).length ? params : undefined });
     return response.data;
   },
   clear6dByImageId: async (imageId: number | string): Promise<any> => {
@@ -372,8 +456,11 @@ export const pose9dApi = {
     imageId: number | string,
     meshId: number | string,
     pose44: number[][],
+    maskId?: string | null,
   ): Promise<any> => {
-    const response = await apiClient.post(`/pose9d/${imageId}/${meshId}/diffdope-pose44`, { pose44 });
+    const payload: any = { pose44 };
+    if (maskId != null && String(maskId).trim()) payload.maskId = String(maskId).trim();
+    const response = await apiClient.post(`/pose9d/${imageId}/${meshId}/diffdope-pose44`, payload);
     return response.data;
   },
 };
@@ -417,13 +504,19 @@ export const pose6dApi = {
       stage2BaseLr?: number;
       stage2LrDecay?: number;
       maxAllowedFinalLoss?: number | null;
+      targetLabel?: string | null;
       useInitialPose?: boolean;
+      onlySingleMesh?: boolean;
+      targetMeshId?: number | null;
+      depthSource?: 'raw' | 'fix';
       returnDebugImages?: boolean;
-      /** 打开端到端调试日志（前端/Node/pose-service 都会输出更多信息） */
-      debug?: boolean;
     },
   ): Promise<any> => {
     const response = await apiClient.post(`/pose6d/${imageId}/diffdope-estimate`, payload || {}, { timeout: 10 * 60 * 1000 });
+    return response.data;
+  },
+  diffdopeProgress: async (imageId: number | string): Promise<any> => {
+    const response = await apiClient.get(`/pose6d/${imageId}/diffdope-progress`);
     return response.data;
   },
 };
@@ -464,14 +557,7 @@ export const poseFitApi = {
     error?: string;
   }> => {
     // pose fitting can be CPU-heavy on server (xyz search + raster IoU), so allow longer timeout
-    const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const response = await apiClient.post(`/pose9d/${imageId}/fit-rotation`, payload, { timeout: 120000 });
-    const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    // Profiling is enabled by default during performance investigation.
-    // eslint-disable-next-line no-console
-    console.log('[poseFitApi.fitRotation] payload:', payload);
-    // eslint-disable-next-line no-console
-    console.log(`[poseFitApi.fitRotation] httpMs=${(t1 as number) - (t0 as number)}`, response.data);
     return response.data;
   },
 };
@@ -515,6 +601,39 @@ export const projectApi = {
     );
     return response.data.summary;
   },
+
+  getLabelColors: async (projectId: number): Promise<ProjectLabelColorMapping[]> => {
+    const response = await apiClient.get<{ success: boolean; mappings: ProjectLabelColorMapping[] }>(
+      `/projects/${projectId}/label-colors`,
+    );
+    return Array.isArray(response.data?.mappings) ? response.data.mappings : [];
+  },
+
+  saveLabelColors: async (
+    projectId: number,
+    mappings: Array<{ label: string; color: string; usageOrder?: number }>,
+  ): Promise<ProjectLabelColorMapping[]> => {
+    const response = await apiClient.put<{ success: boolean; mappings: ProjectLabelColorMapping[] }>(
+      `/projects/${projectId}/label-colors`,
+      { mappings },
+    );
+    return Array.isArray(response.data?.mappings) ? response.data.mappings : [];
+  },
+};
+
+export const projectSessionApi = {
+  claim: async (projectId: number | string): Promise<{ success: boolean; projectId: number; controlled: boolean }> => {
+    const response = await apiClient.post('/project-session/claim', { projectId });
+    return response.data;
+  },
+  status: async (projectId: number | string): Promise<{ success: boolean; projectId: number; controlled: boolean }> => {
+    const response = await apiClient.get('/project-session/status', { params: { projectId } });
+    return response.data;
+  },
+  release: async (projectId: number | string): Promise<{ success: boolean; projectId: number; released: boolean }> => {
+    const response = await apiClient.post('/project-session/release', { projectId });
+    return response.data;
+  },
 };
 
 // 健康检查
@@ -526,10 +645,74 @@ export const healthCheck = async (): Promise<{ status: string; message: string }
 // 认证相关API
 export const authApi = {
   // 验证码验证
-  verifyCode: async (accessCode: string): Promise<{ success: boolean; project: Project }> => {
-    const response = await apiClient.post<{ success: boolean; project: Project }>('/auth/verify-code', {
-      accessCode
+  verifyCode: async (
+    accessCode: string,
+  ): Promise<
+    | { success: true; project: Project }
+    | { success: false; status: number; error?: string; message?: string }
+  > => {
+    const response = await apiClient.post('/auth/verify-code', { accessCode }, {
+      // 404/403 属于“预期业务分支”，不抛异常，交给页面逻辑处理
+      validateStatus: (status) => status >= 200 && status < 500,
     });
+
+    if (response.status >= 200 && response.status < 300) {
+      const data: any = response.data;
+      if (data && data.success === false) {
+        return {
+          success: false,
+          status: response.status,
+          error: data?.error,
+          message: data?.message,
+        };
+      }
+      return data as { success: true; project: Project };
+    }
+
+    return {
+      success: false,
+      status: response.status,
+      error: (response.data as any)?.error,
+      message: (response.data as any)?.message,
+    };
+  },
+
+  // 人机验证：获取挑战
+  startHumanVerification: async (
+    purpose: 'verifyCode' | 'adminLogin',
+  ): Promise<{
+    challengeId: string;
+    purpose: string;
+    width: number;
+    height: number;
+    x: number;
+    y: number;
+    imageSrc: string;
+  }> => {
+    const response = await apiClient.post<{
+      challengeId: string;
+      purpose: string;
+      width: number;
+      height: number;
+      x: number;
+      y: number;
+      imageSrc: string;
+    }>(
+      '/auth/human-challenge',
+      { purpose },
+    );
+    return response.data;
+  },
+
+  // 人机验证：提交答案
+  verifyHumanVerification: async (payload: {
+    challengeId: string;
+    purpose: 'verifyCode' | 'adminLogin';
+    sliderLeft: number;
+    trail: number[];
+    durationMs: number;
+  }): Promise<{ success: boolean }> => {
+    const response = await apiClient.post<{ success: boolean }>('/auth/human-verify', payload);
     return response.data;
   },
   
@@ -549,8 +732,18 @@ export const authApi = {
   },
   
   // 检查登录状态
-  checkAuth: async (): Promise<{ authenticated: boolean; isAdmin?: boolean; user?: { id: number; username: string } }> => {
-    const response = await apiClient.get<{ authenticated: boolean; isAdmin?: boolean; user?: { id: number; username: string } }>('/auth/check');
+  checkAuth: async (): Promise<{
+    authenticated: boolean;
+    isAdmin?: boolean;
+    user?: { id: number; username: string };
+    requireHumanVerification?: { verifyCode?: boolean; adminLogin?: boolean };
+  }> => {
+    const response = await apiClient.get<{
+      authenticated: boolean;
+      isAdmin?: boolean;
+      user?: { id: number; username: string };
+      requireHumanVerification?: { verifyCode?: boolean; adminLogin?: boolean };
+    }>('/auth/check');
     return response.data;
   },
   
@@ -595,7 +788,18 @@ export const adminApi = {
   toggleProjectLock: async (projectId: number): Promise<Project> => {
     const response = await apiClient.post<Project>(`/admin/projects/${projectId}/toggle-lock`);
     return response.data;
-  }
+  },
+
+  /** 全应用调试分级（管理员） */
+  getDebugSettings: async (): Promise<DebugSettingsPayload> => {
+    const response = await apiClient.get('/admin/debug-settings');
+    return response.data;
+  },
+
+  putDebugSettings: async (body: DebugSettingsPayload): Promise<DebugSettingsPayload> => {
+    const response = await apiClient.put('/admin/debug-settings', body);
+    return response.data;
+  },
 };
 
 export default apiClient;

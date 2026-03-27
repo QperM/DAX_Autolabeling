@@ -3,6 +3,8 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const FormData = require('form-data');
+const { getUploadsRootDir } = require('../utils/dataPaths');
+const { debugLog } = require('../utils/debugSettingsStore');
 
 function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
   // ========== AI标注任务队列管理器 ==========
@@ -52,14 +54,12 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
         sessionId,
         timestamp: Date.now(),
       });
-      console.log(`[任务队列] 任务 ${taskId} (imageId=${imageId}) 已加入队列，当前排队位置: ${queuePosition}`);
       return { taskId, immediate: false, queuePosition };
     }
 
     completeTask(taskId) {
       if (this.runningTasks.has(taskId)) {
         this.runningTasks.delete(taskId);
-        console.log(`[任务队列] 任务 ${taskId} 已完成，当前运行中任务数: ${this.runningTasks.size}`);
         this.processNextInQueue();
       }
     }
@@ -72,7 +72,6 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
       if (!nextTask) return;
 
       const { taskId, imageId, modelParams, req, res, sessionId } = nextTask;
-      console.log(`[任务队列] 开始处理队列中的任务 ${taskId} (imageId=${imageId})`);
       this.runningTasks.set(taskId, { imageId, startTime: Date.now(), sessionId });
 
       this.executeTask(taskId, imageId, modelParams, req, res).catch((err) => {
@@ -133,8 +132,10 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
   async function processAnnotationTask(imageId, modelParams) {
     const imgId = imageId;
     const params = modelParams;
-
-    console.log(`[AI标注] 开始处理图片ID: ${imgId}, modelParams: ${params ? JSON.stringify(params) : '默认'}`);
+    debugLog('node', 'nodeSam2Request', {
+      imageId: imgId,
+      hasModelParams: !!params,
+    });
 
     const image = await new Promise((resolve, reject) => {
       db.getImageById(imgId, (err, img) => {
@@ -150,7 +151,7 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
     const imageUrl = `http://localhost:3001${imageUrlPath}`;
 
     if (!fs.existsSync(imagePath)) {
-      const uploadDir = path.join(__dirname, '..', 'uploads');
+      const uploadDir = getUploadsRootDir();
       const alternativePath = path.join(uploadDir, image.filename);
       if (fs.existsSync(alternativePath)) imagePath = alternativePath;
       else throw new Error(`图片文件路径不存在: ${image.file_path}`);
@@ -166,6 +167,12 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
       const formData = new FormData();
       const imageStream = fs.createReadStream(imagePath);
       formData.append('image', imageStream, path.basename(imagePath));
+      // Pass identifiers so sam2-service debug can correlate to UI imageId/originalName.
+      formData.append('imageId', String(imgId));
+      formData.append(
+        'imageOriginalName',
+        String(image?.original_name || image?.filename || path.basename(imagePath)),
+      );
 
       if (params && typeof params === 'object') {
         if (typeof params.maxPolygonPoints === 'number') formData.append('max_polygon_points', String(params.maxPolygonPoints));
@@ -176,6 +183,8 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
         if (typeof params.sam2BoxNmsThresh === 'number') formData.append('sam2_box_nms_thresh', String(params.sam2BoxNmsThresh));
         if (typeof params.sam2MinMaskRegionArea === 'number')
           formData.append('sam2_min_mask_region_area', String(params.sam2MinMaskRegionArea));
+        if (typeof params.sam2MergeGapPx === 'number')
+          formData.append('sam2_merge_gap_px', String(params.sam2MergeGapPx));
       }
 
       const samResponse = await axios.post(GROUNDED_SAM2_API_URL, formData, {
@@ -196,7 +205,7 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
           const points = m.points || m.contour || [];
           if (!points || points.length === 0) return;
           annotations.masks.push({
-            id: m.id ? `mask-${imgId}-${m.id}` : `mask-${imgId}-${index}`,
+            id: m.id ? `annotation-${imgId}-${m.id}` : `annotation-${imgId}-${index}`,
             points: Array.isArray(points) ? points.flat() : [],
             label: m.label || m.class || 'object',
           });
@@ -225,7 +234,7 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
           if (segment.mask || segment.points) {
             const points = segment.mask || segment.points || [];
             annotations.masks.push({
-              id: `mask-${imgId}-${index}`,
+              id: `annotation-${imgId}-${index}`,
               points: points.flat(),
               label: segment.label || segment.class || 'object',
             });
@@ -250,6 +259,7 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
         message: `自动标注完成，检测到 ${annotations.masks.length + annotations.boundingBoxes.length} 个对象`,
         imageUrl,
       };
+      
     } catch (samError) {
       const isAxiosError = samError && (samError.isAxiosError || samError.config || samError.response);
       if (isAxiosError && samError.response) {
@@ -298,9 +308,20 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
 
       try {
         const result = await processAnnotationTask(imageId, modelParams);
+        debugLog('node', 'nodeSam2Result', {
+          imageId,
+          success: true,
+          masks: Number(result?.annotations?.masks?.length || 0),
+          bboxes: Number(result?.annotations?.boundingBoxes?.length || 0),
+        });
         annotationQueue.completeTask(taskId);
         return res.json(result);
       } catch (error) {
+        debugLog('node', 'nodeSam2Result', {
+          imageId,
+          success: false,
+          message: error?.message || String(error),
+        });
         annotationQueue.completeTask(taskId);
         throw error;
       }

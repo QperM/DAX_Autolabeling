@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const { getUploadsRootDir } = require('../utils/dataPaths');
 
 function registerDebugRoutes(app) {
   const router = express.Router();
@@ -8,13 +9,7 @@ function registerDebugRoutes(app) {
   // 测试文件访问（开发调试用）
   router.get('/test-file/:filename', (req, res) => {
     const filename = req.params.filename;
-    const filePath = path.join(__dirname, '..', 'uploads', filename);
-
-    console.log('测试文件访问:', {
-      filename,
-      filePath,
-      exists: fs.existsSync(filePath),
-    });
+    const filePath = path.join(getUploadsRootDir(), filename);
 
     if (fs.existsSync(filePath)) {
       const stats = fs.statSync(filePath);

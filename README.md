@@ -1,7 +1,7 @@
 # 智能图像标注系统
 
-**版本：V2.7**  
-**最后更新：2026年3月23日**
+**版本：V2.8**  
+**最后更新：2026年3月27日**
 
 ## 项目概述
 
@@ -23,6 +23,7 @@
 - ✅ 项目详情查看（ID、创建时间、更新时间）
 - ✅ 快速切换项目
 - ✅ 项目删除确认机制
+- ✅ **项目会话独占控制**：同一项目同一时刻仅允许一个活跃会话控制（支持 claim/status/release）
 
 ### 前端功能模块
 
@@ -42,6 +43,8 @@
 - ✅ 9D Pose 标注模块入口
 - ✅ 项目选择和管理入口
 - ✅ 当前项目信息展示
+- ✅ **人机验证弹窗**：滑块拼图验证码（可按项目启用）
+- ✅ **调试信息管理弹窗**：按服务/调试种类开关日志（前端 + Node + Python 服务）
 
 #### 2.1 9D Pose（6D / Mesh 工作区）
 - ✅ Mesh（OBJ）导入与管理：支持按项目上传/列表展示
@@ -61,6 +64,7 @@
   - **同图多 Mesh 拟合合成图**：按图片聚合各 Mesh 的 `pose44`，由 Node 调用 pose-service `POST /diffdope/render-fit-overlay` 生成单张 `fit_image_{imageId}_composite.png`（与点云/OpenCV 位姿一致；具体约定见 `server/pose-service/app.py` 与 `diffdope.yaml` 的 `render_images`）
   - Pose 预览区支持左上角切换 `原图 / 拟合图` 进行结果比对
 - ✅ **深度数据管理**：支持 PNG/TIFF/NPY 格式深度数据上传和管理
+- ✅ **深度补全（Depth Repair）**：支持按项目批量修复深度并回写 `depth_raw_fix` / `depth_fix` 结果
 - ✅ **点云预览（PoseManualAnnotation）**：
   - 支持 `depth_raw(.npy) + intrinsics(.json)` 构建点云并在 3D 场景实时预览
   - 支持多 Mesh 叠加：通过“添加 Mesh”弹窗把多个模型加入同一张图的场景
@@ -140,9 +144,12 @@
 - **框架**: Node.js + Express 4
 - **数据库**: SQLite3（带外键约束）
 - **文件处理**: Multer + adm-zip（ZIP 解压）
+- **压缩包处理**: 7zip-bin（Depth `.7z` 解压）
 - **跨域支持**: CORS
 - **图片处理**: image-size
 - **AI 标注服务**: Python FastAPI + **SAM2 AMG** 自动分割服务（仅保留 SAM2），集成在 `server/sam2-service/`，并通过 Node 转发统一为 `/api/annotate/auto`
+- **Pose 服务**: Python FastAPI + Diff-DOPE（`server/pose-service/`）
+- **深度补全服务**: Python FastAPI + LingBot-Depth（`server/depthrepair-service/`）
 
 ## 项目结构
 
@@ -153,13 +160,12 @@ DAX_Autolabeling/
 ├── client/                 # 前端 React 应用
 │   ├── src/
 │   │   ├── components/    # 组件目录（2d / 9d / common）
-│   │   │   ├── 2d/        # 2D 标注：AnnotationPage、AnnotationCanvas、ManualAnnotation、ImageList 等
+│   │   │   ├── 2d/        # 2D 标注：2DAnnotationPage、2DManualAnnotation、AnnotationCanvas、ImageList 等
 │   │   │   ├── 9d/        # Pose：PoseAnnotationPage、PoseManualAnnotation、Mesh/Depth 上传、MeshLabelMappingModal 等
-│   │   │   ├── common/    # LandingPage 等跨模块入口
+│   │   │   ├── common/    # LandingPage、AppAlert、DebugSettingsModal、HumanVerificationModal 等
 │   │   │   └── README.md  # 子目录约定说明
 │   │   ├── services/      # API服务
 │   │   │   └── api.ts                # 后端API接口
-│   │   ├── poseAutoOpen3D.ts       # Pose 页面状态辅助工具
 │   │   ├── store/         # 状态管理
 │   │   │   ├── annotationSlice.ts    # 标注状态切片
 │   │   │   └── index.ts              # Store配置
@@ -170,19 +176,20 @@ DAX_Autolabeling/
 │   │   └── main.tsx       # 入口文件
 ├── server/                # 后端服务
 │   ├── index.js           # 路由注册中心（Express）
-│   ├── bootstrap.js       # 启动/初始化入口（等待 DB schema 完成）
 │   ├── package.json       # 后端依赖配置
 │   ├── uploads/           # 上传文件存储目录
 │   ├── db/                # SQLite 连接 + schema 初始化 + repo 层
 │   ├── middleware/        # 权限校验中间件
-│   ├── routes/            # 业务路由集合（projects/uploads/images/pose/...）
-│   ├── utils/             # 工具函数（uploads/depth naming/OBJ bbox 等）
+│   ├── routes/            # 业务路由集合（projects/project-session/uploads/images/depth/pose/...）
+│   ├── utils/             # 工具函数（bootstrap/uploads/depth naming/session guard/debug store 等）
 │   ├── sam2-service/      # Grounded SAM2 API 服务（Python FastAPI）
 │   │   ├── app.py         # FastAPI 服务主文件
 │   │   ├── requirements.txt # Python 依赖
-│   │   ├── README.md      # SAM2 服务说明
-│   │   └── setup.bat      # SAM2 服务启动/安装脚本
+│   │   └── start_sam2.bat # SAM2 服务启动脚本
 │   ├── pose-service/      # Diff-DOPE 6D（FastAPI `app.py`：`/diffdope/estimate6d`、`/diffdope/render-fit-overlay` 等；子目录 `diff-dope/` 为上游库与配置）
+│   │   └── start_diffdope.bat # Diff-DOPE 服务启动脚本
+│   ├── depthrepair-service/ # 深度补全服务（FastAPI `app.py`：`/api/repair-depth`）
+│   │   └── start_depthrepair.bat # 深度补全服务启动脚本
 │   └── nodemon.json       # 开发模式热重载配置
 ├── database/              # 数据库文件目录
 │   └── annotations.db     # SQLite数据库文件
@@ -283,7 +290,7 @@ npm run dev
 # 前端应用将运行在 http://localhost:5173
 ```
 
-（当前仓库已移除 `start.bat`，请按“方式一”分别启动后端与前端，Grounded SAM2 按需单独启动/运行。）
+（当前仓库已移除根目录 `start.bat`，请按“方式一”分别启动后端与前端；Python 服务按需独立启动。）
 
 **注意：首次使用需要配置 Python 环境**
 ```bash
@@ -344,6 +351,16 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 - `PUT /api/annotations/:imageId` - 更新标注数据
 - `POST /api/annotate/auto` - 自动标注（已接入 Python AI 服务，可选传参）
 
+### 项目会话与深度接口
+
+- `POST /api/project-session/claim` - 声明项目控制权（进入项目时）
+- `GET /api/project-session/status?projectId=xxx` - 查询会话控制状态（轮询保活）
+- `POST /api/project-session/release` - 释放项目控制权（离开项目时）
+- `POST /api/depth/upload` - 上传深度数据（支持单文件、ZIP、7Z）
+- `GET /api/depth?projectId=xxx` - 获取项目深度/内参数据
+- `POST /api/depth/repair/batch` - 批量深度补全（调用 depthrepair-service）
+- `GET /api/depth/repair/batch/status?projectId=xxx&sinceMs=...` - 查询批量补全进度
+
 #### `POST /api/annotate/auto` 请求示例
 
 ```json
@@ -390,7 +407,7 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 ### 技术特色
 - 基于 Redux Toolkit 的状态管理
 - TypeScript 类型安全
-- 前端页面按 **2D / 9D / common** 分目录维护，Pose 页复用 `AnnotationPage.css` 布局样式
+- 前端页面按 **2D / 9D / common** 分目录维护，通用样式拆分到 `AnnotationPageBase.css` / `AnnotationPageShared.css`
 - RESTful API 设计
 - SQLite 轻量级数据库存储
 - 外键约束和级联删除
@@ -398,6 +415,7 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 
 ## 更新记录
 
+- **V2.8**：补充项目会话独占（`project-session`）与调试信息管理（Debug Settings）文档；新增 Depth Repair 批量补全与 `depthrepair-service` 说明；目录结构同步 `2D*` 组件命名与新启动脚本。
 - **V2.7**：`.gitignore` 对齐 Python/pose-service 产物与本地目录；README/UPDATES 补充 **合成拟合图层** 与 pose-service 接口说明。
 - **V2.6**：文档与仓库目录对齐（`components/2d|9d|common`）；补充 Pose 页 **Mesh Label 对照表**、ZIP 导出与 Mesh 列表加载等行为说明。
 

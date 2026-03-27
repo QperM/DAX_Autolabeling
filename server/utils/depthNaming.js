@@ -5,8 +5,11 @@ const path = require('path');
 function normalizeDepthKey(name) {
   if (!name) return '';
   const base = String(name).replace(/\\/g, '/').split('/').pop() || String(name);
-  const noExt = base.replace(/\.[^.]+$/, '');
-  return noExt.replace(/^(depth_raw_|depth_|intrinsics_|rgb_)/i, '');
+  let noExt = base.replace(/\.[^.]+$/, '');
+  noExt = noExt.replace(/^(depth_raw_|depth_|intrinsics_|rgb_)+/i, '');
+  // rgb_img{数字}_ 为 RGB 入库后的固定前缀，去掉后保留「原名主干」以便与 depth_同名主干 对齐
+  noExt = noExt.replace(/^img\d+_/i, '');
+  return noExt;
 }
 
 function inferRoleFromFilename(name) {

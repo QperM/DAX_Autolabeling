@@ -1,0 +1,16 @@
+# Web
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+# Compute / IO
+numpy
+opencv-python
+pillow
+
+# Model deps (install GPU wheels as needed in your deployment)
+torch==2.6.0
+torchvision==0.21.0
+xformers==0.0.29.post2
+huggingface_hub
+
+# LingBot-Depth source is vendored at ./lingbot-depth (app.py will import from local path).

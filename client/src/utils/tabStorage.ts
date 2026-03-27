@@ -91,3 +91,4 @@ export function clearStoredSelectedModules(): void {
   session?.removeItem(SELECTED_MODULES_KEY);
   local?.removeItem(SELECTED_MODULES_KEY);
 }
+

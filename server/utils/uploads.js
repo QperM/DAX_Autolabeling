@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const { getUploadsRootDir } = require('./dataPaths');
 
 function ensureDir(p) {
   if (!p) return;
@@ -8,15 +9,15 @@ function ensureDir(p) {
 
 // 获取项目文件夹路径：uploads/project_<id>/
 function getProjectUploadDir(projectId) {
-  if (!projectId) return path.join(__dirname, '..', 'uploads');
-  const projectDir = path.join(__dirname, '..', 'uploads', `project_${projectId}`);
+  if (!projectId) return getUploadsRootDir();
+  const projectDir = path.join(getUploadsRootDir(), `project_${projectId}`);
   ensureDir(projectDir);
   return projectDir;
 }
 
 // 根据 file_path 构建 URL（保留子目录）
 function buildImageUrl(filePath, filename) {
-  const uploadsDir = path.join(__dirname, '..', 'uploads');
+  const uploadsDir = getUploadsRootDir();
 
   if (filePath) {
     try {
@@ -37,7 +38,7 @@ function buildImageUrl(filePath, filename) {
 
 // 根据目录路径构建 /uploads/<dir>/ 的 URL
 function buildUploadsDirUrl(dirPath) {
-  const uploadsDir = path.join(__dirname, '..', 'uploads');
+  const uploadsDir = getUploadsRootDir();
   if (!dirPath) return '/uploads/';
   try {
     const rel = path.relative(uploadsDir, dirPath).replace(/\\/g, '/');

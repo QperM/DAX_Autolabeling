@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
@@ -166,10 +166,29 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({
             const origMat = mesh.material as any;
             const toBasic = (mat: any) => {
               if (!mat) return new THREE.MeshBasicMaterial({ color: 0xd1d5db });
+
               const map = mat.map as THREE.Texture | undefined;
-              if (map) return new THREE.MeshBasicMaterial({ map });
-              const color = (mat.color && (mat.color as THREE.Color).getHex()) || 0xd1d5db;
-              return new THREE.MeshBasicMaterial({ color });
+              const opacity =
+                typeof mat.opacity === "number" && Number.isFinite(mat.opacity) ? mat.opacity : 1;
+              const transparent = Boolean(mat.transparent) || opacity < 1 || Boolean(map);
+
+              const color =
+                (mat.color && typeof (mat.color as THREE.Color).getHex === "function"
+                  ? (mat.color as THREE.Color).getHex()
+                  : undefined) ?? 0xd1d5db;
+
+              // 预览时双面渲染，避免“透明材质只剩背面/正面”的假象
+              const side = (typeof mat.side === "number" ? mat.side : undefined) ?? THREE.DoubleSide;
+
+              return new THREE.MeshBasicMaterial({
+                map,
+                color,
+                transparent,
+                opacity,
+                side,
+                // 透明对象关闭 depthWrite，减少透明层互相遮挡
+                depthWrite: !transparent,
+              });
             };
             if (Array.isArray(origMat)) {
               mesh.material = origMat.map((m) => toBasic(m));
@@ -231,6 +250,10 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({
       window.removeEventListener("resize", handleResize);
       cancelAnimationFrame(frameId);
       controls.dispose();
+      // 显式丢失上下文，避免频繁切换预览导致 WebGL context 累积。
+      try {
+        (renderer as any).forceContextLoss?.();
+      } catch (_) {}
       renderer.dispose();
       onMeshBoundsChangeRef.current?.(null);
       if (meshGroup) {

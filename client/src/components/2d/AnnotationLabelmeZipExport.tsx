@@ -5,6 +5,7 @@ import { annotationApi } from '../../services/api';
 import type { AppDispatch } from '../../store';
 import { setLoading } from '../../store/annotationSlice';
 import type { Image, Mask, BoundingBox, Polygon } from '../../types';
+import { useAppAlert } from '../common/AppAlert';
 
 /** 与 AnnotationPage 中导出进度条一致 */
 export type LabelmeExportProgressState = {
@@ -217,18 +218,14 @@ export type AnnotationLabelmeZipExportButtonProps = {
 export const AnnotationLabelmeZipExportButton: React.FC<AnnotationLabelmeZipExportButtonProps> = ({
   project,
   images,
-  isAdmin,
   pageLoading,
   setExportProgress,
 }) => {
   const dispatch = useDispatch<AppDispatch>();
+  const { alert } = useAppAlert();
   const [exporting, setExporting] = useState(false);
 
   const handleExport = useCallback(async () => {
-    if (!isAdmin) {
-      alert('当前账号无权限导出标注数据，请联系管理员操作');
-      return;
-    }
     if (!project) {
       alert('请先选择项目');
       return;
@@ -275,15 +272,15 @@ export const AnnotationLabelmeZipExportButton: React.FC<AnnotationLabelmeZipExpo
         setExportProgress((prev) => ({ ...prev, active: false, mode: null, current: '' }));
       }, 1200);
     }
-  }, [dispatch, images, isAdmin, project, setExportProgress]);
+  }, [dispatch, images, project, setExportProgress]);
 
   return (
     <button
       type="button"
       className="ai-annotation-btn export-btn"
       onClick={handleExport}
-      disabled={!isAdmin || !project || images.length === 0 || !!pageLoading || exporting}
-      title={!isAdmin ? '普通用户已禁用：请联系管理员导出' : '导出为 Labelme 兼容 ZIP（每图一个 JSON）'}
+      disabled={!project || images.length === 0 || !!pageLoading || exporting}
+      title={'导出为 Labelme 兼容 ZIP（每图一个 JSON）'}
     >
       {exporting ? '导出中…' : '📥 导出标注数据'}
     </button>

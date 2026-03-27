@@ -1,16 +1,18 @@
-function makeAuthzMiddlewares({ db }) {
+function makeAuthzMiddlewares({ db, projectSessionGuard }) {
+  const sendSessionGuardError = (res, result) => {
+    const code = String(result?.code || 'PROJECT_CONTROL_TAKEN');
+    const message = String(result?.message || '有其他人操作此项目了，当前连接已断开。');
+    return res.status(409).json({
+      error: message,
+      code,
+      disconnect: true,
+    });
+  };
   // 检查是否为管理员
   const requireAdmin = (req, res, next) => {
     if (req.session && req.session.userId && req.session.isAdmin) {
       return next();
     }
-
-    console.warn('[requireAdmin] 未通过管理员校验', {
-      sessionID: req.sessionID,
-      hasSession: !!req.session,
-      userId: req.session?.userId,
-      isAdmin: req.session?.isAdmin,
-    });
 
     res.status(401).json({ error: '需要管理员权限' });
   };
@@ -41,6 +43,13 @@ function makeAuthzMiddlewares({ db }) {
     const hasAccess = await db.hasProjectAccess(sessionId, projectId);
 
     if (hasAccess) {
+      if (projectSessionGuard) {
+        const guardResult = projectSessionGuard.check({
+          sessionId,
+          projectId: Number(projectId),
+        });
+        if (!guardResult?.ok) return sendSessionGuardError(res, guardResult);
+      }
       next();
     } else {
       res.status(403).json({ error: '没有访问该项目的权限，请先输入验证码' });
@@ -91,6 +100,24 @@ function makeAuthzMiddlewares({ db }) {
       }
 
       if (hasAccess) {
+        if (projectSessionGuard) {
+          let guardOk = false;
+          for (const projectId of projectIds) {
+            const guardResult = projectSessionGuard.check({
+              sessionId,
+              projectId: Number(projectId),
+            });
+            if (guardResult?.ok) {
+              guardOk = true;
+              break;
+            }
+            // 若命中会话冲突，直接返回，不再尝试其他项目
+            if (guardResult?.disconnect) return sendSessionGuardError(res, guardResult);
+          }
+          if (!guardOk) {
+            return res.status(403).json({ error: '没有访问该图片所属项目的权限，请先输入验证码' });
+          }
+        }
         next();
       } else {
         res.status(403).json({ error: '没有访问该图片所属项目的权限，请先输入验证码' });

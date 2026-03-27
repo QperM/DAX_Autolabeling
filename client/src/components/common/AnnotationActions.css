@@ -1,0 +1,107 @@
+/* Shared action buttons across 2D/9D annotation pages */
+.ai-annotation-btn {
+  box-sizing: border-box;
+  min-height: 45px;
+  padding: 0 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-bottom: 0;
+}
+
+.ai-annotation-btn.ai-depth-repair-btn {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+}
+
+.ai-annotation-btn.ai-depth-repair-btn:hover:not(:disabled) {
+  box-shadow: 0 4px 15px rgba(37, 99, 235, 0.42);
+}
+
+.ai-annotation-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+}
+
+.nav-image-btn {
+  background: #f8f9fa;
+  color: #495057;
+  border: 1px solid #dee2e6;
+  padding: 0.6rem 1.1rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 96px;
+}
+
+.nav-image-btn:hover:not(:disabled) {
+  background: #e9ecef;
+  border-color: #ced4da;
+  transform: translateY(-1px);
+}
+
+.nav-image-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.start-annotation-btn {
+  background: linear-gradient(135deg, #28a745 0%, #218838 100%);
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-right: 1rem;
+}
+
+.start-annotation-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4);
+}
+
+.start-annotation-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  filter: grayscale(0.7) saturate(0.45);
+}
+
+/* Keep AI single-action visually distinct from manual annotation button */
+.ai-single-annotate-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+}
+
+.ai-single-annotate-btn:hover:not(:disabled) {
+  box-shadow: 0 4px 18px rgba(102, 126, 234, 0.6);
+}
+
+.ai-annotation-btn:disabled,
+.ai-single-annotate-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  filter: grayscale(0.78) saturate(0.4) brightness(0.9);
+}
+
+/* Pose preview panel AI 6D button */
+.pose-ai-annotate-btn {
+  min-width: 130px;
+  height: 45px;
+  margin: 0;
+}

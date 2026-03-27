@@ -1,12 +1,14 @@
-﻿import React from 'react';
+import React from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { setCurrentImage, removeImage, setLoading, setError } from '../../store/annotationSlice';
 import { imageApi } from '../../services/api';
 import type { Image } from '../../types';
+import { useAppAlert } from '../common/AppAlert';
 
 const ImageList: React.FC = () => {
   const dispatch = useDispatch();
   const { images, currentImage } = useSelector((state: any) => state.annotation);
+  const { alert, confirm } = useAppAlert();
 
   const handleImageSelect = (image: Image) => {
     dispatch(setCurrentImage(image));
@@ -14,7 +16,7 @@ const ImageList: React.FC = () => {
 
   const handleImageDelete = async (imageId: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (window.confirm('确定要删除这张图片吗？')) {
+    if (await confirm('确定要删除这张图片吗？', { title: '确认删除' })) {
       console.log(`[ImageList] 开始删除图片，ID: ${imageId}`);
       
       try {
@@ -64,7 +66,7 @@ const ImageList: React.FC = () => {
             <div className="thumbnail-wrapper">
               <img 
                 src={image.url} 
-                alt={image.originalName}
+                alt={image.originalName || image.filename}
                 className="thumbnail-image"
               />
               <button
@@ -76,8 +78,8 @@ const ImageList: React.FC = () => {
               </button>
             </div>
             <div className="thumbnail-info">
-              <div className="filename" title={image.originalName}>
-                {image.originalName}
+              <div className="filename" title={`${image.originalName || image.filename}\n存储: ${image.filename}`}>
+                {image.originalName || image.filename}
               </div>
               <div className="upload-time">
                 {new Date(image.uploadTime).toLocaleString()}

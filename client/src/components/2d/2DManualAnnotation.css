@@ -138,6 +138,50 @@
   flex-direction: column;
 }
 
+/* Pose 人工标注：画布中央资源缺失提示（Mask / 拟合 / 深度叠加） */
+.pose-manual-resource-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 55;
+}
+
+.pose-manual-resource-hint-inner {
+  max-width: min(440px, 92%);
+  padding: 0.85rem 1.15rem;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #e2e8f0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  text-align: center;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.pose-manual-resource-hint-text {
+  margin: 0;
+}
+
+.pose-manual-resource-hint-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  text-align: left;
+}
+
+.pose-manual-resource-hint-list li + li {
+  margin-top: 0.35rem;
+}
+
+/* 盖在点云面板之上：无深度时阻止误操作感 */
+.pose-manual-resource-hint.pose-manual-resource-hint--pointcloud {
+  z-index: 35;
+  border-radius: 12px;
+}
+
 .pose-pointcloud-toolbar {
   height: 44px;
   display: flex;
@@ -732,6 +776,87 @@
 
 .layer-item.active .layer-visible {
   filter: brightness(0) invert(1);
+}
+
+.layer-item.layer-item-split {
+  gap: 0.6rem;
+}
+
+.layer-split-actions {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  overflow: hidden;
+}
+
+.layer-item.layer-item-split .layer-split-actions::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: calc(50% - 2px);
+  left: 2px;
+  border-radius: 999px;
+  background: rgba(248, 113, 113, 0.9); /* raw default: light red */
+  box-shadow: 0 6px 16px rgba(248, 113, 113, 0.22);
+  transform: translateX(0%);
+  transition: transform 180ms ease, background 180ms ease, opacity 180ms ease;
+  opacity: 0;
+}
+
+.layer-item.layer-item-split.split-state-raw .layer-split-actions::before {
+  transform: translateX(0%);
+  background: rgba(248, 113, 113, 0.9);
+  box-shadow: 0 6px 16px rgba(248, 113, 113, 0.22);
+  opacity: 1;
+}
+
+.layer-item.layer-item-split.split-state-fix .layer-split-actions::before {
+  transform: translateX(100%);
+  background: rgba(250, 204, 21, 0.9);
+  box-shadow: 0 6px 16px rgba(250, 204, 21, 0.22);
+  opacity: 1;
+}
+
+.layer-split-btn {
+  position: relative;
+  z-index: 1;
+  border: 0;
+  background: transparent;
+  color: #475569;
+  border-radius: 999px;
+  padding: 0.18rem 0.55rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: color 180ms ease, opacity 180ms ease;
+}
+
+.layer-split-btn:hover:not(:disabled) {
+  color: #0f172a;
+}
+
+.layer-split-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.layer-split-btn.active {
+  color: #ffffff;
+}
+
+/* Make the active segment text slightly tinted for recognition (works even without the slider). */
+.layer-item.layer-item-split.split-state-raw .layer-split-btn.active {
+  color: #fff1f2;
+}
+
+.layer-item.layer-item-split.split-state-fix .layer-split-btn.active {
+  color: #422006;
 }
 
 /* 保存区域：自动保存开关 + 按钮一行展示 */
