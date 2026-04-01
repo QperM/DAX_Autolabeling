@@ -986,13 +986,13 @@
 
 .rename-modal {
   position: fixed;
-  transform: translate(-50%, -100%);
-  margin-top: -10px;
+  /* Top-left is calculated & clamped in JS (AnnotationCanvas) */
   background: white;
   border-radius: 8px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
   padding: 16px;
-  min-width: 280px;
+  width: 360px; /* enough for ~10 Chinese + 8 letters */
+  box-sizing: border-box;
   z-index: 10001;
   pointer-events: auto;
 }

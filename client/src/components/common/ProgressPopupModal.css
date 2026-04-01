@@ -2,7 +2,8 @@
   position: fixed;
   inset: 0;
   pointer-events: none; /* 只让弹窗本身接收点击 */
-  z-index: 1401;
+  /* Keep above in-page modals (e.g. ColorLabelMappingManager uses z-index: 1500) */
+  z-index: 1601;
   display: grid;
   place-items: center;
   padding: 24px;

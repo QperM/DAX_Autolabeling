@@ -361,7 +361,9 @@ const ColorLabelMappingManager: React.FC<Props> = ({
         completed: totalImages,
         current: '删除完成！',
       }));
-      await new Promise((r) => setTimeout(r, 80));
+      // 进度弹窗在 alert 下面会“露出一帧”，这里先关闭进度弹窗再弹出提示。
+      setDeleteProgress((prev) => ({ ...prev, active: false }));
+      await new Promise((r) => setTimeout(r, 0));
 
       await alert(
         `删除完成！\n\n` +
@@ -375,9 +377,7 @@ const ColorLabelMappingManager: React.FC<Props> = ({
       await alert('批量删除失败: ' + (e as Error).message);
     } finally {
       setLoading(false);
-      setTimeout(() => {
-        setDeleteProgress((prev) => ({ ...prev, active: false, current: '' }));
-      }, 1200);
+      setDeleteProgress((prev) => ({ ...prev, active: false, current: '' }));
     }
   };
 

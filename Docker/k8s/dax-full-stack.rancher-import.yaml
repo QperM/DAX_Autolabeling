@@ -1,0 +1,421 @@
+# Rancher Import 版本（无 Cluster-Scope 资源）
+# 重要：请先在 Rancher UI 创建好 namespace：dax-autolabeling
+# 然后 Import YAML 时在底部 Namespace 下拉框选择 dax-autolabeling
+#
+# 数据根目录统一为 /dax-autolabel-data（uploads + database 与代码分离）
+#
+# 使用前请按需修改：
+#   1) 所有镜像 tag（默认 v2.0.1）
+#   2) PVC 的 storageClassName（与集群 StorageClass 一致）
+#   3) Secret 中的 sessionSecret（务必改为长随机串）
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dax-secrets
+  namespace: dax-autolabeling
+type: Opaque
+stringData:
+  sessionSecret: "CHANGE_ME_TO_A_LONG_RANDOM_STRING"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: api-uploads-pvc
+  namespace: dax-autolabeling
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Gi
+  # storageClassName: your-storage-class
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: api-database-pvc
+  namespace: dax-autolabeling
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: your-storage-class
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sam2
+  namespace: dax-autolabeling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sam2
+  template:
+    metadata:
+      labels:
+        app: sam2
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: sam2
+          image: registry.daxrobotics.cn/auto-labeling-tool/dax-sam2:v2.0.1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 7860
+              name: http
+              protocol: TCP
+          env:
+            - name: SAM2_CHECKPOINT
+              value: /sam2-assets/checkpoints/sam2_hiera_large.pt
+            - name: SAM2_MODEL_CFG
+              value: configs/sam2/sam2_hiera_l.yaml
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: all
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sam2
+  namespace: dax-autolabeling
+spec:
+  selector:
+    app: sam2
+  ports:
+    - name: http
+      port: 7860
+      targetPort: 7860
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: dax-autolabeling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: api
+          image: registry.daxrobotics.cn/auto-labeling-tool/dax-api:v2.0.1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+              name: http
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3001"
+            - name: DATA_ROOT
+              value: /dax-autolabel-data
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dax-secrets
+                  key: sessionSecret
+            - name: GROUNDED_SAM2_API_URL
+              value: http://sam2:7860/api/auto-label
+            - name: POSE_SERVICE_URL
+              value: http://pose:7900
+            - name: DEPTH_REPAIR_SERVICE_URL
+              value: http://depthrepair:7870
+          volumeMounts:
+            - name: uploads-volume
+              mountPath: /dax-autolabel-data/uploads
+            - name: database-volume
+              mountPath: /dax-autolabel-data/database
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3001
+            initialDelaySeconds: 20
+            periodSeconds: 20
+      volumes:
+        - name: uploads-volume
+          persistentVolumeClaim:
+            claimName: api-uploads-pvc
+        - name: database-volume
+          persistentVolumeClaim:
+            claimName: api-database-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: dax-autolabeling
+spec:
+  selector:
+    app: api
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: dax-autolabeling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: web-nginx-conf
+      containers:
+        - name: web
+          image: registry.daxrobotics.cn/auto-labeling-tool/dax-web:v2.0.1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              name: http
+              protocol: TCP
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: dax-autolabeling
+spec:
+  type: NodePort
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 80
+      # nodePort: 32300
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-nginx-conf
+  namespace: dax-autolabeling
+data:
+  default.conf: |
+    server {
+      listen 80;
+      server_name _;
+
+      client_max_body_size 3g;
+
+      root /usr/share/nginx/html;
+      index index.html;
+
+      location / {
+        try_files $uri $uri/ /index.html;
+      }
+
+      # Long-running requests may exceed nginx default timeouts.
+      # Also disable proxy buffering to avoid disk temp files for large responses.
+      location /api/ {
+        proxy_pass http://api:3001/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        send_timeout 600s;
+        proxy_connect_timeout 60s;
+
+        proxy_buffering off;
+      }
+
+      location /uploads/ {
+        proxy_pass http://api:3001/uploads/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        send_timeout 600s;
+        proxy_connect_timeout 60s;
+
+        proxy_buffering off;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pose
+  namespace: dax-autolabeling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pose
+  template:
+    metadata:
+      labels:
+        app: pose
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: pose
+          image: registry.daxrobotics.cn/auto-labeling-tool/dax-pose:v2.0.1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 7900
+              name: http
+              protocol: TCP
+          env:
+            - name: DATA_ROOT
+              value: "/dax-autolabel-data"
+            # IMPORTANT: K8s 会自动注入 POSE_SERVICE_HOST=<pose service clusterIP>（service link env）。
+            # 若不覆盖，uvicorn 会错误绑定到 clusterIP 并启动失败（Errno 99）。
+            - name: POSE_SERVICE_HOST
+              value: "0.0.0.0"
+            - name: POSE_SERVICE_PORT
+              value: "7900"
+            - name: CUDA_DEVICE_ORDER
+              value: PCI_BUS_ID
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 7900
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 7900
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: uploads-volume
+              mountPath: /dax-autolabel-data/uploads
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+      volumes:
+        - name: uploads-volume
+          persistentVolumeClaim:
+            claimName: api-uploads-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pose
+  namespace: dax-autolabeling
+spec:
+  selector:
+    app: pose
+  ports:
+    - name: http
+      port: 7900
+      targetPort: 7900
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: depthrepair
+  namespace: dax-autolabeling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: depthrepair
+  template:
+    metadata:
+      labels:
+        app: depthrepair
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: depthrepair
+          image: registry.daxrobotics.cn/auto-labeling-tool/dax-depthrepair:v2.0.1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 7870
+              name: http
+              protocol: TCP
+          env:
+            - name: DATA_ROOT
+              value: "/dax-autolabel-data"
+            - name: DEPTHREPAIR_PORT
+              value: "7870"
+            - name: DEPTHREPAIR_DEVICE
+              value: "cuda"
+            - name: CUDA_DEVICE_ORDER
+              value: PCI_BUS_ID
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 7870
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 7870
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: uploads-volume
+              mountPath: /dax-autolabel-data/uploads
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+      volumes:
+        - name: uploads-volume
+          persistentVolumeClaim:
+            claimName: api-uploads-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: depthrepair
+  namespace: dax-autolabeling
+spec:
+  selector:
+    app: depthrepair
+  ports:
+    - name: http
+      port: 7870
+      targetPort: 7870

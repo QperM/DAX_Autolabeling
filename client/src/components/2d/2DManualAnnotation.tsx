@@ -224,7 +224,16 @@ const ManualAnnotation: React.FC = () => {
     };
   }, [showEraserDropdown]);
 
-  const handleBack = () => {
+  const handleBack = async () => {
+    // 自动保存：返回前优先保存当前标注，避免误触返回导致丢失
+    if (autoSaveEnabled) {
+      const ok = await handleSaveAnnotation({ silent: true });
+      if (!ok) {
+        // 自动保存失败则不返回，避免丢失标注
+        return;
+      }
+    }
+
     dispatch(setCurrentImage(null));
     navigate('/annotate', { replace: true });
   };

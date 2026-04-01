@@ -77,6 +77,45 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   const [pendingRenameMaskId, setPendingRenameMaskId] = useState<string | null>(null);
   const [renameTargetMaskIds, setRenameTargetMaskIds] = useState<string[]>([]);
 
+  // “重命名”弹窗固定尺寸：足够容纳 ~10 个汉字 + 8 个字母（含 padding / 按钮）。
+  const RENAME_MODAL_WIDTH = 360;
+  const RENAME_MODAL_HEIGHT = 220;
+  const RENAME_MODAL_GAP_PX = 10;
+  const RENAME_MODAL_PADDING = 8;
+
+  // 给一个锚点（mask 中心 / 鼠标位置），计算弹窗的 top-left（默认显示在锚点上方）。
+  const getRenameModalTopLeftFromAnchor = (anchor: { x: number; y: number }): { x: number; y: number } => {
+    return {
+      x: anchor.x - RENAME_MODAL_WIDTH / 2,
+      y: anchor.y - RENAME_MODAL_HEIGHT - RENAME_MODAL_GAP_PX,
+    };
+  };
+
+  // 限制“重命名”弹窗在画布容器范围内；若太靠左/右/上/下则平移回可见区域。
+  const clampRenameModalPosition = (topLeft: { x: number; y: number }): { x: number; y: number } => {
+    const stage = stageRef.current?.getStage();
+    if (!stage) return topLeft;
+    const container = stage.container();
+    const rect = container.getBoundingClientRect();
+
+    let x = topLeft.x;
+    let y = topLeft.y;
+
+    const minX = rect.left + RENAME_MODAL_PADDING;
+    const maxX = rect.right - RENAME_MODAL_WIDTH - RENAME_MODAL_PADDING;
+    const minY = rect.top + RENAME_MODAL_PADDING;
+    const maxY = rect.bottom - RENAME_MODAL_HEIGHT - RENAME_MODAL_PADDING;
+
+    if (maxX > minX) {
+      x = Math.min(Math.max(x, minX), maxX);
+    }
+    if (maxY > minY) {
+      y = Math.min(Math.max(y, minY), maxY);
+    }
+
+    return { x, y };
+  };
+
   const openRenameModalForMaskIds = (maskIds: string[], pos?: { x: number; y: number }) => {
     if (!maskIds || maskIds.length === 0) return;
     const targets = masks.filter((m) => maskIds.includes(m.id));
@@ -84,7 +123,8 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
     // 位置：优先使用传入位置（例如右键鼠标位置）；否则复用第一个 mask 的中心位置
     if (pos) {
-      setRenameModalPosition(pos);
+      const topLeft = getRenameModalTopLeftFromAnchor(pos);
+      setRenameModalPosition(clampRenameModalPosition(topLeft));
     } else {
       const firstMask = targets[0];
       if (firstMask.points && firstMask.points.length >= 2) {
@@ -109,7 +149,9 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         if (stage) {
           const container = stage.container();
           const rect = container.getBoundingClientRect();
-          setRenameModalPosition({ x: rect.left + centerX, y: rect.top + centerY });
+          const anchor = { x: rect.left + centerX, y: rect.top + centerY };
+          const topLeft = getRenameModalTopLeftFromAnchor(anchor);
+          setRenameModalPosition(clampRenameModalPosition(topLeft));
         }
       }
     }
@@ -506,7 +548,9 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       if (stage) {
         const container = stage.container();
         const rect = container.getBoundingClientRect();
-        setRenameModalPosition({ x: rect.left + centerX, y: rect.top + centerY });
+        const anchor = { x: rect.left + centerX, y: rect.top + centerY };
+        const topLeft = getRenameModalTopLeftFromAnchor(anchor);
+        setRenameModalPosition(clampRenameModalPosition(topLeft));
       }
     }
 
@@ -1019,9 +1063,9 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
             const newMask: Mask = {
               id: `mask-${Date.now()}`,
               points: imagePoints,
-              label: '',
-              // 默认使用灰色，后续通过“选择”+R 命名后会按项目级规则重新上色
-              color: '#7F7F7F',
+              // 新建 Mask 默认对齐 SAM2 自动标注：蓝色 object
+              label: SAM2_OBJECT_LABEL,
+              color: SAM2_OBJECT_RESERVED_COLOR,
               // 默认透明度降低：避免遮挡画面文字/图层信息
               opacity: 0.45,
             };
@@ -1048,7 +1092,9 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
               if (stage) {
                 const container = stage.container();
                 const rect = container.getBoundingClientRect();
-                setRenameModalPosition({ x: rect.left + centerX, y: rect.top + centerY });
+                const anchor = { x: rect.left + centerX, y: rect.top + centerY };
+                const topLeft = getRenameModalTopLeftFromAnchor(anchor);
+                setRenameModalPosition(clampRenameModalPosition(topLeft));
               }
             } catch (err) {
               console.warn('[AnnotationCanvas] 计算新建 Mask 重命名弹窗位置失败', err);
@@ -1637,18 +1683,26 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
                 }}
               >
                 <option value="">选择已有标签（可选）</option>
-                {existingLabels.map((item) => (
-                  <option
-                    key={item.label}
-                    value={item.label}
-                    style={{
-                      backgroundColor: item.color,
-                      color: '#ffffff',
-                    }}
-                  >
-                    {item.labelZh ? `${item.labelZh} (${item.label})` : item.label}
-                  </option>
-                ))}
+                {existingLabels.map((item) => {
+                  const raw = item.label || '';
+                  const short =
+                    raw.length <= 8 ? raw : `${raw.slice(0, 8)}…`;
+                  const display = item.labelZh
+                    ? `${item.labelZh} (${short})`
+                    : short;
+                  return (
+                    <option
+                      key={item.label}
+                      value={item.label}
+                      style={{
+                        backgroundColor: item.color,
+                        color: '#ffffff',
+                      }}
+                    >
+                      {display}
+                    </option>
+                  );
+                })}
               </select>
             </div>
           )}

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { setImages, setLoading, setError, setCurrentImage } from '../../store/annotationSlice';
@@ -244,6 +244,21 @@ const AnnotationPage: React.FC = () => {
     }
   }, [selectedPreviewImage]);
 
+  // 低带宽场景优化：预览打开时预取原图到浏览器缓存，避免进入“人工标注”页才开始下载导致空等数秒。
+  useEffect(() => {
+    if (!selectedPreviewImage) return;
+    const src = toAbsoluteUrl(selectedPreviewImage.url) || selectedPreviewImage.url;
+    if (!src) return;
+    try {
+      const img = new window.Image();
+      img.decoding = 'async';
+      // 不挂到 DOM；只触发浏览器缓存填充
+      img.src = src;
+    } catch (_) {
+      // ignore prefetch failures
+    }
+  }, [selectedPreviewImage?.id, selectedPreviewImage?.url]);
+
   // 切换到 mask 显示时：按需拉取标注
   useEffect(() => {
     if (!selectedPreviewImage) return;
@@ -447,15 +462,19 @@ const AnnotationPage: React.FC = () => {
     };
   }, [dispatch, currentProject?.id, navigate]);
 
-  const refreshAnnotationSummary = async () => {
-    if (!currentProject) return;
+  const refreshAnnotationSummary = useCallback(async () => {
+    const pid = currentProject?.id;
+    if (pid == null || pid === '') return;
     try {
-      const summary = await projectApi.getAnnotationSummary(currentProject.id);
+      const summary = await projectApi.getAnnotationSummary(Number(pid));
       setAnnotationSummary(summary);
     } catch (e) {
       console.warn('刷新标注汇总失败:', e);
     }
-  };
+  }, [currentProject?.id]);
+
+  /** 标题展示：汇总 totalImages 可能与列表不同步（SQLite WAL / 请求时序）；totalImages 为 0 时 ?? 不会 fallback，故用 max */
+  const projectImageHeadlineCount = Math.max(annotationSummary?.totalImages ?? 0, images.length);
   const getModelParamsForAutoAnnotate = (): Sam2ModelParams => {
     // 以“调整模型参数”弹窗为准：优先项目级配置，其次全局默认，最后当前内存中的 modelParams
     const projectId = currentProject?.id;
@@ -473,8 +492,9 @@ const AnnotationPage: React.FC = () => {
     }
   };
 
-  const handleUploadComplete = () => {
-    if (!currentProject) {
+  const handleUploadComplete = useCallback(() => {
+    const pid = currentProject?.id;
+    if (pid == null || pid === '') {
       alert('请先创建或选择项目！');
       return;
     }
@@ -487,17 +507,22 @@ const AnnotationPage: React.FC = () => {
         setHasMoreImages(true);
         dispatch(setImages([]));
 
-        const page = await imageApi.getImages(currentProject.id, { offset: 0, limit: PAGE_SIZE });
+        const page = await imageApi.getImages(pid, { offset: 0, limit: PAGE_SIZE });
         dispatch(setImages(page));
         setImageOffset(page.length);
         setHasMoreImages(page.length === PAGE_SIZE);
+        await refreshAnnotationSummary();
+        // 解压入库刚完成时，偶尔第一次 COUNT 仍读到旧快照；稍后再拉一次
+        setTimeout(() => {
+          void refreshAnnotationSummary();
+        }, 400);
       } catch (e: any) {
         console.warn('[AnnotationPage] 上传后刷新图片列表失败:', e);
       } finally {
         dispatch(setLoading(false));
       }
     })();
-  };
+  }, [currentProject?.id, dispatch, refreshAnnotationSummary]);
 
   // 当用户滚动到缩略图列表末尾时：继续追加下一页图片
   const loadMoreImages = async () => {
@@ -1108,6 +1133,7 @@ const AnnotationPage: React.FC = () => {
                               dispatch(setImages(page));
                               setImageOffset(page.length);
                               setHasMoreImages(page.length === PAGE_SIZE);
+                              await refreshAnnotationSummary();
                             }
                             debugLog('frontend', 'frontend2DDelete', '[2DAnnotationPage] delete flow done', { imageId });
                           } catch (error: any) {
@@ -1152,7 +1178,7 @@ const AnnotationPage: React.FC = () => {
               <div className="welcome-bottom">
                 <div className="uploaded-images-preview">
                   <div className="preview-header uploaded-preview-header">
-                    <h3>项目图片 ({annotationSummary?.totalImages ?? images.length})</h3>
+                    <h3>项目图片 ({projectImageHeadlineCount})</h3>
                     <div className="project-info">
                       <span className="project-name">项目: {currentProject.name}</span>
                       <span className="project-id">ID: {currentProject.id}</span>

@@ -128,7 +128,8 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
               allNewImages.push(...newImages);
             }
 
-            if (onUploadComplete && allNewImages.length > 0) onUploadComplete(allNewImages);
+            // 始终通知父级刷新列表/汇总：解压 job 的 files 可能未带全量元数据但仍已入库
+            if (onUploadComplete) onUploadComplete(allNewImages);
           } catch (e: any) {
             console.error('[ImageUploader] 后台处理失败:', e);
             alert(`入库/解压失败：${e?.message || '未知错误'}`);
