@@ -3,10 +3,10 @@ function makeDepthRepo(db) {
     insertDepthMap: (depthData, callback) => {
       const sql = `
         INSERT INTO depth_maps (
-          project_id, image_id, camera_id, role, modality, filename, file_path, file_size, upload_time,
+          project_id, image_id, camera_id, role, modality, filename, original_name, file_path, file_size, upload_time,
           depth_raw_fix_path, depth_png_fix_path
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
       const params = [
         depthData.projectId,
@@ -15,6 +15,7 @@ function makeDepthRepo(db) {
         depthData.role || null,
         depthData.modality || null,
         depthData.filename,
+        depthData.originalName != null ? String(depthData.originalName) : null,
         depthData.path,
         depthData.size,
         depthData.uploadTime,
@@ -31,7 +32,7 @@ function makeDepthRepo(db) {
     getDepthMapsByProjectId: (projectId, callback) => {
       const sql = `
         SELECT
-          id, project_id, image_id, camera_id, role, modality, filename, file_path, file_size, upload_time,
+          id, project_id, image_id, camera_id, role, modality, filename, original_name, file_path, file_size, upload_time,
           depth_raw_fix_path, depth_png_fix_path
         FROM depth_maps
         WHERE project_id = ?
@@ -43,7 +44,7 @@ function makeDepthRepo(db) {
     getDepthMapsByImageId: (projectId, imageId, callback) => {
       const sql = `
         SELECT
-          id, project_id, image_id, camera_id, role, modality, filename, file_path, file_size, upload_time,
+          id, project_id, image_id, camera_id, role, modality, filename, original_name, file_path, file_size, upload_time,
           depth_raw_fix_path, depth_png_fix_path
         FROM depth_maps
         WHERE project_id = ?
@@ -56,7 +57,7 @@ function makeDepthRepo(db) {
     getDepthMapById: (depthId, callback) => {
       const sql = `
         SELECT
-          id, project_id, image_id, camera_id, role, modality, filename, file_path, file_size, upload_time,
+          id, project_id, image_id, camera_id, role, modality, filename, original_name, file_path, file_size, upload_time,
           depth_raw_fix_path, depth_png_fix_path
         FROM depth_maps
         WHERE id = ?

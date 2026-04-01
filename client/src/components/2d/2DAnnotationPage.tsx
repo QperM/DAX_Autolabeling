@@ -8,7 +8,6 @@ import ImageUploader from './ImageUploader';
 import ModelConfigModal from './ModelConfigModal';
 import { clearStoredCurrentProject, getStoredCurrentProject } from '../../utils/tabStorage';
 import { toAbsoluteUrl } from '../../utils/urls';
-import { sortByWindowsFilename } from '../../utils/windowsFilenameSort';
 import VirtualThumbGrid from '../common/VirtualThumbGrid';
 import './2DAnnotationPage.css';
 import { AnnotationLabelmeZipExportButton, type LabelmeExportProgressState } from './AnnotationLabelmeZipExport';
@@ -27,17 +26,16 @@ type Sam2ModelParams = {
   sam2StabilityScoreThresh: number;
   sam2BoxNmsThresh: number;
   sam2MinMaskRegionArea: number;
-  sam2MergeGapPx: number;
 };
 
 const DEFAULT_MODEL_PARAMS: Sam2ModelParams = {
-  maxPolygonPoints: 60,
+  // 现在 maxPolygonPoints 表示“轮廓点间距(px)”：值越大点越少（更稀疏），值越小点越密集（更贴合但更重）
+  maxPolygonPoints: 6,
   sam2PointsPerSide: 20,
   sam2PredIouThresh: 0.88,
   sam2StabilityScoreThresh: 0.95,
   sam2BoxNmsThresh: 0.35,
   sam2MinMaskRegionArea: 6000,
-  sam2MergeGapPx: 0,
 };
 
 const GLOBAL_MODEL_PARAMS_STORAGE_KEY = 'modelParams:globalDefault';
@@ -46,7 +44,11 @@ const sanitizeModelParams = (
   input: Partial<Sam2ModelParams> | null | undefined,
   fallback: Sam2ModelParams,
 ): Sam2ModelParams => ({
-  maxPolygonPoints: typeof input?.maxPolygonPoints === 'number' ? input.maxPolygonPoints : fallback.maxPolygonPoints,
+  // maxPolygonPoints 现在表示“轮廓点间距(px)”
+  maxPolygonPoints:
+    typeof input?.maxPolygonPoints === 'number'
+      ? Math.max(1, Math.min(30, input.maxPolygonPoints))
+      : fallback.maxPolygonPoints,
   sam2PointsPerSide: typeof input?.sam2PointsPerSide === 'number' ? input.sam2PointsPerSide : fallback.sam2PointsPerSide,
   sam2PredIouThresh:
     typeof input?.sam2PredIouThresh === 'number' ? input.sam2PredIouThresh : fallback.sam2PredIouThresh,
@@ -59,7 +61,6 @@ const sanitizeModelParams = (
     typeof input?.sam2MinMaskRegionArea === 'number'
       ? input.sam2MinMaskRegionArea
       : fallback.sam2MinMaskRegionArea,
-  sam2MergeGapPx: typeof input?.sam2MergeGapPx === 'number' ? input.sam2MergeGapPx : fallback.sam2MergeGapPx,
 });
 
 const AnnotationPage: React.FC = () => {
@@ -72,14 +73,14 @@ const AnnotationPage: React.FC = () => {
   const [previewMasks, setPreviewMasks] = useState<Mask[]>([]);
   const [previewAnnoLoading, setPreviewAnnoLoading] = useState(false);
   const [previewImageSize, setPreviewImageSize] = useState<{ width: number; height: number } | null>(null);
-  const [thumbnailMasks, setThumbnailMasks] = useState<Record<number, Mask[]>>({});
-  const [thumbnailSizes, setThumbnailSizes] = useState<Record<number, { width: number; height: number }>>({});
-  const [showThumbnailMasks, setShowThumbnailMasks] = useState(false);
-  const loadingThumbnailMasksRef = useRef<Set<number>>(new Set()); // 正在加载的 mask ID 集合
   // 虚拟滚动可视区内的缩略图（用于 mask 预加载）
   const [visibleThumbImages, setVisibleThumbImages] = useState<Image[]>([]);
   const THUMB_SIZE = 125;
   const THUMB_GAP = 16; // 对应 CSS gap: 1rem
+  const PAGE_SIZE = 20;
+  const [imageOffset, setImageOffset] = useState(0);
+  const [hasMoreImages, setHasMoreImages] = useState(true);
+  const [loadingMoreImages, setLoadingMoreImages] = useState(false);
   const [currentProject, setCurrentProject] = useState<any>(null);  // 当前项目
   useProjectSessionGuard(currentProject?.id ? Number(currentProject.id) : null, !!currentProject?.id);
   const [isAdmin, setIsAdmin] = useState(false); // 当前是否为管理员
@@ -100,7 +101,7 @@ const AnnotationPage: React.FC = () => {
     current: '',
     results: []
   });  // 批量标注进度
-  const [, setAnnotationSummary] = useState<{
+  const [annotationSummary, setAnnotationSummary] = useState<{
     totalImages: number;
     annotatedImages: number;
     latestAnnotatedImageId: number | null;
@@ -120,7 +121,7 @@ const AnnotationPage: React.FC = () => {
   });
 
   // 项目级 label -> color 映射表（同一项目内保持稳定）
-  const labelColorMapRef = React.useRef<Map<string, string>>(new Map());
+  const labelColorMapRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     try {
@@ -249,35 +250,6 @@ const AnnotationPage: React.FC = () => {
     if (previewDisplayMode !== 'mask') return;
     loadPreviewMasks(selectedPreviewImage.id);
   }, [previewDisplayMode]);
-
-  const ensureThumbnailMasks = async (imageId: number) => {
-    if (!showThumbnailMasks) return;
-    if (thumbnailMasks[imageId]) return;
-    if (loadingThumbnailMasksRef.current.has(imageId)) return; // 正在加载中，避免重复请求
-    
-    loadingThumbnailMasksRef.current.add(imageId);
-    try {
-      const resp = await annotationApi.getAnnotation(imageId);
-      const anno = resp?.annotation;
-      if (anno?.masks) {
-        setThumbnailMasks(prev => ({ ...prev, [imageId]: anno.masks }));
-      }
-    } catch (e) {
-      console.warn('[AnnotationPage] 缩略图加载 masks 失败, imageId =', imageId, e);
-    } finally {
-      loadingThumbnailMasksRef.current.delete(imageId);
-    }
-  };
-
-  // 当开启缩略图 Mask 预览或可视区域变化时，为当前视口内的缩略图预加载 Mask
-  useEffect(() => {
-    if (!showThumbnailMasks) return;
-    if (!visibleThumbImages || visibleThumbImages.length === 0) return;
-
-    visibleThumbImages.forEach((img: Image) => {
-      ensureThumbnailMasks(img.id);
-    });
-  }, [showThumbnailMasks, visibleThumbImages]);
 
   // 从当前标签页的 sessionStorage 恢复当前项目
   useEffect(() => {
@@ -435,34 +407,45 @@ const AnnotationPage: React.FC = () => {
 
   // 根据当前项目加载已有图像
   useEffect(() => {
-    if (currentProject) {
-      const loadImages = async () => {
-        try {
-          dispatch(setLoading(true));
-          // 根据项目ID加载该项目的图片
-          const loadedImages = await imageApi.getImages(currentProject.id);
-          const sortedImages = sortByWindowsFilename(loadedImages, (img) => img.originalName || img.filename);
-          dispatch(setImages(sortedImages));
+    if (!currentProject) return;
 
-          // 同步拉取项目标注汇总（用于“已完成AI标注数量”）
-          const summary = await projectApi.getAnnotationSummary(currentProject.id);
-          setAnnotationSummary(summary);
-        } catch (err: any) {
-          // 如果是权限错误，重定向到首页
-          if (err.response?.status === 403) {
-            alert('您没有访问该项目的权限，请重新输入验证码');
-            navigate('/');
-          } else {
+    let cancelled = false;
+    (async () => {
+      try {
+        dispatch(setLoading(true));
+
+        // 分批加载：避免一次性拉取全量图片导致卡顿
+        setImageOffset(0);
+        setHasMoreImages(true);
+        dispatch(setImages([]));
+
+        const page = await imageApi.getImages(currentProject.id, { offset: 0, limit: PAGE_SIZE });
+        if (cancelled) return;
+        dispatch(setImages(page));
+        setImageOffset(page.length);
+        setHasMoreImages(page.length === PAGE_SIZE);
+
+        // 同步拉取项目标注汇总（用于“已完成AI标注数量 + 项目图片总数”）
+        const summary = await projectApi.getAnnotationSummary(currentProject.id);
+        if (cancelled) return;
+        setAnnotationSummary(summary);
+      } catch (err: any) {
+        // 如果是权限错误，重定向到首页
+        if (err.response?.status === 403) {
+          alert('您没有访问该项目的权限，请重新输入验证码');
+          navigate('/');
+        } else {
           dispatch(setError(err.message || '加载图像失败'));
-          }
-        } finally {
-          dispatch(setLoading(false));
         }
-      };
+      } finally {
+        dispatch(setLoading(false));
+      }
+    })();
 
-      loadImages();
-    }
-  }, [dispatch, currentProject, navigate]);
+    return () => {
+      cancelled = true;
+    };
+  }, [dispatch, currentProject?.id, navigate]);
 
   const refreshAnnotationSummary = async () => {
     if (!currentProject) return;
@@ -473,20 +456,41 @@ const AnnotationPage: React.FC = () => {
       console.warn('刷新标注汇总失败:', e);
     }
   };
+  const getModelParamsForAutoAnnotate = (): Sam2ModelParams => {
+    // 以“调整模型参数”弹窗为准：优先项目级配置，其次全局默认，最后当前内存中的 modelParams
+    const projectId = currentProject?.id;
+    if (!projectId) return modelParams;
+    const perProjectKey = `modelParams:${projectId}`;
+    try {
+      const raw =
+        localStorage.getItem(perProjectKey) ??
+        localStorage.getItem(GLOBAL_MODEL_PARAMS_STORAGE_KEY);
+      if (!raw) return modelParams;
+      const parsed = JSON.parse(raw) as Partial<Sam2ModelParams>;
+      return sanitizeModelParams(parsed, modelParams);
+    } catch {
+      return modelParams;
+    }
+  };
 
   const handleUploadComplete = () => {
     if (!currentProject) {
       alert('请先创建或选择项目！');
       return;
     }
-    // 上传接口已在后端完成“图片入库 + 关联项目”
-    // 这里做一次刷新，确保 ZIP 解压批量导入等场景下列表与数据库完全一致
+
+    // 上传接口完成后只重置并拉取第一页，后续在用户滚动时继续追加
     (async () => {
       try {
         dispatch(setLoading(true));
-        const loadedImages = await imageApi.getImages(currentProject.id);
-        const sortedImages = sortByWindowsFilename(loadedImages, (img) => img.originalName || img.filename);
-        dispatch(setImages(sortedImages));
+        setImageOffset(0);
+        setHasMoreImages(true);
+        dispatch(setImages([]));
+
+        const page = await imageApi.getImages(currentProject.id, { offset: 0, limit: PAGE_SIZE });
+        dispatch(setImages(page));
+        setImageOffset(page.length);
+        setHasMoreImages(page.length === PAGE_SIZE);
       } catch (e: any) {
         console.warn('[AnnotationPage] 上传后刷新图片列表失败:', e);
       } finally {
@@ -494,6 +498,46 @@ const AnnotationPage: React.FC = () => {
       }
     })();
   };
+
+  // 当用户滚动到缩略图列表末尾时：继续追加下一页图片
+  const loadMoreImages = async () => {
+    if (!currentProject) return;
+    if (loadingMoreImages) return;
+    if (!hasMoreImages) return;
+
+    try {
+      setLoadingMoreImages(true);
+      const nextPage = await imageApi.getImages(currentProject.id, { offset: imageOffset, limit: PAGE_SIZE });
+
+      // 直接基于当前 redux images 追加，避免用户看到列表“瞬间跳回顶部”
+      dispatch(setImages([...images, ...nextPage]));
+
+      const nextOffset = imageOffset + nextPage.length;
+      setImageOffset(nextOffset);
+      setHasMoreImages(nextPage.length === PAGE_SIZE);
+    } catch (e) {
+      console.warn('[AnnotationPage] 加载更多图片失败', e);
+      setHasMoreImages(false);
+    } finally {
+      setLoadingMoreImages(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentProject) return;
+    if (!hasMoreImages) return;
+    if (loadingMoreImages) return;
+    if (!visibleThumbImages || visibleThumbImages.length === 0) return;
+
+    const lastVisible = visibleThumbImages[visibleThumbImages.length - 1];
+    const lastLoaded = images.length > 0 ? images[images.length - 1] : null;
+
+    // 只有当可视区“最后一个”就是当前已加载列表的最后一张时，才触发追加
+    if (lastVisible && lastLoaded && lastVisible.id === lastLoaded.id) {
+      void loadMoreImages();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleThumbImages, images, hasMoreImages, loadingMoreImages, currentProject?.id]);
 
   const handleStartManualAnnotation = (image: Image) => {
     dispatch(setCurrentImage(image));
@@ -542,7 +586,8 @@ const AnnotationPage: React.FC = () => {
       }, 700);
       let result: any;
       try {
-        result = await annotationApi.autoAnnotate(image.id, modelParams);
+        const effectiveModelParams = getModelParamsForAutoAnnotate();
+        result = await annotationApi.autoAnnotate(image.id, effectiveModelParams);
       } finally {
         pollCancelled = true;
         window.clearInterval(queueTimer);
@@ -559,19 +604,6 @@ const AnnotationPage: React.FC = () => {
       await new Promise((r) => setTimeout(r, 300));
       alert('当前图片 AI 试标注完成（结果已保存，可在“人工标注”中查看和微调）');
       await refreshAnnotationSummary();
-      // 刷新缩略图的 Mask 叠加（不依赖旧缓存，直接覆盖当前这张的缓存）
-      if (showThumbnailMasks) {
-        try {
-          const resp = await annotationApi.getAnnotation(image.id);
-          const anno = resp?.annotation;
-          setThumbnailMasks(prev => ({
-            ...prev,
-            [image.id]: anno?.masks || [],
-          }));
-        } catch (e) {
-          console.warn('[前端] 单张AI试标注后刷新缩略图 masks 失败, imageId =', image.id, e);
-        }
-      }
       // 如果当前大图预览正好是这张图片，且处于 Mask 模式，则主动刷新一次预览 Mask
       if (selectedPreviewImage && selectedPreviewImage.id === image.id && previewDisplayMode === 'mask') {
         await loadPreviewMasks(image.id);
@@ -602,17 +634,19 @@ const AnnotationPage: React.FC = () => {
       return;
     }
 
-    if (images.length === 0) {
-      alert('当前没有可标注的图片');
-      return;
-    }
-
     if (!currentProject) {
       alert('请先选择项目');
       return;
     }
 
-    const confirmMessage = `确定要对所有 ${images.length} 张图片进行批量AI自动标注吗？\n\n` +
+    // 批量标注需要覆盖全项目图片：即使当前页面只加载了前几张缩略图
+    const allImages = await imageApi.getImages(currentProject.id);
+    if (allImages.length === 0) {
+      alert('当前项目没有可标注的图片');
+      return;
+    }
+
+    const confirmMessage = `确定要对所有 ${allImages.length} 张图片进行批量AI自动标注吗？\n\n` +
       `将使用 SAM2 模型进行自动分割。\n\n注意：批量标注可能需要较长时间，请耐心等待。`;
     if (!(await confirm(confirmMessage, { title: '确认批量 AI 标注' }))) {
       return;
@@ -622,7 +656,7 @@ const AnnotationPage: React.FC = () => {
       setBatchAnnotating(true);
       setBatchProgressPopupDismissed(false);
       const initialProgress = {
-        total: images.length,
+        total: allImages.length,
         completed: 0,
         current: '',
         results: []
@@ -631,24 +665,25 @@ const AnnotationPage: React.FC = () => {
       saveBatchProgressToStorage(initialProgress, true, 0);
 
       const results: Array<{ image: Image; success: boolean; annotations?: any; error?: string }> = [];
+      const effectiveModelParams = getModelParamsForAutoAnnotate();
 
       // 逐个处理每张图片
-      for (let i = 0; i < images.length; i++) {
-        const image = images[i];
+      for (let i = 0; i < allImages.length; i++) {
+        const image = allImages[i];
         const updatedProgress = {
-          total: images.length,
+          total: allImages.length,
           completed: results.length,
-          current: `正在处理: ${image.originalName || image.filename} (${i + 1}/${images.length})`,
+          current: `正在处理: ${image.originalName || image.filename} (${i + 1}/${allImages.length})`,
           results: [...results]
         };
         setBatchProgress(updatedProgress);
-        const progressPercent = Math.round((results.length / images.length) * 100);
+        const progressPercent = Math.round((results.length / allImages.length) * 100);
         setAiProgress(progressPercent);
         saveBatchProgressToStorage(updatedProgress, true, progressPercent);
 
         try {
           // 调用后端AI标注API（携带当前项目的模型参数）
-          const result = await annotationApi.autoAnnotate(image.id, modelParams);
+          const result = await annotationApi.autoAnnotate(image.id, effectiveModelParams);
 
           // 为本次结果分配颜色（同一标签复用同一颜色）
           const colored = assignColorsForAnnotations(result.annotations);
@@ -667,13 +702,13 @@ const AnnotationPage: React.FC = () => {
           });
 
           const progressAfterSuccess = {
-            total: images.length,
+            total: allImages.length,
             completed: results.length,
-            current: `正在处理: ${image.originalName || image.filename} (${i + 1}/${images.length})`,
+            current: `正在处理: ${image.originalName || image.filename} (${i + 1}/${allImages.length})`,
             results: [...results]
           };
           setBatchProgress(progressAfterSuccess);
-          const progressPercentAfterSuccess = Math.round((results.length / images.length) * 100);
+          const progressPercentAfterSuccess = Math.round((results.length / allImages.length) * 100);
           setAiProgress(progressPercentAfterSuccess);
           saveBatchProgressToStorage(progressAfterSuccess, true, progressPercentAfterSuccess);
         } catch (error: any) {
@@ -685,13 +720,13 @@ const AnnotationPage: React.FC = () => {
           });
 
           const progressAfterError = {
-            total: images.length,
+            total: allImages.length,
             completed: results.length,
-            current: `正在处理: ${image.originalName || image.filename} (${i + 1}/${images.length})`,
+            current: `正在处理: ${image.originalName || image.filename} (${i + 1}/${allImages.length})`,
             results: [...results]
           };
           setBatchProgress(progressAfterError);
-          const progressPercentAfterError = Math.round((results.length / images.length) * 100);
+          const progressPercentAfterError = Math.round((results.length / allImages.length) * 100);
           setAiProgress(progressPercentAfterError);
           saveBatchProgressToStorage(progressAfterError, true, progressPercentAfterError);
         }
@@ -699,7 +734,7 @@ const AnnotationPage: React.FC = () => {
 
       // 批量标注完成（仅更新进度 & 统计，不自动跳转预览）
       const finalProgress = {
-        total: images.length,
+        total: allImages.length,
         completed: results.length,
         current: '批量标注完成！',
         results: [...results]
@@ -782,11 +817,6 @@ const AnnotationPage: React.FC = () => {
           </button>
           <h1>图像标注工作区</h1>
         </div>
-        <div className="header-right">
-          <span className="status">
-            {loading ? '加载中...' : `${images.length} 张图片`}
-          </span>
-        </div>
       </header>
 
       {error && (
@@ -855,17 +885,15 @@ const AnnotationPage: React.FC = () => {
                     </button>
                     <ColorLabelMappingManager
                       currentProjectId={currentProject?.id ? Number(currentProject.id) : null}
-                      images={images}
                       selectedPreviewImage={selectedPreviewImage}
                       previewDisplayMode={previewDisplayMode}
                       onRefreshAnnotationSummary={refreshAnnotationSummary}
                       onReloadPreviewMasks={loadPreviewMasks}
-                      onClearThumbnailMasks={() => setThumbnailMasks({})}
+                      onClearThumbnailMasks={() => {}}
                     />
                     <div className="import-export-buttons">
                       <AnnotationLabelmeZipExportButton
                         project={currentProject ? { id: currentProject.id, name: currentProject.name } : null}
-                        images={images}
                         isAdmin={isAdmin}
                         pageLoading={loading}
                         setExportProgress={setExportProgress}
@@ -1074,9 +1102,12 @@ const AnnotationPage: React.FC = () => {
                             
                             // 重新加载图片列表以确保数据同步
                             if (currentProject) {
-                              const loadedImages = await imageApi.getImages(currentProject.id);
-                              const sortedImages = sortByWindowsFilename(loadedImages, (img) => img.originalName || img.filename);
-                              dispatch(setImages(sortedImages));
+                              setImageOffset(0);
+                              setHasMoreImages(true);
+                              const page = await imageApi.getImages(currentProject.id, { offset: 0, limit: PAGE_SIZE });
+                              dispatch(setImages(page));
+                              setImageOffset(page.length);
+                              setHasMoreImages(page.length === PAGE_SIZE);
                             }
                             debugLog('frontend', 'frontend2DDelete', '[2DAnnotationPage] delete flow done', { imageId });
                           } catch (error: any) {
@@ -1121,18 +1152,7 @@ const AnnotationPage: React.FC = () => {
               <div className="welcome-bottom">
                 <div className="uploaded-images-preview">
                   <div className="preview-header uploaded-preview-header">
-                    <h3>项目图片 ({images.length})</h3>
-                    <button
-                      type="button"
-                      className={`thumbnail-mask-toggle ${showThumbnailMasks ? 'active' : ''}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowThumbnailMasks((v) => !v);
-                      }}
-                      title="切换缩略图Mask预览"
-                    >
-                      Mask预览：{showThumbnailMasks ? '开' : '关'}
-                    </button>
+                    <h3>项目图片 ({annotationSummary?.totalImages ?? images.length})</h3>
                     <div className="project-info">
                       <span className="project-name">项目: {currentProject.name}</span>
                       <span className="project-id">ID: {currentProject.id}</span>
@@ -1145,7 +1165,6 @@ const AnnotationPage: React.FC = () => {
                     thumbSize={THUMB_SIZE}
                     thumbGap={THUMB_GAP}
                     onSelect={(image) => setSelectedPreviewImage(image)}
-                    onTileMouseEnter={(image) => ensureThumbnailMasks(image.id)}
                     onVisibleItemsChange={setVisibleThumbImages}
                     renderTile={({ item: image }) => (
                       <>
@@ -1156,57 +1175,7 @@ const AnnotationPage: React.FC = () => {
                             onError={() => {
                               console.error('❌ 图片加载失败:', image.url);
                             }}
-                            onLoad={(e) => {
-                              const imgEl = e.currentTarget;
-                              // 只在尺寸确实需要更新时才更新状态，避免不必要的重新渲染
-                              setThumbnailSizes((prev) => {
-                                const existing = prev[image.id];
-                                if (existing && existing.width === imgEl.naturalWidth && existing.height === imgEl.naturalHeight) {
-                                  return prev; // 尺寸未变化，不更新
-                                }
-                                return {
-                                  ...prev,
-                                  [image.id]: {
-                                    width: imgEl.naturalWidth,
-                                    height: imgEl.naturalHeight,
-                                  },
-                                };
-                              });
-                            }}
                           />
-
-                          {showThumbnailMasks && thumbnailMasks[image.id] && thumbnailSizes[image.id] && (
-                            <svg
-                              className="thumbnail-mask-overlay"
-                              viewBox={`0 0 ${thumbnailSizes[image.id].width} ${thumbnailSizes[image.id].height}`}
-                              preserveAspectRatio="xMidYMid slice"
-                            >
-                              {thumbnailMasks[image.id].map((mask) => {
-                                const pointsStr = mask.points
-                                  .reduce<string[]>((acc, val, idx, arr) => {
-                                    if (idx % 2 === 0) {
-                                      const x = val;
-                                      const y = arr[idx + 1];
-                                      acc.push(`${x},${y}`);
-                                    }
-                                    return acc;
-                                  }, [])
-                                  .join(' ');
-
-                                return (
-                                  <polygon
-                                    key={mask.id}
-                                    points={pointsStr}
-                                    fill={mask.color || '#ff0000'}
-                                    fillOpacity={mask.opacity ?? 0.25}
-                                    stroke={mask.color || '#ff0000'}
-                                    strokeWidth={1.5}
-                                    strokeOpacity={0.9}
-                                  />
-                                );
-                              })}
-                            </svg>
-                          )}
                         </div>
 
                         <div className="thumbnail-overlay">

@@ -138,9 +138,9 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
     }
   }
 
-  function finalizeUploadedRgb(imageId, fileInfo) {
+  function finalizeUploadedRgb(imageId, projectId, fileInfo) {
     return new Promise((resolve) => {
-      db.finalizeRgbImageStorage(imageId, fileInfo.originalName, fileInfo.path, (err, meta) => {
+      db.finalizeRgbImageStorage(imageId, projectId, fileInfo.originalName, fileInfo.path, (err, meta) => {
         if (err) console.error('[upload] finalizeRgbImageStorage:', err);
         if (meta) {
           fileInfo.filename = meta.filename;
@@ -306,7 +306,7 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
 
         const imageId = await insertImageAsync(fileInfo);
         await linkImageToProjectAsync(projectId, imageId);
-        await finalizeUploadedRgb(imageId, fileInfo);
+        await finalizeUploadedRgb(imageId, projectId, fileInfo);
         fileInfo.id = imageId;
 
         job.files.push(fileInfo);
@@ -396,7 +396,7 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
 
         const imageId = await insertImageAsync(fileInfo);
         await linkImageToProjectAsync(projectId, imageId);
-        await finalizeUploadedRgb(imageId, fileInfo);
+        await finalizeUploadedRgb(imageId, projectId, fileInfo);
         fileInfo.id = imageId;
 
         job.files.push(fileInfo);
@@ -418,6 +418,78 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
     }
   }
 
+  async function runDirectImagesProcessJob({ jobId, files, projectId }) {
+    const job = uploadJobs.get(jobId);
+    if (!job) return;
+
+    job.status = 'processing';
+    job.total = files.length;
+    job.processed = 0;
+    job.message = '等待入库...';
+    job.files = [];
+    job.failed = 0;
+
+    const projectIdNum = projectId != null ? Number(projectId) : null;
+
+    try {
+      for (const file of files) {
+        try {
+          // 普通图片：移动到项目 images 目录（如果提供 projectId）
+          let finalPath = file.path;
+          if (projectIdNum) {
+            const projectDir = getProjectImagesDir(projectIdNum);
+            const finalFilename = path.basename(file.path);
+            finalPath = path.join(projectDir, finalFilename);
+
+            try {
+              if (fs.existsSync(finalPath)) {
+                safeUnlink(finalPath);
+              }
+              fs.renameSync(file.path, finalPath);
+            } catch (err) {
+              console.error('[upload][ingest] 移动文件到项目文件夹失败:', err);
+              finalPath = file.path;
+            }
+          }
+
+          const fileInfo = {
+            filename: path.basename(finalPath),
+            originalName: file.originalname,
+            path: finalPath,
+            url: buildImageUrl(finalPath, path.basename(finalPath)),
+            size: file.size,
+            uploadTime: new Date().toISOString(),
+          };
+
+          const imageId = await insertImageAsync(fileInfo);
+          await linkImageToProjectAsync(projectIdNum, imageId);
+          await finalizeUploadedRgb(imageId, projectIdNum || 0, fileInfo);
+          fileInfo.id = imageId;
+
+          job.files.push(fileInfo);
+        } catch (e) {
+          job.failed = (job.failed || 0) + 1;
+          console.error('[upload][ingest] 单张图片入库失败:', e);
+        } finally {
+          job.processed += 1;
+          const failed = job.failed || 0;
+          job.message =
+            failed > 0
+              ? `正在入库处理... (${job.processed}/${job.total})（已失败 ${failed}）`
+              : `正在入库处理... (${job.processed}/${job.total})`;
+        }
+      }
+
+      job.status = 'completed';
+      job.message =
+        job.failed > 0 ? `入库处理完成（部分失败: ${job.failed}/${job.total}）` : '入库处理完成';
+    } catch (e) {
+      job.status = 'error';
+      job.error = e?.message || String(e);
+      job.message = '入库处理失败';
+    }
+  }
+
   // 文件上传接口（需要项目访问权限）
   router.post('/upload', upload.array('images', 2000), async (req, res) => {
     try {
@@ -427,7 +499,6 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
         projectId: req.body?.projectId ?? null,
       });
       const files = req.files;
-      const uploadedFiles = [];
       const { projectId } = req.body;
       const projectIdNum = projectId != null ? Number(projectId) : null;
 
@@ -443,6 +514,8 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
         }
       }
       const zipJobs = [];
+      const imageJobs = [];
+      const directImageFiles = [];
 
       const MAX_FILES_PER_UPLOAD = 2000;
       const totalIncoming = Array.isArray(files) ? files.length : 0;
@@ -458,9 +531,8 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
         console.warn('⚠️ /api/upload 调用时未提供 projectId，本次上传的图片不会关联到任何项目');
       }
 
-      let completed = 0;
       if (totalIncoming === 0) {
-        return res.json({ success: true, files: [], zipJobs: [], message: '未选择任何文件' });
+        return res.json({ success: true, files: [], zipJobs: [], imageJobs: [], message: '未选择任何文件' });
       }
 
       // 严格校验：本次上传任何非图片内容都会导致整批失败，并清空本次上传
@@ -529,107 +601,45 @@ function registerUploadRoutes(app, { db, upload, getProjectUploadDir }) {
               });
             }
           }, 50);
-
-          completed++;
-          if (completed === totalIncoming) {
-            res.json({
-              success: true,
-              files: uploadedFiles,
-              zipJobs,
-              message: `上传完成：图片 ${uploadedFiles.length} 个，压缩包 ${zipJobs.length} 个（解压中）`,
-            });
-            debugLog('node', 'node2DUpload', {
-              stage: 'completed',
-              uploadedImages: uploadedFiles.length,
-              zipJobs: zipJobs.length,
-            });
-          }
           return;
         }
 
-        // 普通图片：移动到项目目录
-        let finalPath = file.path;
+        // 普通图片：放入“入库处理 job”，避免阻塞 /api/upload 请求响应
+        directImageFiles.push(file);
+      });
 
-        if (projectIdNum) {
-          const projectDir = getProjectImagesDir(projectIdNum);
-          const finalFilename = path.basename(file.path);
-          finalPath = path.join(projectDir, finalFilename);
-          try {
-            if (fs.existsSync(finalPath)) {
-              try {
-                fs.unlinkSync(finalPath);
-              } catch (_) {}
-            }
-            fs.renameSync(file.path, finalPath);
-          } catch (err) {
-            console.error('移动文件到项目文件夹失败:', err);
-            finalPath = file.path;
-          }
-        }
-
-        const fileInfo = {
-          filename: path.basename(finalPath),
-          originalName: file.originalname,
-          path: finalPath,
-          url: buildImageUrl(finalPath, path.basename(finalPath)),
-          size: file.size,
-          uploadTime: new Date().toISOString(),
-        };
-
-        db.insertImage(fileInfo, (err, imageId) => {
-          if (err) {
-            console.error('保存图片信息失败:', err);
-            completed++;
-            if (completed === totalIncoming) {
-              res.json({
-                success: true,
-                files: uploadedFiles,
-                zipJobs,
-                message: `上传完成：图片 ${uploadedFiles.length} 个，压缩包 ${zipJobs.length} 个（部分图片可能保存失败）`,
-              });
-              debugLog('node', 'node2DUpload', {
-                stage: 'completed-with-errors',
-                uploadedImages: uploadedFiles.length,
-                zipJobs: zipJobs.length,
-              });
-            }
-            return;
-          }
-
-          const finishOne = () => {
-            uploadedFiles.push(fileInfo);
-            completed++;
-            if (completed === totalIncoming) {
-              res.json({
-                success: true,
-                files: uploadedFiles,
-                zipJobs,
-                message: `上传完成：图片 ${uploadedFiles.length} 个，压缩包 ${zipJobs.length} 个`,
-              });
-              debugLog('node', 'node2DUpload', {
-                stage: 'completed',
-                uploadedImages: uploadedFiles.length,
-                zipJobs: zipJobs.length,
-              });
-            }
-          };
-
-          const afterLink = () => {
-            finalizeUploadedRgb(imageId, fileInfo).then(() => {
-              fileInfo.id = imageId;
-              finishOne();
-            });
-          };
-
-          if (projectIdNum) {
-            db.linkImageToProject(projectIdNum, imageId, (linkErr) => {
-              if (linkErr) console.error('关联图片到项目失败:', linkErr);
-              afterLink();
-            });
-          } else {
-            afterLink();
-          }
+      if (directImageFiles.length > 0) {
+        const jobId = makeJobId();
+        uploadJobs.set(jobId, {
+          id: jobId,
+          status: 'queued',
+          message: '等待入库...',
+          total: directImageFiles.length,
+          processed: 0,
+          files: [],
+          failed: 0,
         });
+
+        imageJobs.push({ jobId });
+
+        setTimeout(() => {
+          void runDirectImagesProcessJob({ jobId, files: directImageFiles, projectId: projectIdNum });
+        }, 50);
+      }
+
+      const message =
+        directImageFiles.length > 0 && zipJobs.length > 0
+          ? `上传完成：图片 ${directImageFiles.length} 个（入库中），压缩包 ${zipJobs.length} 个（解压中）`
+          : directImageFiles.length > 0
+            ? `上传完成：图片 ${directImageFiles.length} 个（入库中）`
+            : `上传完成：压缩包 ${zipJobs.length} 个（解压中）`;
+
+      res.json({
+        success: true,
+        files: [],
+        zipJobs,
+        imageJobs,
+        message,
       });
     } catch (error) {
       console.error('❌ /api/upload 处理失败:', error);

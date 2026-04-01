@@ -1,8 +1,14 @@
+# GPU images reuse dax-cuda-base:12.1 (see Docker/Dockerfile.cuda-base.gpu). Build it once from repo root:
+#   docker build -f Docker/Dockerfile.cuda-base.gpu -t dax-cuda-base:12.1 .
+#
+# pull_policy: never — use locally tagged :local images; do not try docker.io pulls (avoids pointless "Pulling" / hub lookups).
+
 name: dax-autolabeling
 
 services:
   sam2:
     image: ${SAM2_IMAGE:-dax-sam2:local}
+    pull_policy: never
     build:
       context: ..
       dockerfile: Docker/Dockerfile.sam2.gpu
@@ -26,8 +32,52 @@ services:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
 
+  pose:
+    image: ${POSE_IMAGE:-dax-pose:local}
+    pull_policy: never
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile.pose.gpu
+    ports:
+      - "${POSE_HOST_PORT:-7900}:7900"
+    gpus: all
+    environment:
+      DATA_ROOT: /app
+      POSE_SERVICE_PORT: "7900"
+      CUDA_DEVICE_ORDER: ${CUDA_DEVICE_ORDER:-PCI_BUS_ID}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ../dax-autolabel-data/uploads:/app/uploads:rw
+    depends_on:
+      - sam2
+
+  depthrepair:
+    image: ${DEPTHREPAIR_IMAGE:-dax-depthrepair:local}
+    pull_policy: never
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile.depthrepair.gpu
+    ports:
+      - "${DEPTHREPAIR_HOST_PORT:-7870}:7870"
+    gpus: all
+    environment:
+      DATA_ROOT: /app
+      DEPTHREPAIR_PORT: "7870"
+      DEPTHREPAIR_DEVICE: cuda
+      CUDA_DEVICE_ORDER: ${CUDA_DEVICE_ORDER:-PCI_BUS_ID}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ../dax-autolabel-data/uploads:/app/uploads:rw
+    depends_on:
+      - sam2
+
   api:
     image: ${API_IMAGE:-dax-api:local}
+    pull_policy: never
     build:
       context: ..
       dockerfile: Docker/Dockerfile.api
@@ -38,11 +88,16 @@ services:
       PORT: "3001"
       SESSION_SECRET: ${SESSION_SECRET:-CHANGE_ME}
       GROUNDED_SAM2_API_URL: ${GROUNDED_SAM2_API_URL:-http://sam2:7860/api/auto-label}
+      DATA_ROOT: /app
+      POSE_SERVICE_URL: ${POSE_SERVICE_URL:-http://pose:7900}
+      DEPTH_REPAIR_SERVICE_URL: ${DEPTH_REPAIR_SERVICE_URL:-http://depthrepair:7870}
     depends_on:
       - sam2
+      - pose
+      - depthrepair
     volumes:
-      - ./data/uploads:/app/server/uploads:rw
-      - ./data/database:/app/database:rw
+      - ../dax-autolabel-data/uploads:/app/uploads:rw
+      - ../dax-autolabel-data/database:/app/database:rw
     networks:
       default:
         aliases:
@@ -50,6 +105,7 @@ services:
 
   web:
     image: ${WEB_IMAGE:-dax-web:local}
+    pull_policy: never
     build:
       context: ..
       dockerfile: Docker/Dockerfile.web

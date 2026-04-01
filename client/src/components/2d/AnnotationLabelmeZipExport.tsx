@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import JSZip from 'jszip';
-import { annotationApi } from '../../services/api';
+import { annotationApi, imageApi } from '../../services/api';
 import type { AppDispatch } from '../../store';
 import { setLoading } from '../../store/annotationSlice';
 import type { Image, Mask, BoundingBox, Polygon } from '../../types';
@@ -148,10 +148,11 @@ export function buildLabelmeFromInternal(args: {
 export async function buildLabelmeZipBlob(options: {
   images: Image[];
   onProgress?: (completed: number, total: number, current: string) => void;
-}): Promise<Blob> {
+}): Promise<{ blob: Blob; exportedJsonCount: number }> {
   const { images, onProgress } = options;
   const zip = new JSZip();
   const total = images.length;
+  let exportedJsonCount = 0;
 
   for (let i = 0; i < images.length; i++) {
     const image = images[i];
@@ -162,6 +163,11 @@ export async function buildLabelmeZipBlob(options: {
       const resp = await annotationApi.getAnnotation(image.id);
       const anno = resp?.annotation;
       const masks0: Mask[] = anno?.masks || [];
+      // 需求：没有 mask 的图不需要导出 json（直接跳过，不会产生空标注文件）
+      if (!Array.isArray(masks0) || masks0.length === 0) {
+        onProgress?.(i + 1, total, `跳过(无mask): ${label}`);
+        continue;
+      }
       const bboxes0: BoundingBox[] = anno?.boundingBoxes || [];
       const polygons0: Polygon[] = anno?.polygons || [];
 
@@ -175,22 +181,18 @@ export async function buildLabelmeZipBlob(options: {
       const baseName = stripExt(normalizePathBaseName(image.originalName || image.filename || `image_${image.id}`));
       const fileName = `${baseName || `image_${image.id}`}.json`;
       zip.file(fileName, JSON.stringify(labelme, null, 2));
+      exportedJsonCount += 1;
     } catch (e) {
-      console.warn(`[Labelme 导出] 获取图片 ${image.id} 标注失败，将导出空标注:`, e);
-      const labelme = buildLabelmeFromInternal({
-        image,
-        masks: [],
-        boundingBoxes: [],
-        polygons: [],
-      });
-      const baseName = stripExt(normalizePathBaseName(image.originalName || image.filename || `image_${image.id}`));
-      const fileName = `${baseName || `image_${image.id}`}.json`;
-      zip.file(fileName, JSON.stringify(labelme, null, 2));
+      // 标注拉取失败时，默认按“无可导出内容”处理，避免导出空 json
+      console.warn(`[Labelme 导出] 获取图片 ${image.id} 标注失败，将跳过该图:`, e);
+      onProgress?.(i + 1, total, `跳过(标注失败): ${label}`);
+      continue;
     }
     onProgress?.(i + 1, total, `导出: ${label}`);
   }
 
-  return zip.generateAsync({ type: 'blob' });
+  const blob = await zip.generateAsync({ type: 'blob' });
+  return { blob, exportedJsonCount };
 }
 
 function triggerDownload(blob: Blob, filename: string) {
@@ -206,7 +208,6 @@ function triggerDownload(blob: Blob, filename: string) {
 
 export type AnnotationLabelmeZipExportButtonProps = {
   project: { id: number; name: string } | null;
-  images: Image[];
   isAdmin: boolean;
   pageLoading?: boolean;
   setExportProgress: React.Dispatch<React.SetStateAction<LabelmeExportProgressState>>;
@@ -217,7 +218,6 @@ export type AnnotationLabelmeZipExportButtonProps = {
  */
 export const AnnotationLabelmeZipExportButton: React.FC<AnnotationLabelmeZipExportButtonProps> = ({
   project,
-  images,
   pageLoading,
   setExportProgress,
 }) => {
@@ -230,8 +230,11 @@ export const AnnotationLabelmeZipExportButton: React.FC<AnnotationLabelmeZipExpo
       alert('请先选择项目');
       return;
     }
-    if (images.length === 0) {
-      alert('当前没有可导出的图片');
+
+    // 导出需要覆盖全项目图片：当前页面缩略图可能只加载了前几张
+    const allImages = await imageApi.getImages(project.id);
+    if (allImages.length === 0) {
+      alert('当前项目没有可导出的图片');
       return;
     }
 
@@ -239,15 +242,15 @@ export const AnnotationLabelmeZipExportButton: React.FC<AnnotationLabelmeZipExpo
     setExportProgress({
       active: true,
       mode: 'export',
-      total: images.length,
+      total: allImages.length,
       completed: 0,
-      current: `开始导出（共 ${images.length} 张）`,
+      current: `开始导出（共 ${allImages.length} 张）`,
     });
     dispatch(setLoading(true));
 
     try {
-      const blob = await buildLabelmeZipBlob({
-        images,
+      const { blob, exportedJsonCount } = await buildLabelmeZipBlob({
+        images: allImages,
         onProgress: (completed, total, current) => {
           setExportProgress((prev) => ({
             ...prev,
@@ -259,8 +262,13 @@ export const AnnotationLabelmeZipExportButton: React.FC<AnnotationLabelmeZipExpo
       });
       const day = new Date().toISOString().split('T')[0];
       const safeName = String(project.name || `project_${project.id}`).replace(/[^\w\u4e00-\u9fff-]+/g, '_');
+      if (exportedJsonCount === 0) {
+        alert('当前没有可导出的图片：无 mask 标注。');
+        return;
+      }
+
       triggerDownload(blob, `labelme_${safeName}_project_${project.id}_${day}.zip`);
-      alert(`Labelme ZIP 导出成功！\n\n共导出 ${images.length} 个 JSON（每图一个）`);
+      alert(`Labelme ZIP 导出成功！\n\n共导出 ${exportedJsonCount} 个 JSON（每图一个）`);
     } catch (error: unknown) {
       console.error('导出标注数据失败:', error);
       const msg = error instanceof Error ? error.message : '未知错误';
@@ -272,14 +280,14 @@ export const AnnotationLabelmeZipExportButton: React.FC<AnnotationLabelmeZipExpo
         setExportProgress((prev) => ({ ...prev, active: false, mode: null, current: '' }));
       }, 1200);
     }
-  }, [dispatch, images, project, setExportProgress]);
+  }, [dispatch, project, setExportProgress]);
 
   return (
     <button
       type="button"
       className="ai-annotation-btn export-btn"
       onClick={handleExport}
-      disabled={!project || images.length === 0 || !!pageLoading || exporting}
+      disabled={!project || !!pageLoading || exporting}
       title={'导出为 Labelme 兼容 ZIP（每图一个 JSON）'}
     >
       {exporting ? '导出中…' : '📥 导出标注数据'}

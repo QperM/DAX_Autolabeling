@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { buildRgbStoredBasename } = require('../../utils/rgbImageFilename');
+const { buildProjUuidStoredBasename } = require('../../utils/storedUploadFilename');
 
 // 兼容 image-size 不同导出形式（v2+ 通常是 { imageSize }）
 const imageSizeModule = require('image-size');
@@ -40,8 +40,8 @@ function makeImagesRepo(db) {
       });
     },
 
-    /** 将临时落盘文件重命名为 rgb_img{id}_… 并回写 filename / file_path */
-    finalizeRgbImageStorage: (imageId, originalDisplayName, currentAbsPath, callback) => {
+    /** 将临时落盘文件重命名为 proj_{projectId}_{uuid}.ext 并回写 filename / file_path */
+    finalizeRgbImageStorage: (imageId, projectId, originalDisplayName, currentAbsPath, callback) => {
       const id = Number(imageId);
       if (!Number.isFinite(id) || id <= 0) {
         return callback(new Error('finalizeRgbImageStorage: invalid imageId'));
@@ -50,7 +50,7 @@ function makeImagesRepo(db) {
       if (!cur || !fs.existsSync(cur)) {
         return callback(new Error('finalizeRgbImageStorage: file missing'));
       }
-      const finalName = buildRgbStoredBasename(id, originalDisplayName, cur);
+      const finalName = buildProjUuidStoredBasename(projectId, originalDisplayName, cur);
       const dir = path.dirname(cur);
       const newAbsPath = path.join(dir, finalName);
 
@@ -79,24 +79,36 @@ function makeImagesRepo(db) {
       );
     },
 
-    getAllImages: (callback) => {
+    getAllImages: (callback, { offset = 0, limit = null } = {}) => {
+      const hasLimit = limit != null && Number.isFinite(Number(limit));
+      const lim = hasLimit ? Number(limit) : null;
+      const off = Number.isFinite(Number(offset)) ? Number(offset) : 0;
+
       const sql = `
         SELECT id, filename, original_name, file_path, file_size, width, height, upload_time
         FROM images
         ORDER BY upload_time DESC
+        ${hasLimit ? 'LIMIT ? OFFSET ?' : ''}
       `;
-      db.all(sql, [], callback);
+      const params = hasLimit ? [lim, off] : [];
+      db.all(sql, params, callback);
     },
 
-    getImagesByProjectId: (projectId, callback) => {
+    getImagesByProjectId: (projectId, callback, { offset = 0, limit = null } = {}) => {
+      const hasLimit = limit != null && Number.isFinite(Number(limit));
+      const lim = hasLimit ? Number(limit) : null;
+      const off = Number.isFinite(Number(offset)) ? Number(offset) : 0;
+
       const sql = `
         SELECT i.id, i.filename, i.original_name, i.file_path, i.file_size, i.width, i.height, i.upload_time
         FROM images i
         INNER JOIN project_images pi ON pi.image_id = i.id
         WHERE pi.project_id = ?
         ORDER BY i.upload_time DESC
+        ${hasLimit ? 'LIMIT ? OFFSET ?' : ''}
       `;
-      db.all(sql, [projectId], callback);
+      const params = hasLimit ? [projectId, lim, off] : [projectId];
+      db.all(sql, params, callback);
     },
 
     getImageById: (id, callback) => {

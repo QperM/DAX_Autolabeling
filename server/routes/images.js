@@ -8,6 +8,8 @@ function registerImageRoutes(app, { db, buildImageUrl, projectSessionGuard }) {
   router.get('/', async (req, res) => {
     try {
       const { projectId } = req.query;
+      const offset = req.query?.offset;
+      const limit = req.query?.limit;
 
       if (projectId) {
         const sessionId = req.sessionID;
@@ -60,8 +62,14 @@ function registerImageRoutes(app, { db, buildImageUrl, projectSessionGuard }) {
         return res.json({ success: true, images: formattedImages });
       };
 
-      if (projectId) db.getImagesByProjectId(projectId, handleResult);
-      else db.getAllImages(handleResult);
+      if (projectId) {
+        db.getImagesByProjectId(projectId, handleResult, {
+          offset,
+          limit,
+        });
+      } else {
+        db.getAllImages(handleResult, { offset, limit });
+      }
     } catch (error) {
       return res.status(500).json({
         success: false,

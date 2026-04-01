@@ -1,6 +1,17 @@
+# ---------------------------------------------------------------------------
+# 仅作用于 Docker/ 目录；与仓库根 .gitignore 叠加。
+# ---------------------------------------------------------------------------
+
+# 预下载的 Python wheel（本地用 Docker/prefetch_torch_wheels.ps1 生成；勿提交/勿上传远端）
+wheels/*
+!wheels/.gitkeep
+
 # local test artifacts (do not commit)
 data/
-sam2-assets/
+
+# SAM2 运行时资源：大文件/GBK 权重放本地；需入库的配置见已跟踪的 sam2-assets 子路径
+sam2-assets/checkpoints/*
+!sam2-assets/checkpoints/.gitkeep
 
 # Large local artifacts / images (do not commit)
 *.tar

@@ -3,6 +3,7 @@ import React from 'react';
 type DepthItem = {
   id: number | null;
   filename: string;
+  originalName?: string | null;
   url: string;
   role?: string;
   modality?: string;
@@ -24,6 +25,7 @@ type CameraItem = {
   role: string;
   intrinsics: any;
   intrinsicsFileSize?: number | null;
+  intrinsicsOriginalName?: string | null;
   updatedAt?: string | null;
 };
 
@@ -89,6 +91,9 @@ const PoseDepthInspectorPanel: React.FC<Props> = ({
             <div className="pose-depth-inspector">
               <div className="pose-depth-inspector-meta">
                 <div><strong>Role:</strong> {selectedCamera.role || '-'}</div>
+                <div>
+                  <strong>原始文件名:</strong> {selectedCamera.intrinsicsOriginalName || `intrinsics_${selectedCamera.role}.json`}
+                </div>
                 <div><strong>更新时间:</strong> {fmtDate(selectedCamera.updatedAt)}</div>
                 <div><strong>文件大小:</strong> {prettyBytes(selectedCamera.intrinsicsFileSize)}</div>
               </div>
@@ -137,6 +142,12 @@ const PoseDepthInspectorPanel: React.FC<Props> = ({
               <div><strong>图片:</strong> {selectedDepth.imageId == null ? '未绑定图片' : (selectedImageName || `image#${selectedDepth.imageId}`)}</div>
               <div><strong>RGB原文件名:</strong> {selectedDepth.imageId == null ? '-' : (selectedRgbOriginalName || (selectedImageName || `image#${selectedDepth.imageId}`))}</div>
               <div><strong>Role:</strong> {selectedDepth.role || '-'}</div>
+              <div>
+                <strong>原始文件名:</strong> {selectedDepth.originalName || '-'}
+              </div>
+              <div>
+                <strong>磁盘文件名:</strong> {selectedDepth.filename || '-'}
+              </div>
               <div><strong>更新时间:</strong> {fmtDate(selectedDepth.uploadTime)}</div>
             </div>
             <div className="pose-depth-inspector-note">

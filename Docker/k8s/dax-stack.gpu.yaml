@@ -115,6 +115,148 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  name: dax-pose
+  namespace: dax-autolabeling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dax-pose
+  template:
+    metadata:
+      labels:
+        app: dax-pose
+    spec:
+      containers:
+        - name: pose
+          # TODO: replace with your pushed image
+          image: registry.daxrobotics.cn/auto-labeling-tool/dax-pose:<tag>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 7900
+          env:
+            - name: DATA_ROOT
+              value: "/app"
+            - name: POSE_SERVICE_PORT
+              value: "7900"
+            - name: CUDA_DEVICE_ORDER
+              value: PCI_BUS_ID
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 7900
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 7900
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+            limits:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: dax-uploads-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dax-pose
+  namespace: dax-autolabeling
+spec:
+  selector:
+    app: dax-pose
+  ports:
+    - name: http
+      port: 7900
+      targetPort: 7900
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dax-depthrepair
+  namespace: dax-autolabeling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dax-depthrepair
+  template:
+    metadata:
+      labels:
+        app: dax-depthrepair
+    spec:
+      containers:
+        - name: depthrepair
+          # TODO: replace with your pushed image
+          image: registry.daxrobotics.cn/auto-labeling-tool/dax-depthrepair:<tag>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 7870
+          env:
+            - name: DATA_ROOT
+              value: "/app"
+            - name: DEPTHREPAIR_PORT
+              value: "7870"
+            - name: DEPTHREPAIR_DEVICE
+              value: "cuda"
+            - name: CUDA_DEVICE_ORDER
+              value: PCI_BUS_ID
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 7870
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 7870
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+            limits:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: dax-uploads-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dax-depthrepair
+  namespace: dax-autolabeling
+spec:
+  selector:
+    app: dax-depthrepair
+  ports:
+    - name: http
+      port: 7870
+      targetPort: 7870
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
   name: dax-api
   namespace: dax-autolabeling
 spec:
@@ -139,6 +281,8 @@ spec:
               value: "production"
             - name: PORT
               value: "3001"
+            - name: DATA_ROOT
+              value: "/app"
             - name: SESSION_SECRET
               valueFrom:
                 secretKeyRef:
@@ -146,9 +290,13 @@ spec:
                   key: sessionSecret
             - name: GROUNDED_SAM2_API_URL
               value: "http://dax-sam2:7860/api/auto-label"
+            - name: POSE_SERVICE_URL
+              value: "http://dax-pose:7900"
+            - name: DEPTH_REPAIR_SERVICE_URL
+              value: "http://dax-depthrepair:7870"
           volumeMounts:
             - name: uploads
-              mountPath: /app/server/uploads
+              mountPath: /app/uploads
             - name: sqlite
               mountPath: /app/database
           readinessProbe:

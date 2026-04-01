@@ -11,10 +11,11 @@ COPY --from=deps /app/server/node_modules /app/server/node_modules
 COPY server /app/server
 
 # Ensure runtime directories exist (mounted as PVC in K8s)
-RUN mkdir -p /app/database /app/server/uploads
+RUN mkdir -p /app/database /app/uploads
 
 ENV NODE_ENV=production
 ENV PORT=3001
+ENV DATA_ROOT=/app
 
 EXPOSE 3001
 

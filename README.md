@@ -1,7 +1,7 @@
 # 智能图像标注系统
 
-**版本：V2.9**  
-**最后更新：2026年3月27日**
+**版本：V3.0**  
+**最后更新：2026年4月1日**
 
 ## 项目概述
 
@@ -32,6 +32,7 @@
 - ✅ ZIP 压缩包批量上传：自动解压导入多张图片
 - ✅ ZIP 解压进度条：上传后显示"上传进度 + 解压进度"，解压完成自动进入"已上传图片"
 - ✅ 图片按项目分类管理
+- ✅ **图片列表分页加载**：`GET /api/images` 支持 `offset` + `limit`；进入项目或上传完成后先加载首页数据，底部缩略图滚动至末尾时按需追加下一页，避免一次性拉取全量图片造成卡顿
 - ✅ 已加载图片缩略图网格展示
 - ✅ 图片预览和选择功能
 - ✅ 图片删除功能（数据库和物理文件同步删除）
@@ -52,7 +53,7 @@
 - ✅ 3D 预览：基于 Three.js 的交互预览（OrbitControls、光照/网格、自动居中与缩放）
 - ✅ Mesh 缩略图：列表中静态截图预览（自动取景 + 可调视角偏移/拉远）
 - ✅ **Mesh 上传器优化**：拆分为 Mesh 和 Depth 两个独立上传模块，不同背景色区分
-- ✅ **Mesh Label 对照表**（`MeshLabelMappingModal`）：为每个 Mesh 绑定与 2D Mask 一致的 SKU/Label；选项来自项目级 `labelColorMap`（与 2D「Mask Label 对照表」同源），**仅从列表选择、不可手输**，下拉项带颜色色块；进入 Pose 项目后即加载 Mesh 列表，无需先切换到 Mesh 缩略图标签
+- ✅ **Mesh Label 对照表**（`MeshLabelMappingModal`）：为每个 Mesh 绑定与 2D Mask 一致的 SKU/Label；选项来自项目级对照表数据（与 2D「Mask Label 对照表」同源，后端 `project_label_colors` 持久化），**仅从列表选择、不可手输**，下拉项带颜色色块；进入 Pose 项目后即加载 Mesh 列表，无需先切换到 Mesh 缩略图标签
 - ✅ **Pose 页导出**：`📥 导出标注数据` 导出 6D Pose 等为 ZIP（见按钮说明）
 - ✅ **Diff-DOPE 6D 姿态接入（单 Mesh / 批量）**：
   - Pose 入口页支持单图触发 `AI 6D姿态标注`
@@ -74,6 +75,7 @@
   - 支持一键清除本图内所有 6D/9D 姿态标注：删除 `diffdope_json` 与 `initial_pose_json`，并同步回到未标注渲染状态（“清除本图 6D 标注”按钮）
 
 #### 3. 标注工作界面
+- ✅ **人工标注 UI 与交互**：2D / 9D 工作区在画布、工具栏、底部资源条与全局提示（`AppAlert`）等细节上统一体验；样式由共享样式与页面级 CSS 分层维护，减少模块间视觉不一致
 - ✅ 实时图像预览窗口
 - ✅ 专业标注工具栏
 - ✅ 标注画布区域
@@ -100,6 +102,7 @@
   - 下拉框背景色动态显示当前选中标签的颜色
   - 选项列表按最近使用顺序排序，最近使用的标签优先显示
   - 项目级标签-颜色映射自动同步，导入数据后立即显示所有标签
+- ✅ **Mask / Label 对照表数据库化**：映射持久化到 SQLite 表 `project_label_colors`（`label_key`、`label`、可选 `label_zh`、颜色、`usage_order` 等），REST API 与前端 `ColorLabelMappingManager` 同步；旧库启动时自动补齐缺失列
 - ✅ **颜色扩展**：标签颜色调色板从 8 种扩展到 30 种，支持更多标签的区分
 - ✅ 自动保存：切换图片前可选自动保存当前标注（默认开启）
 - ✅ 图片导航：头部按钮与键盘左右方向键切换图片
@@ -116,6 +119,7 @@
 - ✅ 项目数据管理（projects表）
 - ✅ 图片元数据管理（images表，自增ID）
 - ✅ 项目-图片关联表（project_images表）
+- ✅ 项目级标签颜色映射（`project_label_colors` 表，与前端「Mask Label 对照表」对应）
 - ✅ 标注数据持久化（annotations表）
 - ✅ 外键约束和级联删除
 - ✅ RESTful API接口
@@ -123,7 +127,7 @@
 #### 3. API接口
 - ✅ 项目管理API（CRUD操作）
 - ✅ 图片上传API（支持项目关联）
-- ✅ 图片查询API（支持按项目筛选）
+- ✅ 图片查询API（支持按项目筛选；可选 `offset`、`limit` 分页）
 - ✅ 图片删除API（同步删除数据库和文件）
 - ✅ 标注数据API（保存、查询、更新）
 - ✅ AI 自动标注参数透传：前端滑杆（按项目保存）→ Node → Python 服务（真实生效）
@@ -415,6 +419,7 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 
 ## 更新记录
 
+- **V3.0**：人工标注 UI/交互与共享样式整理；图片列表改为服务端分页 + 前端按需追加加载；「Mask / Label 对照表」以 `project_label_colors` 表持久化并与 API 同步（见上文功能说明）。
 - **V2.8**：补充项目会话独占（`project-session`）与调试信息管理（Debug Settings）文档；新增 Depth Repair 批量补全与 `depthrepair-service` 说明；目录结构同步 `2D*` 组件命名与新启动脚本。
 - **V2.7**：`.gitignore` 对齐 Python/pose-service 产物与本地目录；README/UPDATES 补充 **合成拟合图层** 与 pose-service 接口说明。
 - **V2.6**：文档与仓库目录对齐（`components/2d|9d|common`）；补充 Pose 页 **Mesh Label 对照表**、ZIP 导出与 Mesh 列表加载等行为说明。

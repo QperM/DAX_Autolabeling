@@ -2,11 +2,13 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const multer = require('multer');
 const axios = require('axios');
 const { getUploadsRootDir } = require('../utils/dataPaths');
 const { debugLog } = require('../utils/debugSettingsStore');
+const { buildProjUuidStoredBasename } = require('../utils/storedUploadFilename');
 const AdmZip = require('adm-zip');
 const { path7za } = require('7zip-bin');
 
@@ -21,10 +23,8 @@ function createDepthUpload() {
     },
     filename: (req, file, cb) => {
       const original = String(file.originalname || 'depth.dat');
-      const ext = (path.extname(original) || '').toLowerCase();
-      const base = path.basename(original, ext || undefined).replace(/[^\w.\-() ]+/g, '_');
-      // Deterministic filename: do not append timestamp/random suffix.
-      cb(null, `${base}${ext || ''}`);
+      const ext = (path.extname(original) || '').toLowerCase() || '.bin';
+      cb(null, `__depth_stg_${crypto.randomUUID()}${ext}`);
     },
   });
 
@@ -231,21 +231,6 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
     return expanded;
   }
 
-  const extractImageSequenceToken = (img) => {
-    const candidates = [
-      img?.original_name,
-      img?.filename,
-      img?.file_path ? path.basename(String(img.file_path)) : null,
-    ].filter(Boolean);
-    for (const raw of candidates) {
-      const noExt = path.basename(String(raw), path.extname(String(raw)));
-      // Keep the right-most numeric token as-is (preserve zero-padding, e.g. 012)
-      const m = noExt.match(/(\d+)(?!.*\d)/);
-      if (m?.[1]) return m[1];
-    }
-    return String(Number(img?.id || 0) || 0);
-  };
-
   // 上传深度图 / 深度原始数据 / intrinsics_*.json
   router.post('/upload', depthUpload.array('depthFiles', 2000), async (req, res) => {
     try {
@@ -385,8 +370,9 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
       }
 
       for (const f of intrFiles) {
-        // move to project depth dir
-        const finalPath = path.join(projectDepthDir, f.filename);
+        const storedBase = buildProjUuidStoredBasename(projectId, f.originalname, f.path);
+        const finalPath = path.join(projectDepthDir, storedBase);
+        const originalUploadName = String(f.originalname || '').replace(/\\/g, '/') || storedBase;
         try {
           if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
           fs.renameSync(f.path, finalPath);
@@ -434,6 +420,7 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
                 intrinsicsJson: intrinsicsObj,
                 intrinsicsFilePath: finalPath,
                 intrinsicsFileSize: f.size,
+                intrinsicsOriginalName: path.basename(originalUploadName),
               },
               (err, id) => {
                 if (err) return reject(err);
@@ -451,7 +438,8 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
 
           files.push({
             id: null,
-            filename: f.filename,
+            filename: storedBase,
+            originalName: originalUploadName,
             size: f.size,
             url,
             role,
@@ -500,8 +488,9 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
       }
 
       for (const f of depthFiles) {
-        // move to project depth dir
-        const finalPath = path.join(projectDepthDir, f.filename);
+        const storedBase = buildProjUuidStoredBasename(projectId, f.originalname, f.path);
+        const finalPath = path.join(projectDepthDir, storedBase);
+        const originalUploadName = String(f.originalname || '').replace(/\\/g, '/') || storedBase;
         try {
           if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
           fs.renameSync(f.path, finalPath);
@@ -531,7 +520,7 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
         debugLog('node', 'nodeDepthMatch', {
           projectId,
           clientOriginalName: f.originalname,
-          filename: f.filename,
+          filename: storedBase,
           inferredRole: inferRoleFromFilename(f.originalname),
           finalRole: role || null,
           matchedCameraId: cameraId || null,
@@ -544,7 +533,8 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
           cameraId: cameraId || null,
           role,
           modality,
-          filename: f.filename,
+          filename: storedBase,
+          originalName: originalUploadName,
           path: finalPath,
           size: f.size,
           uploadTime: new Date().toISOString(),
@@ -559,7 +549,8 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
 
         files.push({
           id: depthId,
-          filename: f.filename,
+          filename: storedBase,
+          originalName: originalUploadName,
           size: f.size,
           url,
           role,
@@ -606,6 +597,7 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
           role: row.role,
           modality: row.modality,
           filename: row.filename,
+          originalName: row.original_name || null,
           size: row.file_size,
           uploadTime: row.upload_time,
           url: buildImageUrl(row.file_path, row.filename),
@@ -661,18 +653,25 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
         const depthOut = formatRows(rows);
         const intrOut = (cameras || [])
           .filter((c) => c?.intrinsics_file_path)
-          .map((c) => ({
-            id: null,
-            projectId: c.project_id,
-            imageId: imageId && !Number.isNaN(imageId) ? imageId : null,
-            cameraId: c.id,
-            role: c.role,
-            modality: 'intrinsics',
-            filename: path.basename(String(c.intrinsics_file_path || 'intrinsics.json')),
-            size: c.intrinsics_file_size || null,
-            uploadTime: c.updated_at || null,
-            url: buildImageUrl(c.intrinsics_file_path, path.basename(String(c.intrinsics_file_path || 'intrinsics.json'))),
-          }));
+          .map((c) => {
+            const diskBase = path.basename(String(c.intrinsics_file_path || 'intrinsics.json'));
+            const displayName =
+              c.intrinsics_original_name ||
+              (c.role ? `intrinsics_${String(c.role).trim()}.json` : diskBase);
+            return {
+              id: null,
+              projectId: c.project_id,
+              imageId: imageId && !Number.isNaN(imageId) ? imageId : null,
+              cameraId: c.id,
+              role: c.role,
+              modality: 'intrinsics',
+              filename: displayName,
+              originalName: c.intrinsics_original_name || displayName,
+              size: c.intrinsics_file_size || null,
+              uploadTime: c.updated_at || null,
+              url: buildImageUrl(c.intrinsics_file_path, diskBase),
+            };
+          });
 
         return res.json({ success: true, depth: [...intrOut, ...depthOut] });
       };
@@ -787,10 +786,10 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
               continue;
             }
 
-            const safeRole = String(role || 'head').replace(/[^\w\-]/g, '_');
-            const imageSeqToken = extractImageSequenceToken(img);
-            const depthRawFixPath = path.join(projectDepthDir, `depth_raw_fix_${safeRole}_${imageSeqToken}.npy`);
-            const depthPngFixPath = path.join(projectDepthDir, `depth_fix_${safeRole}_${imageSeqToken}.png`);
+            // 与上传深度/内参一致：proj_{projectId}_{uuid}.npy / 同 uuid 的 .png，成对落盘便于对应
+            const fixStem = `proj_${projectId}_${crypto.randomUUID()}`;
+            const depthRawFixPath = path.join(projectDepthDir, `${fixStem}.npy`);
+            const depthPngFixPath = path.join(projectDepthDir, `${fixStem}.png`);
 
             try {
               debugLog('node', 'nodeDepthRepairRequest', {
@@ -986,6 +985,7 @@ function registerDepthRoutes(app, { db, normalizeDepthKey, inferRoleFromFilename
             role: r.role,
             intrinsics,
             intrinsicsFileSize: r.intrinsics_file_size,
+            intrinsicsOriginalName: r.intrinsics_original_name || null,
             updatedAt: r.updated_at,
           };
         });

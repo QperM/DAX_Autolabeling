@@ -1,7 +1,8 @@
 fastapi
 uvicorn[standard]
 pydantic
-numpy
+# Diff-DOPE / pyrr / trimesh expect NumPy 1.x API (ndarray.ptp, np.product). NumPy 2.x is not patchable from Python.
+numpy>=1.24.4,<2.0.0
 opencv-python
 pillow
 scipy
@@ -16,6 +17,7 @@ pyrr
 tqdm
 torch
 trimesh[easy]==3.21.5
-# Diff-DOPE differentiable rasterizer (requires CUDA toolchain / compatible torch build)
-nvdiffrast@git+https://github.com/NVlabs/nvdiffrast.git
+# Diff-DOPE differentiable rasterizer (requires CUDA toolchain / compatible torch build).
+# Vendored next to this file: ./nvdiffrast (same path Docker uses).
+./nvdiffrast
 

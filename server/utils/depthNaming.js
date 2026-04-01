@@ -7,7 +7,7 @@ function normalizeDepthKey(name) {
   const base = String(name).replace(/\\/g, '/').split('/').pop() || String(name);
   let noExt = base.replace(/\.[^.]+$/, '');
   noExt = noExt.replace(/^(depth_raw_|depth_|intrinsics_|rgb_)+/i, '');
-  // rgb_img{数字}_ 为 RGB 入库后的固定前缀，去掉后保留「原名主干」以便与 depth_同名主干 对齐
+  // 历史：rgb_img{id}_ 前缀。当前 RGB 落盘为 proj_{pid}_{uuid}.ext，配对依赖 images.original_name。
   noExt = noExt.replace(/^img\d+_/i, '');
   return noExt;
 }

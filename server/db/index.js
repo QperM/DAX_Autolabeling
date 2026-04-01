@@ -19,21 +19,33 @@ db.on('trace', () => {}); // keep sqlite3 loaded; no-op
 // Ensure schema initialization finishes before the server starts accepting requests.
 // We do it by enqueueing a "marker" statement at the end of the serialize queue.
 const ready = new Promise((resolve, reject) => {
+  // 必须在本回调内同步排队所有语句；若在 db.run 的异步回调里再 queue，serialize 已结束，语句会并行，
+  // 易出现「DELETE project_access 早于 CREATE」「引用 meshes 时尚未建表」等竞态。
   db.serialize(() => {
+    // Improve sqlite concurrency/lock behavior under load.
+    // WAL allows concurrent reads while writes are happening.
+    db.run('PRAGMA journal_mode = WAL', (pragmaErr) => {
+      if (pragmaErr) console.error('启用 WAL 失败:', pragmaErr.message);
+    });
+    db.run('PRAGMA synchronous = NORMAL', (pragmaErr) => {
+      if (pragmaErr) console.error('设置 synchronous 失败:', pragmaErr.message);
+    });
+    db.run('PRAGMA busy_timeout = 5000', (pragmaErr) => {
+      if (pragmaErr) console.error('设置 busy_timeout 失败:', pragmaErr.message);
+    });
     db.run('PRAGMA foreign_keys = ON', (pragmaErr) => {
       if (pragmaErr) console.error('启用外键约束失败:', pragmaErr.message);
-      try {
-        initializeSchema(db);
-      } catch (e) {
-        return reject(e);
-      }
-
-      // Marker: this runs after all schema statements queued by initializeSchema() complete.
-      db.all('SELECT 1 as ok', (err) => {
-        if (err) return reject(err);
-        console.log('[DB] schema initialization finished');
-        resolve(true);
-      });
+    });
+    try {
+      initializeSchema(db);
+    } catch (e) {
+      reject(e);
+      return;
+    }
+    db.all('SELECT 1 as ok', (err) => {
+      if (err) return reject(err);
+      console.log('[DB] schema initialization finished');
+      resolve(true);
     });
   });
 });

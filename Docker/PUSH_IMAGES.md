@@ -15,6 +15,8 @@ docker login registry.daxrobotics.cn
 docker tag dax-web:local registry.daxrobotics.cn/auto-labeling-tool/dax-web:v1.0.1
 docker tag dax-api:local registry.daxrobotics.cn/auto-labeling-tool/dax-api:v1.0.1
 docker tag dax-sam2:local registry.daxrobotics.cn/auto-labeling-tool/dax-sam2:v1.0.1
+docker tag dax-pose:local registry.daxrobotics.cn/auto-labeling-tool/dax-pose:v1.0.1
+docker tag dax-depthrepair:local registry.daxrobotics.cn/auto-labeling-tool/dax-depthrepair:v1.0.1
 ```
 
 ### 3. 推送镜像（先推小的，最后推大的）
@@ -22,6 +24,8 @@ docker tag dax-sam2:local registry.daxrobotics.cn/auto-labeling-tool/dax-sam2:v1
 docker push registry.daxrobotics.cn/auto-labeling-tool/dax-web:v1.0.1
 docker push registry.daxrobotics.cn/auto-labeling-tool/dax-api:v1.0.1
 docker push registry.daxrobotics.cn/auto-labeling-tool/dax-sam2:v1.0.1
+docker push registry.daxrobotics.cn/auto-labeling-tool/dax-pose:v1.0.1
+docker push registry.daxrobotics.cn/auto-labeling-tool/dax-depthrepair:v1.0.1
 ```
 
 ## 注意事项
@@ -37,7 +41,11 @@ docker login registry.daxrobotics.cn
 docker tag dax-web:local registry.daxrobotics.cn/auto-labeling-tool/dax-web:v1.0.1
 docker tag dax-api:local registry.daxrobotics.cn/auto-labeling-tool/dax-api:v1.0.1
 docker tag dax-sam2:local registry.daxrobotics.cn/auto-labeling-tool/dax-sam2:v1.0.1
+docker tag dax-pose:local registry.daxrobotics.cn/auto-labeling-tool/dax-pose:v1.0.1
+docker tag dax-depthrepair:local registry.daxrobotics.cn/auto-labeling-tool/dax-depthrepair:v1.0.1
 docker push registry.daxrobotics.cn/auto-labeling-tool/dax-web:v1.0.1
 docker push registry.daxrobotics.cn/auto-labeling-tool/dax-api:v1.0.1
 docker push registry.daxrobotics.cn/auto-labeling-tool/dax-sam2:v1.0.1
+docker push registry.daxrobotics.cn/auto-labeling-tool/dax-pose:v1.0.1
+docker push registry.daxrobotics.cn/auto-labeling-tool/dax-depthrepair:v1.0.1
 ```

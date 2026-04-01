@@ -1,0 +1,31 @@
+# Depth Repair Service (GPU)
+# - Base: dax-cuda-base (CUDA toolkit + torch/vision/audio); add xformers stack + app
+# - Exposes 7870
+#
+# Prerequisite:
+#   docker build -f Docker/Dockerfile.cuda-base.gpu -t dax-cuda-base:12.1 .
+#
+# Build:
+#   docker build -f Docker/Dockerfile.depthrepair.gpu -t <registry>/<repo>/dax-depthrepair:<tag> .
+
+ARG BASE_IMAGE=dax-cuda-base:12.1
+FROM ${BASE_IMAGE} AS runner
+
+WORKDIR /app
+
+COPY server/depthrepair-service/requirements.txt /app/requirements.txt
+
+# torch* already in base (includes torchaudio; safe to omit from requirements here).
+RUN sed '/^torch[=[:space:]]*.*$/d;/^torchvision[=[:space:]]*.*$/d' /app/requirements.txt > /app/requirements.no_torch.txt
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+  pip3 install --no-cache-dir --timeout ${PIP_DEFAULT_TIMEOUT} --retries ${PIP_RETRIES} -r /app/requirements.no_torch.txt
+
+COPY server/depthrepair-service /app/depthrepair-service
+
+ENV DATA_ROOT=/app
+ENV DEPTHREPAIR_PORT=7870
+ENV DEPTHREPAIR_DEVICE=cuda
+
+EXPOSE 7870
+CMD ["python3", "/app/depthrepair-service/app.py"]

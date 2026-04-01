@@ -9,6 +9,8 @@ function makeCamerasRepo(db) {
           : (typeof cameraData.intrinsicsJson === 'string' ? cameraData.intrinsicsJson : JSON.stringify(cameraData.intrinsicsJson || {}));
       const intrinsicsFilePath = cameraData.intrinsicsFilePath || null;
       const intrinsicsFileSize = cameraData.intrinsicsFileSize || null;
+      const intrinsicsOriginalName =
+        cameraData.intrinsicsOriginalName == null ? null : String(cameraData.intrinsicsOriginalName);
 
       if (!projectId || Number.isNaN(projectId)) return callback(new Error('projectId 非法'), null);
       if (!role) return callback(new Error('role 不能为空'), null);
@@ -18,18 +20,20 @@ function makeCamerasRepo(db) {
           project_id, role,
           intrinsics_json,
           intrinsics_file_path, intrinsics_file_size,
+          intrinsics_original_name,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(project_id, role) DO UPDATE SET
           intrinsics_json = excluded.intrinsics_json,
           intrinsics_file_path = excluded.intrinsics_file_path,
           intrinsics_file_size = excluded.intrinsics_file_size,
+          intrinsics_original_name = excluded.intrinsics_original_name,
           updated_at = CURRENT_TIMESTAMP
       `;
       db.run(
         sql,
-        [projectId, role, intrinsicsJson, intrinsicsFilePath, intrinsicsFileSize],
+        [projectId, role, intrinsicsJson, intrinsicsFilePath, intrinsicsFileSize, intrinsicsOriginalName],
         function (err) {
           if (err) return callback(err, null);
           // sqlite3: lastID on insert; on update it can be stale, so re-select id
@@ -50,7 +54,7 @@ function makeCamerasRepo(db) {
       const r = String(role || '').trim().toLowerCase();
       const sql = `
         SELECT id, project_id, role, intrinsics_json, intrinsics_file_path, intrinsics_file_size,
-               created_at, updated_at
+               intrinsics_original_name, created_at, updated_at
         FROM cameras
         WHERE project_id = ? AND role = ?
         LIMIT 1
@@ -65,7 +69,7 @@ function makeCamerasRepo(db) {
       const pid = Number(projectId);
       const sql = `
         SELECT id, project_id, role, intrinsics_json, intrinsics_file_path, intrinsics_file_size,
-               created_at, updated_at
+               intrinsics_original_name, created_at, updated_at
         FROM cameras
         WHERE project_id = ?
         ORDER BY role ASC, updated_at DESC
@@ -77,7 +81,7 @@ function makeCamerasRepo(db) {
       const cid = Number(cameraId);
       const sql = `
         SELECT id, project_id, role, intrinsics_json, intrinsics_file_path, intrinsics_file_size,
-               created_at, updated_at
+               intrinsics_original_name, created_at, updated_at
         FROM cameras
         WHERE id = ?
         LIMIT 1

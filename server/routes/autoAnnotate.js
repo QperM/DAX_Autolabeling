@@ -51,15 +51,47 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
 
     if (!image) throw new Error(`未找到ID为 ${imgId} 的图片`);
 
+    // 1) 优先使用数据库中的 file_path（历史上可能是宿主机绝对路径）
     let imagePath = image.file_path;
     const imageUrlPath = buildImageUrl(image.file_path, image.filename);
     const imageUrl = `http://localhost:3001${imageUrlPath}`;
 
     if (!fs.existsSync(imagePath)) {
-      const uploadDir = getUploadsRootDir();
-      const alternativePath = path.join(uploadDir, image.filename);
-      if (fs.existsSync(alternativePath)) imagePath = alternativePath;
-      else throw new Error(`图片文件路径不存在: ${image.file_path}`);
+      const uploadDir = getUploadsRootDir(); // e.g. /app/uploads inside container
+
+      // 2) 根据对外 URL 反推容器内真实路径：
+      //    /uploads/project_2/images/xxx.png -> /app/uploads/project_2/images/xxx.png
+      let triedPaths = [imagePath];
+      let altFromUrl = null;
+      if (imageUrlPath && typeof imageUrlPath === 'string') {
+        const normalizedUrlPath = String(imageUrlPath).replace(/\\/g, '/');
+        const stripped = normalizedUrlPath.replace(/^\/+uploads\/+/i, '');
+        if (stripped) {
+          altFromUrl = path.join(uploadDir, stripped);
+          triedPaths.push(altFromUrl);
+        }
+      }
+
+      // 3) 兼容历史绝对路径：从旧路径中截取 project_X/... 后缀
+      let altFromLegacy = null;
+      if (!altFromUrl || !fs.existsSync(altFromUrl)) {
+        const normalizedFilePath = String(image.file_path || '').replace(/\\/g, '/');
+        const markerIdx = normalizedFilePath.search(/\/project_\d+\//i);
+        if (markerIdx >= 0) {
+          const rel = normalizedFilePath.slice(markerIdx + 1); // 去掉前导 '/'
+          altFromLegacy = path.join(uploadDir, rel.replace(/^\/*/, ''));
+          triedPaths.push(altFromLegacy);
+        }
+      }
+
+      const candidates = [altFromUrl, altFromLegacy].filter(Boolean);
+      const existing = candidates.find((p) => p && fs.existsSync(p));
+      if (existing) {
+        imagePath = existing;
+      } else {
+        const msg = `图片文件路径不存在（已尝试容器内多种路径拼接）：\n` + triedPaths.map((p) => `- ${p}`).join('\n');
+        throw new Error(msg);
+      }
     }
 
     const GROUNDED_SAM2_API_URL = process.env.GROUNDED_SAM2_API_URL || 'http://localhost:7860/api/auto-label';
@@ -88,8 +120,6 @@ function registerAutoAnnotateRoutes(app, { db, buildImageUrl }) {
         if (typeof params.sam2BoxNmsThresh === 'number') formData.append('sam2_box_nms_thresh', String(params.sam2BoxNmsThresh));
         if (typeof params.sam2MinMaskRegionArea === 'number')
           formData.append('sam2_min_mask_region_area', String(params.sam2MinMaskRegionArea));
-        if (typeof params.sam2MergeGapPx === 'number')
-          formData.append('sam2_merge_gap_px', String(params.sam2MergeGapPx));
       }
 
       const samResponse = await axios.post(GROUNDED_SAM2_API_URL, formData, {

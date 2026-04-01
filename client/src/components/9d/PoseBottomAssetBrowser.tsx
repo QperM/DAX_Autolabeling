@@ -15,7 +15,7 @@ type MeshItem = {
   assets?: string[];
 };
 
-type CameraItem = { id: number; role: string };
+type CameraItem = { id: number; role: string; intrinsicsOriginalName?: string | null };
 type DepthGroupEntry = { depthId: number; kind: string; filename: string };
 type DepthGroupView = { key: string; entries: DepthGroupEntry[] };
 
@@ -147,9 +147,14 @@ const PoseBottomAssetBrowser: React.FC<Props> = ({
               onSelect={(cam) => onSelectCamera(cam.id)}
               getTileClassName={() => 'pose-file-card'}
               renderTile={({ item: cam }) => (
-                <div title={`intrinsics_${cam.role}.json`} style={{ height: '100%' }}>
+                <div
+                  title={cam.intrinsicsOriginalName || `intrinsics_${cam.role}.json`}
+                  style={{ height: '100%' }}
+                >
                   <div className="pose-file-card-emoji">📷</div>
-                  <div className="pose-file-card-title">{`intrinsics_${cam.role}.json`}</div>
+                  <div className="pose-file-card-title">
+                    {cam.intrinsicsOriginalName || `intrinsics_${cam.role}.json`}
+                  </div>
                   <div className="pose-file-card-files">
                     <div className="pose-file-card-fileline">{`camera #${cam.id}`}</div>
                   </div>

@@ -1,7 +1,9 @@
 param(
   [string]$WebUrl = "http://localhost:38080",
   [string]$ApiUrl = "http://localhost:3001",
-  [string]$Sam2Url = "http://localhost:37860"
+  [string]$Sam2Url = "http://localhost:37860",
+  [string]$PoseUrl = "http://localhost:7900",
+  [string]$DepthRepairUrl = "http://localhost:7870"
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +18,8 @@ function Check-Http([string]$Url) {
 
 Check-Http "$Sam2Url/health"
 Check-Http "$ApiUrl/api/health"
+Check-Http "$PoseUrl/health"
+Check-Http "$DepthRepairUrl/health"
 Check-Http "$WebUrl/"
 
 Write-Host ""

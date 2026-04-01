@@ -393,8 +393,8 @@
 }
 
 .label-mapping-modal {
-  width: 480px;
-  max-width: 90vw;
+  width: 720px;
+  max-width: 94vw;
   max-height: 80vh;
   background: #ffffff;
   border-radius: 16px;
@@ -403,6 +403,8 @@
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .label-mapping-list {
@@ -483,6 +485,11 @@
   opacity: 0.6;
   cursor: not-allowed;
   transform: none;
+}
+
+/* Add button in label mapping modal actions */
+.ai-prompt-modal-actions .ai-prompt-modal-btn.secondary {
+  /* keep existing style; no override */
 }
 
 .label-mapping-loading,

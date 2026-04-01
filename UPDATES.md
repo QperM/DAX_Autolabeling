@@ -2,6 +2,22 @@
 
 ## 开发进展
 
+### V3.0 最新进展（2026年4月1日）
+- [x] **人工标注 UI 与交互**：
+  - 2D：`2DManualAnnotation`、`AnnotationCanvas`、`ImageUploader`、`ModelConfigModal` 等与画布/上传/参数弹窗相关的交互与样式迭代（含 `2DManualAnnotation.css`）
+  - 9D：`PoseManualAnnotation`、点云/深度/拟合图层与底部资产条（`PoseBottomAssetBrowser` 等）的细节对齐
+  - 通用：`AnnotationPageShared.css`、`AppAlert` 等统一提示与布局基线，降低 2D / Pose 两套页面的体验割裂感
+- [x] **图片列表分页与按需加载**：
+  - 后端 `GET /api/images` 支持 `offset`、`limit`（`imagesRepo.getImagesByProjectId`）
+  - 前端（如 `2DAnnotationPage`）进入项目或上传完成后仅请求第一页；用户滚动缩略图到底部时追加下一页，避免一次性加载全项目图片
+- [x] **Mask / Label 对照表数据库化**：
+  - 新增并维护 SQLite 表 `project_label_colors`（`project_id`、`label_key`、`label`、`label_zh`、`color`、`usage_order` 等，`UNIQUE(project_id, label_key)`）
+  - Node：`projectLabelColorsRepo`、相关路由与 `schema` 迁移（旧库 `ALTER` 补齐 `label_zh`）
+  - 前端：`ProjectLabelColorMapping` 类型与 API、`ColorLabelMappingManager` / `annotationColorLogic` 与后端同步；Pose **Mesh Label 对照表**与同源数据对齐
+- [x] **其它配套**：
+  - RGB 落盘文件名与 uploads 工具链整理（如 `storedUploadFilename`）
+  - 注释与调试开关 store 等小幅与标注流程相关的后端调整
+
 ### V2.8 最新进展（2026年3月27日）
 - [x] **项目会话独占控制（Project Session Guard）**：
   - 新增 `/api/project-session/claim|status|release`，进入项目后声明控制权并定时保活

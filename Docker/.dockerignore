@@ -1,3 +1,5 @@
+# 若构建上下文为 Docker/（少见）；常规构建以仓库根目录为上下文，以根目录 .dockerignore 为准。
+
 **/node_modules
 **/.git
 **/.DS_Store
@@ -6,5 +8,13 @@
 **/.pytest_cache
 **/__pycache__
 **/*.log
+
+# 与 Git 一致：wheel 不进版本库，也不打进以本目录为 context 的镜像层（仅保留占位）
+wheels/*
+!wheels/.gitkeep
+
+# 运行时数据（若在子目录下放测试库）
+data/
+
 server/uploads
 database

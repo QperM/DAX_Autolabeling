@@ -17,6 +17,7 @@ const DEFAULTS = {
 
 const ALLOWED_KINDS = new Set([
   'landingPage',
+  'frontendMeshAssets',
   'frontend2DUpload',
   'frontend2DDelete',
   'frontend9DMeshUpload',

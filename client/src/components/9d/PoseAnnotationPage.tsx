@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { setCurrentImage, setError, setImages, setLoading } from '../../store/annotationSlice';
@@ -52,6 +52,8 @@ const GLOBAL_DIFFDOPE_PARAMS_STORAGE_KEY = 'diffDopeParams:globalDefault';
 type DepthListItem = {
   id: number | null;
   filename: string;
+  /** 上传时的原始文件名（与 RGB 配对用）；磁盘文件名为 proj_{projectId}_{uuid}.ext */
+  originalName?: string | null;
   size?: number;
   url: string;
   role?: string;
@@ -69,6 +71,7 @@ type CameraItem = {
   role: string;
   intrinsics: any;
   intrinsicsFileSize?: number | null;
+  intrinsicsOriginalName?: string | null;
   updatedAt?: string | null;
 };
 
@@ -109,7 +112,7 @@ const readGlobalDefaultDiffDopeParams = (): DiffDopeParams => {
 const PoseAnnotationPage: React.FC = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
-  const { images, loading, error } = useSelector((state: any) => state.annotation);
+  const { images, error } = useSelector((state: any) => state.annotation);
   const appAlert = useAppAlert();
 
   const [currentProject, setCurrentProject] = useState<any>(null);
@@ -138,6 +141,7 @@ const PoseAnnotationPage: React.FC = () => {
       assetDirUrl?: string;
       assets?: string[];
       skuLabel?: string | null;
+      bbox?: { min?: { x: number; y: number; z: number }; max?: { x: number; y: number; z: number }; size?: { x: number; y: number; z: number }; vertexCount?: number } | null;
     }>
   >([]);
   const [meshPreviewTextureEnabled, setMeshPreviewTextureEnabled] = useState(true);
@@ -435,13 +439,14 @@ const PoseAnnotationPage: React.FC = () => {
       map.get(key)!.push(entry);
     };
     for (const f of all) {
-      const k = keyOf(f.filename || '');
+      const label = (f.originalName || f.filename || '').trim();
+      const k = keyOf(label);
       const mapId = Number(f.id || 0);
       if (!mapId || Number.isNaN(mapId)) continue;
       if (f.modality === 'depth_png') {
-        push(k, { depthId: mapId, kind: 'depth_png', filename: f.filename, role: f.role, imageId: f.imageId ?? null });
+        push(k, { depthId: mapId, kind: 'depth_png', filename: label, role: f.role, imageId: f.imageId ?? null });
       } else if (f.modality === 'depth_raw') {
-        push(k, { depthId: mapId, kind: 'depth_raw', filename: f.filename, role: f.role, imageId: f.imageId ?? null });
+        push(k, { depthId: mapId, kind: 'depth_raw', filename: label, role: f.role, imageId: f.imageId ?? null });
       }
       const pngFix = baseOfUrl(f.depthPngFixUrl || null);
       if (pngFix) push(k, { depthId: mapId, kind: 'depth_png_fix', filename: pngFix, role: f.role, imageId: f.imageId ?? null });
@@ -510,7 +515,10 @@ const PoseAnnotationPage: React.FC = () => {
 
   const handleDeleteSelectedDepth = useCallback(async () => {
     if (!selectedDepthRow?.id) return;
-    const ok = await appAlert.confirm(`确定删除深度文件：${selectedDepthRow.filename} ？`, { title: '确认删除深度' });
+    const ok = await appAlert.confirm(
+      `确定删除深度文件：${selectedDepthRow.originalName || selectedDepthRow.filename} ？`,
+      { title: '确认删除深度' },
+    );
     if (!ok) return;
     try {
       setDeletingDepthId(Number(selectedDepthRow.id));
@@ -975,9 +983,6 @@ const PoseAnnotationPage: React.FC = () => {
             ← 返回主页
           </button>
           <h1>9D Pose 标注工作区</h1>
-        </div>
-        <div className="header-right">
-          <span className="status">{loading ? '加载中...' : `${images.length} 张图片`}</span>
         </div>
       </header>
 

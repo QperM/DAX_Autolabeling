@@ -19,23 +19,25 @@
 
 ### 1.1 本地确认镜像可用
 
-1. 使用仓库内的 Dockerfile 构建 3 个镜像（示例 tag，你可以按需调整）：
+1. 使用仓库内的 Dockerfile 构建 5 个镜像（示例 tag，你可以按需调整）：
 
    ```bash
    # 在仓库根目录执行
    docker build -f Docker/Dockerfile.api      -t dax-api:local .
    docker build -f Docker/Dockerfile.web      -t dax-web:local .
    docker build -f Docker/Dockerfile.sam2.gpu -t dax-sam2:local .
+   docker build -f Docker/Dockerfile.pose.gpu -t dax-pose:local .
+   docker build -f Docker/Dockerfile.depthrepair.gpu -t dax-depthrepair:local .
    ```
 
-2. 使用 `Docker/docker-compose.gpu.yml` 或 `Docker/docker-compose.cpu.yml` 做一次本地联调：
+2. 使用 `Docker/docker-compose.gpu.yml` 做一次本地联调：
 
    ```bash
    # GPU 版（需要 NVIDIA Driver + NVIDIA Container Toolkit）
    docker compose -f Docker/docker-compose.gpu.yml up -d
 
 
-3. 打开浏览器或使用 `Docker/smoke-test.ps1` 做健康检查，确保 **web / api / sam2** 三个服务都能正常工作。
+3. 打开浏览器或使用 `Docker/smoke-test.ps1` 做健康检查，确保 **web / api / sam2 / pose / depthrepair** 五个服务都能正常工作。
 
 ### 1.2 推送镜像到 `registry.daxrobotics.cn`
 
@@ -57,6 +59,8 @@
    docker tag dax-web:local  registry.daxrobotics.cn/auto-labeling-tool/dax-web:v1.0.1
    docker tag dax-api:local  registry.daxrobotics.cn/auto-labeling-tool/dax-api:v1.0.1
    docker tag dax-sam2:local registry.daxrobotics.cn/auto-labeling-tool/dax-sam2:v1.0.1
+docker tag dax-pose:local registry.daxrobotics.cn/auto-labeling-tool/dax-pose:v1.0.1
+docker tag dax-depthrepair:local registry.daxrobotics.cn/auto-labeling-tool/dax-depthrepair:v1.0.1
    ```
 
 6. 推送镜像（**建议从小到大**，最后再推 SAM2）：
@@ -65,6 +69,8 @@
    docker push registry.daxrobotics.cn/auto-labeling-tool/dax-web:v1.0.1
    docker push registry.daxrobotics.cn/auto-labeling-tool/dax-api:v1.0.1
    docker push registry.daxrobotics.cn/auto-labeling-tool/dax-sam2:v1.0.1
+docker push registry.daxrobotics.cn/auto-labeling-tool/dax-pose:v1.0.1
+docker push registry.daxrobotics.cn/auto-labeling-tool/dax-depthrepair:v1.0.1
    ```
 
 7. 推送成功后，对应镜像地址形如：
@@ -72,6 +78,8 @@
    - `registry.daxrobotics.cn/auto-labeling-tool/dax-web:v1.0.1`
    - `registry.daxrobotics.cn/auto-labeling-tool/dax-api:v1.0.1`
    - `registry.daxrobotics.cn/auto-labeling-tool/dax-sam2:v1.0.1`
+   - `registry.daxrobotics.cn/auto-labeling-tool/dax-pose:v1.0.1`
+   - `registry.daxrobotics.cn/auto-labeling-tool/dax-depthrepair:v1.0.1`
 
 ---
 
@@ -110,8 +118,8 @@ services:
     depends_on:
       - sam2
     volumes:
-      - ./data/uploads:/app/server/uploads:rw
-      - ./data/database:/app/database:rw
+      - ../dax-autolabel-data/uploads:/app/uploads:rw
+      - ../dax-autolabel-data/database:/app/database:rw
 
   web:
     image: registry.daxrobotics.cn/auto-labeling-tool/dax-web:v1.0.1
@@ -239,7 +247,7 @@ spec:
               value: "http://sam2:7860/api/auto-label"
           volumeMounts:
             - name: uploads-volume
-              mountPath: /app/server/uploads
+              mountPath: /app/uploads
             - name: database-volume
               mountPath: /app/database
       volumes:

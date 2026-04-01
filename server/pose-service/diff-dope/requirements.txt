@@ -4,7 +4,8 @@ imageio[ffmpeg]
 matplotlib
 ninja
 numpy
-nvdiffrast@git+https://github.com/NVlabs/nvdiffrast.git
+# nvdiffrast lives next to diff-dope/: ../nvdiffrast
+../nvdiffrast
 omegaconf
 opencv-python
 pillow

@@ -28,12 +28,18 @@ function registerAnnotationRoutes(app, { db, requireImageProjectAccess }) {
             const projectIds = await db.getProjectIdsByImageId(Number(imageId));
             const projectId = Array.isArray(projectIds) && projectIds.length ? Number(projectIds[0]) : null;
             if (projectId) {
-              db.upsertProjectLabelColorsFromAnnotation(projectId, annotationData, (mapErr, upserted) => {
-                debugLog('node', 'nodeProjectLabelColors', '[annotations.save] upsert from annotation', {
-                  imageId: Number(imageId),
-                  projectId,
-                  upserted: Number(upserted || 0),
-                  error: mapErr ? String(mapErr.message || mapErr) : null,
+              // 注意：之前这里是“fire-and-forget”，导致批量 AI 保存完后 label-color upsert 仍在后台跑。
+              // 在压力场景下会造成数据库竞争，从而拖慢紧随其后的 /auth/check /label-colors /annotations 请求。
+              // 这里等待 upsert 完成后再返回，保证后续页面切换更稳定。
+              await new Promise((resolve) => {
+                db.upsertProjectLabelColorsFromAnnotation(projectId, annotationData, (mapErr, upserted) => {
+                  debugLog('node', 'nodeProjectLabelColors', '[annotations.save] upsert from annotation', {
+                    imageId: Number(imageId),
+                    projectId,
+                    upserted: Number(upserted || 0),
+                    error: mapErr ? String(mapErr.message || mapErr) : null,
+                  });
+                  resolve();
                 });
               });
             }
@@ -78,12 +84,15 @@ function registerAnnotationRoutes(app, { db, requireImageProjectAccess }) {
             const projectIds = await db.getProjectIdsByImageId(Number(imageId));
             const projectId = Array.isArray(projectIds) && projectIds.length ? Number(projectIds[0]) : null;
             if (projectId) {
-              db.upsertProjectLabelColorsFromAnnotation(projectId, annotationData, (mapErr, upserted) => {
-                debugLog('node', 'nodeProjectLabelColors', '[annotations.update] upsert from annotation', {
-                  imageId: Number(imageId),
-                  projectId,
-                  upserted: Number(upserted || 0),
-                  error: mapErr ? String(mapErr.message || mapErr) : null,
+              await new Promise((resolve) => {
+                db.upsertProjectLabelColorsFromAnnotation(projectId, annotationData, (mapErr, upserted) => {
+                  debugLog('node', 'nodeProjectLabelColors', '[annotations.update] upsert from annotation', {
+                    imageId: Number(imageId),
+                    projectId,
+                    upserted: Number(upserted || 0),
+                    error: mapErr ? String(mapErr.message || mapErr) : null,
+                  });
+                  resolve();
                 });
               });
             }

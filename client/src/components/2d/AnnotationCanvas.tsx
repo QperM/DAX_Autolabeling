@@ -1,9 +1,9 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useMemo, useRef, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Stage, Layer, Image, Line, Rect, Circle } from 'react-konva';
 import useImage from 'use-image';
 import type { Mask, BoundingBox, Polygon } from '../../types';
-import { ANNOTATION_COLOR_PALETTE, SAM2_OBJECT_RESERVED_COLOR } from '../common/annotationColors';
+import { ANNOTATION_COLOR_PALETTE, SAM2_OBJECT_LABEL, SAM2_OBJECT_RESERVED_COLOR } from '../common/annotationColors';
 import { buildLabelColorMapFromSources, resolveColorForLabelEdit } from '../common/annotationColorLogic';
 
 interface AnnotationCanvasProps {
@@ -14,10 +14,27 @@ interface AnnotationCanvasProps {
   activeLayer?: 'background' | 'annotation' | 'bbox';
   toolMode: 'select' | 'mask-select' | 'eraser' | 'polygon' | 'bbox';
   brushSize: number;
+  /**
+   * 轮廓点间距（原图像素）。用于合并/橡皮擦的轮廓抽样，让不同物体尺寸获得更均衡的点密度。
+   */
+  pointSpacingPx?: number;
   onMaskUpdate: (updatedMasks: Mask[]) => void;
   onBoundingBoxUpdate?: (updatedBBoxes: BoundingBox[]) => void;
   onPolygonUpdate: (updatedPolygons: Polygon[]) => void;
-  projectLabelMappings?: Array<{ label: string; color: string; usageOrder?: number }>;
+  /**
+   * 合并请求触发器：父组件每点一次按钮就递增一次 nonce。
+   * Canvas 内部会读取当前选中的 mask 并执行合并。
+   */
+  mergeRequestNonce?: number;
+  /**
+   * 让父组件知道当前选中的 mask，用于禁用/提示“合并”等按钮。
+   */
+  onSelectedMaskIdsChange?: (ids: string[]) => void;
+  /**
+   * 合并结果回调：由父组件一次性更新 masks/boundingBoxes/polygons 和 history（避免拆成两次更新导致快照错位）。
+   */
+  onMergeUpdate?: (updated: { masks: Mask[]; boundingBoxes: BoundingBox[]; polygons: Polygon[] }) => void;
+  projectLabelMappings?: Array<{ label: string; labelZh?: string; color: string; usageOrder?: number }>;
 }
 
 const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
@@ -28,9 +45,13 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   activeLayer = 'annotation',
   toolMode,
   brushSize,
+  pointSpacingPx = 6,
   onMaskUpdate,
   onBoundingBoxUpdate,
   onPolygonUpdate,
+  mergeRequestNonce,
+  onSelectedMaskIdsChange,
+  onMergeUpdate,
   projectLabelMappings = [],
 }) => {
   const [image] = useImage(imageUrl);
@@ -51,9 +72,57 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameModalPosition, setRenameModalPosition] = useState<{ x: number; y: number } | null>(null);
   const [renameInputValue, setRenameInputValue] = useState('');
+  const [lastRenameSelectedLabel, setLastRenameSelectedLabel] = useState<string>('');
   const renameInputRef = useRef<HTMLInputElement>(null);
   const [pendingRenameMaskId, setPendingRenameMaskId] = useState<string | null>(null);
   const [renameTargetMaskIds, setRenameTargetMaskIds] = useState<string[]>([]);
+
+  const openRenameModalForMaskIds = (maskIds: string[], pos?: { x: number; y: number }) => {
+    if (!maskIds || maskIds.length === 0) return;
+    const targets = masks.filter((m) => maskIds.includes(m.id));
+    if (targets.length === 0) return;
+
+    // 位置：优先使用传入位置（例如右键鼠标位置）；否则复用第一个 mask 的中心位置
+    if (pos) {
+      setRenameModalPosition(pos);
+    } else {
+      const firstMask = targets[0];
+      if (firstMask.points && firstMask.points.length >= 2) {
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+
+        for (let i = 0; i < firstMask.points.length; i += 2) {
+          const sx = firstMask.points[i] * imageScale;
+          const sy = firstMask.points[i + 1] * imageScale;
+          if (sx < minX) minX = sx;
+          if (sx > maxX) maxX = sx;
+          if (sy < minY) minY = sy;
+          if (sy > maxY) maxY = sy;
+        }
+
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+
+        const stage = stageRef.current?.getStage();
+        if (stage) {
+          const container = stage.container();
+          const rect = container.getBoundingClientRect();
+          setRenameModalPosition({ x: rect.left + centerX, y: rect.top + centerY });
+        }
+      }
+    }
+
+    setRenameInputValue(targets[0].label || '');
+    setRenameTargetMaskIds([...maskIds]);
+    setShowRenameModal(true);
+  };
+
+  // 同步多选状态到父组件（用于禁用/提示按钮）
+  useEffect(() => {
+    onSelectedMaskIdsChange?.(selectedMaskIds);
+  }, [selectedMaskIds, onSelectedMaskIdsChange]);
 
   // 基于与“重命名”一致的 IoU 规则，为一组 mask 找到一一对应的 bbox 下标
   const getMatchedBoundingBoxIndicesByMaskIds = (maskIds: string[]): Set<number> => {
@@ -249,43 +318,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         // 阻止默认输入行为，避免按 R 时字符落到输入框里
         e.preventDefault();
         e.stopPropagation();
-        const targets = masks.filter(mask => selectedMaskIds.includes(mask.id));
-        if (targets.length === 0) return;
-
-        // 计算第一个选中mask的中心位置（舞台坐标）
-        const firstMask = targets[0];
-        if (firstMask.points && firstMask.points.length >= 2) {
-          let minX = Infinity;
-          let maxX = -Infinity;
-          let minY = Infinity;
-          let maxY = -Infinity;
-
-          for (let i = 0; i < firstMask.points.length; i += 2) {
-            const sx = firstMask.points[i] * imageScale;
-            const sy = firstMask.points[i + 1] * imageScale;
-            if (sx < minX) minX = sx;
-            if (sx > maxX) maxX = sx;
-            if (sy < minY) minY = sy;
-            if (sy > maxY) maxY = sy;
-          }
-
-          const centerX = (minX + maxX) / 2;
-          const centerY = (minY + maxY) / 2;
-
-          // 获取Stage元素的位置，转换为页面坐标
-          const stage = stageRef.current?.getStage();
-          if (stage) {
-            const container = stage.container();
-            const rect = container.getBoundingClientRect();
-            const pageX = rect.left + centerX;
-            const pageY = rect.top + centerY;
-
-            setRenameModalPosition({ x: pageX, y: pageY });
-            setRenameInputValue(targets[0].label || '');
-            setRenameTargetMaskIds([...selectedMaskIds]);
-            setShowRenameModal(true);
-          }
-        }
+        openRenameModalForMaskIds(selectedMaskIds);
         return;
       }
     };
@@ -312,6 +345,8 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     }
 
     const trimmed = renameInputValue.trim();
+    const nextRenameLabel = trimmed.length > 0 ? trimmed : (targets[0].label || '');
+    if (nextRenameLabel) setLastRenameSelectedLabel(nextRenameLabel);
 
     const COLOR_PALETTE = [SAM2_OBJECT_RESERVED_COLOR, ...ANNOTATION_COLOR_PALETTE];
 
@@ -565,6 +600,109 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     });
   }, [image, imageUrl]);
 
+  const buildMaskFromBinary = (
+    binary: Uint8ClampedArray,
+    w: number,
+    h: number,
+    pointSpacingPx: number,
+  ): { x: number; y: number }[] => {
+    // 使用 Moore-Neighbor 边界跟踪从二值图中提取一条主轮廓
+    const alphaAt = (x: number, y: number) => {
+      if (x < 0 || x >= w || y < 0 || y >= h) return 0;
+      const idx = (y * w + x) * 4 + 3;
+      return binary[idx];
+    };
+
+    // 找到任意一个前景像素作为起点
+    let startX = -1;
+    let startY = -1;
+    outer: for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (alphaAt(x, y) > 0) {
+          startX = x;
+          startY = y;
+          break outer;
+        }
+      }
+    }
+
+    if (startX === -1 || startY === -1) {
+      return [] as { x: number; y: number }[]; // 整个 Mask 被擦掉/为空
+    }
+
+    // Moore-Neighbor 边界跟踪
+    const contour: { x: number; y: number }[] = [];
+    let cx = startX;
+    let cy = startY;
+    let prevDir = 7; // 上一次移动方向（0~7，对应 8 邻域）
+
+    const dirOffsets = [
+      { dx: 1, dy: 0 },
+      { dx: 1, dy: 1 },
+      { dx: 0, dy: 1 },
+      { dx: -1, dy: 1 },
+      { dx: -1, dy: 0 },
+      { dx: -1, dy: -1 },
+      { dx: 0, dy: -1 },
+      { dx: 1, dy: -1 },
+    ];
+
+    const maxSteps = w * h * 4; // 防御性上限，避免极端情况下死循环
+    let steps = 0;
+
+    do {
+      contour.push({ x: cx + 0.5, y: cy + 0.5 });
+      // 从前一方向的左邻开始查找（逆时针方向）
+      let foundNext = false;
+      for (let i = 0; i < 8; i++) {
+        const dir = (prevDir + 7 + i) % 8;
+        const nx = cx + dirOffsets[dir].dx;
+        const ny = cy + dirOffsets[dir].dy;
+        if (alphaAt(nx, ny) > 0) {
+          cx = nx;
+          cy = ny;
+          prevDir = dir;
+          foundNext = true;
+          break;
+        }
+      }
+      if (!foundNext) break;
+      steps++;
+    } while (!(cx === startX && cy === startY) && steps < maxSteps);
+
+    if (contour.length === 0) return contour;
+
+    // 采样：轮廓“弧长累积距离(px)” >= pointSpacingPx 时落点
+    // 这里的 px 指的是 buildMaskFromBinary 使用的 canvas 坐标系像素单位。
+    const spacing = Math.max(0.5, Number(pointSpacingPx) || 0.5);
+    const MAX_SAMPLE_POINTS = 2000; // 防止 spacing 过小导致点数爆炸
+
+    let sampled = [{ ...contour[0] }];
+    let acc = 0;
+    let prev = contour[0];
+    for (let i = 1; i < contour.length; i++) {
+      const p = contour[i];
+      acc += Math.hypot(p.x - prev.x, p.y - prev.y);
+      if (acc >= spacing) {
+        sampled.push(p);
+        acc = 0;
+      }
+      prev = p;
+    }
+
+    if (contour.length >= 3 && sampled.length < 3) {
+      // 至少给渲染/合并一个最小可用三点形状
+      sampled = [contour[0], contour[Math.floor(contour.length / 2)], contour[contour.length - 1]];
+    }
+
+    if (sampled.length > MAX_SAMPLE_POINTS) {
+      const step = Math.ceil(sampled.length / MAX_SAMPLE_POINTS);
+      sampled = sampled.filter((_, idx) => idx % step === 0);
+    }
+
+    return sampled;
+  };
+
   /**
    * 使用方案 A：基于离屏 canvas 的真正橡皮擦
    * 思路：
@@ -599,87 +737,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       y: p.y * scaleFactor,
     }));
 
-    const maxPolygonPoints = 400; // 前端安全上限（具体精细度由后端/弹窗单独控制）
-
-    const buildMaskFromBinary = (binary: Uint8ClampedArray) => {
-      // 使用 Moore-Neighbor 边界跟踪从二值图中提取一条主轮廓
-      const w = canvasWidth;
-      const h = canvasHeight;
-      const alphaAt = (x: number, y: number) => {
-        if (x < 0 || x >= w || y < 0 || y >= h) return 0;
-        const idx = (y * w + x) * 4 + 3;
-        return binary[idx];
-      };
-
-      // 找到任意一个前景像素作为起点
-      let startX = -1;
-      let startY = -1;
-      outer: for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          if (alphaAt(x, y) > 0) {
-            startX = x;
-            startY = y;
-            break outer;
-          }
-        }
-      }
-
-      if (startX === -1 || startY === -1) {
-        return [] as { x: number; y: number }[]; // 整个 Mask 被擦掉
-      }
-
-      // Moore-Neighbor 边界跟踪
-      const contour: { x: number; y: number }[] = [];
-      let cx = startX;
-      let cy = startY;
-      let prevDir = 7; // 上一次移动方向（0~7，对应 8 邻域）
-
-      const dirOffsets = [
-        { dx: 1, dy: 0 },
-        { dx: 1, dy: 1 },
-        { dx: 0, dy: 1 },
-        { dx: -1, dy: 1 },
-        { dx: -1, dy: 0 },
-        { dx: -1, dy: -1 },
-        { dx: 0, dy: -1 },
-        { dx: 1, dy: -1 },
-      ];
-
-      const maxSteps = w * h * 4; // 防御性上限，避免极端情况下死循环
-      let steps = 0;
-
-      do {
-        contour.push({ x: cx + 0.5, y: cy + 0.5 });
-        // 从前一方向的左邻开始查找（逆时针方向）
-        let foundNext = false;
-        for (let i = 0; i < 8; i++) {
-          const dir = (prevDir + 7 + i) % 8;
-          const nx = cx + dirOffsets[dir].dx;
-          const ny = cy + dirOffsets[dir].dy;
-          if (alphaAt(nx, ny) > 0) {
-            cx = nx;
-            cy = ny;
-            prevDir = dir;
-            foundNext = true;
-            break;
-          }
-        }
-        if (!foundNext) {
-          break;
-        }
-        steps++;
-      } while (!(cx === startX && cy === startY) && steps < maxSteps);
-
-      if (contour.length === 0) return contour;
-
-      // 抽样，控制点数上限
-      const step = Math.max(1, Math.floor(contour.length / maxPolygonPoints));
-      const sampled: { x: number; y: number }[] = [];
-      for (let i = 0; i < contour.length; i += step) {
-        sampled.push(contour[i]);
-      }
-      return sampled;
-    };
+    const spacingCanvasPx = Math.max(0.5, pointSpacingPx * scaleFactor);
 
     masks.forEach(mask => {
       if (!mask.points || mask.points.length < 6) return;
@@ -751,8 +809,8 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
       // 3. 从剩余图像中提取新的轮廓
       const imgData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
-      const contour = buildMaskFromBinary(imgData.data);
-      if (contour.length === 0) {
+      const contour = buildMaskFromBinary(imgData.data, canvasWidth, canvasHeight, spacingCanvasPx);
+      if (contour.length < 3) {
         // 整个 mask 被擦掉，直接丢弃
         return;
       }
@@ -772,6 +830,148 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
     onMaskUpdate(updatedMasks);
   };
+
+  const mergeSelectedMasks = () => {
+    if (!image) return;
+    if (toolMode !== 'mask-select') return;
+    if (!selectedMaskIds || selectedMaskIds.length < 2) return;
+    if (showRenameModal) return;
+
+    const selectedMasks = masks.filter((m) => selectedMaskIds.includes(m.id));
+    if (selectedMasks.length < 2) return;
+
+    const srcWidth = image.width;
+    const srcHeight = image.height;
+    if (!srcWidth || !srcHeight) return;
+
+    const MAX_CANVAS_SIZE = 512;
+    const scaleFactor = Math.min(1, MAX_CANVAS_SIZE / srcWidth, MAX_CANVAS_SIZE / srcHeight);
+    const canvasWidth = Math.max(16, Math.round(srcWidth * scaleFactor));
+    const canvasHeight = Math.max(16, Math.round(srcHeight * scaleFactor));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Rasterize & union：直接把每个 mask 填到同一张 canvas 上即可得到并集
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    ctx.save();
+    ctx.scale(scaleFactor, scaleFactor);
+    ctx.fillStyle = '#ffffff';
+    for (const mask of selectedMasks) {
+      if (!mask.points || mask.points.length < 6) continue;
+      ctx.beginPath();
+      ctx.moveTo(mask.points[0], mask.points[1]);
+      for (let i = 2; i < mask.points.length; i += 2) {
+        ctx.lineTo(mask.points[i], mask.points[i + 1]);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+
+    const imgData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
+    const spacingCanvasPx = Math.max(0.5, pointSpacingPx * scaleFactor);
+    const contour = buildMaskFromBinary(imgData.data, canvasWidth, canvasHeight, spacingCanvasPx);
+
+    // 兜底：如果轮廓提取失败，至少用 bbox union 生成一个矩形轮廓，保证“合并”不会无效
+    let newPoints: number[] = [];
+    if (contour.length >= 3) {
+      newPoints = [];
+      for (const p of contour) {
+        newPoints.push(p.x / scaleFactor, p.y / scaleFactor);
+      }
+    } else {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const m of selectedMasks) {
+        if (!m.points || m.points.length < 2) continue;
+        for (let i = 0; i < m.points.length; i += 2) {
+          const x = m.points[i];
+          const y = m.points[i + 1];
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+        }
+      }
+      if ([minX, minY, maxX, maxY].every((v) => Number.isFinite(v))) {
+        newPoints = [minX, minY, maxX, minY, maxX, maxY, minX, maxY];
+      }
+    }
+
+    if (!newPoints || newPoints.length < 6) return;
+
+    const first = selectedMasks[0];
+    const mergedMask: Mask = {
+      // 合并后复用其中一个原始 mask 的 id
+      // 这样不会出现“合并生成了全新 id（mask-<timestamp>-<uuid>）”的 UX 问题
+      id: first.id,
+      points: newPoints,
+      label: first.label || '',
+      color: first.color,
+      opacity: first.opacity,
+    };
+
+    const updatedMasks = masks.filter((m) => !selectedMaskIds.includes(m.id));
+    updatedMasks.push(mergedMask);
+
+    const selectedBboxIdx = getMatchedBoundingBoxIndicesByMaskIds(selectedMaskIds);
+    // 合并 bbox 时同样复用一个旧 bbox 的 id，避免出现新的 bbox-<timestamp>-... id
+    const mergedBboxId =
+      [...selectedBboxIdx]
+        .sort((a, b) => a - b)
+        .map((idx) => boundingBoxes[idx]?.id)
+        .find((id) => typeof id === 'string' && id.length > 0) || `bbox-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const updatedBBoxes = boundingBoxes.filter((_, idx) => !selectedBboxIdx.has(idx));
+
+    // 从合并后的 points 重算 bbox
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < newPoints.length; i += 2) {
+      const x = newPoints[i];
+      const y = newPoints[i + 1];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+
+    const mergedBbox: BoundingBox = {
+      id: mergedBboxId,
+      x: minX,
+      y: minY,
+      width: Math.max(0, maxX - minX),
+      height: Math.max(0, maxY - minY),
+      label: mergedMask.label,
+      color: mergedMask.color,
+    };
+    updatedBBoxes.push(mergedBbox);
+
+    if (onMergeUpdate) {
+      onMergeUpdate({ masks: updatedMasks, boundingBoxes: updatedBBoxes, polygons });
+    } else {
+      onMaskUpdate(updatedMasks);
+      onBoundingBoxUpdate?.(updatedBBoxes);
+    }
+
+    setSelectedMaskIds([]);
+  };
+
+  // 点击“合并mask”按钮后：执行合并并生成新的单个 mask
+  useEffect(() => {
+    if (mergeRequestNonce === undefined) return;
+    mergeSelectedMasks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mergeRequestNonce]);
 
   // 将页面坐标转换为舞台坐标（允许在图片外部区域产生负值或超出 stageSize）
   const clientToStagePos = (clientX: number, clientY: number) => {
@@ -822,7 +1022,8 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
               label: '',
               // 默认使用灰色，后续通过“选择”+R 命名后会按项目级规则重新上色
               color: '#7F7F7F',
-              opacity: 0.7,
+              // 默认透明度降低：避免遮挡画面文字/图层信息
+              opacity: 0.45,
             };
 
             onMaskUpdate([...masks, newMask]);
@@ -931,6 +1132,15 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       setBoxSelectRect({ x: pos.x, y: pos.y, width: 0, height: 0 });
     };
 
+    const handleContainerContextMenu = (e: MouseEvent) => {
+      // 右键：仅在“已通过左键选中”之后触发重命名弹窗（对齐 R 键）
+      // 同时阻止浏览器默认右键菜单，避免遮挡弹窗/选中体验
+      e.preventDefault();
+      if (showRenameModal) return;
+      if (!selectedMaskIds || selectedMaskIds.length === 0) return;
+      openRenameModalForMaskIds(selectedMaskIds, { x: e.clientX, y: e.clientY });
+    };
+
     const handleContainerMouseMove = (e: MouseEvent) => {
       if (!isBoxSelecting || !boxSelectStart) return;
       const pos = clientToStagePos(e.clientX, e.clientY);
@@ -956,6 +1166,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       // 拖拽距离太小，当作单击处理（Windows 体验：按住左键不动≈单击）
       if (dragDistance < 5) {
         if (pos) {
+          const toggle = e.ctrlKey || e.metaKey;
           // 点击空白处清空选择；
           // 若点击位置同时落在多个 Mask 的包围盒内，优先选择“面积更小”的 Mask（更贴近用户想点的前景目标）
           let clickedId: string | null = null;
@@ -987,7 +1198,14 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
           }
           });
 
-          setSelectedMaskIds(clickedId ? [clickedId] : []);
+          if (toggle && clickedId) {
+            const id: string = clickedId;
+            setSelectedMaskIds((prev) =>
+              prev.includes(id) ? prev.filter((existingId) => existingId !== id) : [...prev, id],
+            );
+          } else {
+            setSelectedMaskIds(clickedId ? [clickedId] : []);
+          }
         }
         setBoxSelectRect(null);
         setBoxSelectStart(null);
@@ -1037,23 +1255,170 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
         }
       });
 
-      setSelectedMaskIds(newlySelectedIds);
+      setSelectedMaskIds((prev) => {
+        const toggle = e.ctrlKey || e.metaKey;
+        if (!toggle) return newlySelectedIds;
+        const s = new Set(prev);
+        newlySelectedIds.forEach((id) => s.add(id));
+        return Array.from(s);
+      });
 
       setBoxSelectRect(null);
       setBoxSelectStart(null);
     };
 
     container.addEventListener('mousedown', handleContainerMouseDown);
+    container.addEventListener('contextmenu', handleContainerContextMenu);
     container.addEventListener('mousemove', handleContainerMouseMove);
     // mouseup 可能发生在外层（例如拖出容器又放开），这里绑定在 window 上更稳妥
     window.addEventListener('mouseup', handleContainerMouseUp);
 
     return () => {
       container.removeEventListener('mousedown', handleContainerMouseDown);
+      container.removeEventListener('contextmenu', handleContainerContextMenu);
       container.removeEventListener('mousemove', handleContainerMouseMove);
       window.removeEventListener('mouseup', handleContainerMouseUp);
     };
-  }, [toolMode, isBoxSelecting, boxSelectStart, boxSelectRect, masks, imageScale]);
+  }, [toolMode, isBoxSelecting, boxSelectStart, boxSelectRect, masks, imageScale, selectedMaskIds, showRenameModal]);
+
+  // 重命名弹窗打开时：允许在整个 canvas 区域用滚轮切换标签（对齐 ↑/↓ 行为）
+  const renameExistingLabels = useMemo(() => {
+    if (!showRenameModal) return [] as Array<{ label: string; labelZh?: string; color: string }>;
+    try {
+      const map = new Map<string, { color: string; labelZh?: string }>();
+      projectLabelMappings.forEach((item) => {
+        const label = String(item?.label || '').trim();
+        const color = String(item?.color || '').trim();
+        const labelZh = String(item?.labelZh || '').trim();
+        if (!label || !color) return;
+        if (!map.has(label)) map.set(label, { color, labelZh: labelZh || undefined });
+      });
+
+      // 兜底补全：把当前图像上的 Mask / BBox 中已有的 label->color 也加进来
+      masks.forEach((mask) => {
+        const label = (mask.label || '').trim();
+        const color = mask.color;
+        if (!label || !color) return;
+        if (!map.has(label)) map.set(label, { color });
+      });
+      boundingBoxes.forEach((bbox) => {
+        const label = (bbox.label || '').trim();
+        const color = bbox.color;
+        if (!label || !color) return;
+        if (!map.has(label)) map.set(label, { color });
+      });
+
+      const usageOrderByLabel = new Map<string, number>();
+      projectLabelMappings.forEach((item) => {
+        const label = String(item?.label || '').trim();
+        const order = Number(item?.usageOrder ?? 9999);
+        if (!label) return;
+        if (!usageOrderByLabel.has(label)) usageOrderByLabel.set(label, order);
+      });
+
+      let existingLabels = Array.from(map.entries()).map(([label, val]) => ({ label, color: val.color, labelZh: val.labelZh }));
+      existingLabels = existingLabels.sort((a, b) => {
+        const ao = usageOrderByLabel.get(a.label) ?? 9999;
+        const bo = usageOrderByLabel.get(b.label) ?? 9999;
+        if (ao !== bo) return ao - bo;
+        return a.label.localeCompare(b.label);
+      });
+
+      // 最近一次确认的 label 置顶/次置顶：object 第一行，其它最多第二行
+      if (lastRenameSelectedLabel) {
+        const objectIdx = existingLabels.findIndex((x) => x.label === SAM2_OBJECT_LABEL);
+        if (objectIdx > 0) {
+          const [objItem] = existingLabels.splice(objectIdx, 1);
+          existingLabels.unshift(objItem);
+        }
+        if (lastRenameSelectedLabel !== SAM2_OBJECT_LABEL) {
+          const lastIdx = existingLabels.findIndex((x) => x.label === lastRenameSelectedLabel);
+          if (lastIdx > 0) {
+            const [lastItem] = existingLabels.splice(lastIdx, 1);
+            existingLabels.splice(1, 0, lastItem);
+          }
+        }
+      } else {
+        const objectIdx = existingLabels.findIndex((x) => x.label === SAM2_OBJECT_LABEL);
+        if (objectIdx > 0) {
+          const [objItem] = existingLabels.splice(objectIdx, 1);
+          existingLabels.unshift(objItem);
+        }
+      }
+
+      return existingLabels;
+    } catch (err) {
+      console.warn('[AnnotationCanvas] 汇总重命名标签列表失败', err);
+      return [] as Array<{ label: string; labelZh?: string; color: string }>;
+    }
+  }, [showRenameModal, projectLabelMappings, masks, boundingBoxes, lastRenameSelectedLabel]);
+
+  useEffect(() => {
+    if (!showRenameModal) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      // 使用 wheel 事件的 clientX/clientY 判断是否发生在 canvas 区域内。
+      // 这样即使鼠标悬浮在 portal 渲染的弹窗上（不在 container DOM 树内），滚轮也能生效。
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX;
+      const y = e.clientY;
+      const insideCanvas = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      if (!insideCanvas) return;
+
+      const list = renameExistingLabels;
+      if (!list || list.length === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const cur = renameInputValue.trim();
+      let idx = list.findIndex((item) => item.label === cur);
+      if (idx < 0) idx = 0;
+
+      const delta = Math.abs(e.deltaY) >= Math.abs((e as any).deltaX || 0) ? e.deltaY : (e as any).deltaX || 0;
+      if (!delta) return;
+      const dir = delta > 0 ? 1 : -1;
+      idx += dir;
+      if (idx < 0) idx = list.length - 1;
+      if (idx >= list.length) idx = 0;
+
+      const nextLabel = list[idx]?.label;
+      if (nextLabel) setRenameInputValue(nextLabel);
+    };
+
+    // capture: true 确保尽早拿到事件（更稳定地 preventDefault），passive: false 才能阻止默认滚动
+    window.addEventListener('wheel', handleWheel, { passive: false, capture: true } as any);
+    return () => {
+      window.removeEventListener('wheel', handleWheel as any, { capture: true } as any);
+    };
+  }, [showRenameModal, renameExistingLabels, renameInputValue]);
+
+  // 重命名弹窗预览颜色：用户在弹窗里切换 label（↑/↓），边界描边实时高亮显示
+  const renamePreviewColor = useMemo(() => {
+    if (!showRenameModal) return undefined;
+    if (!renameTargetMaskIds || renameTargetMaskIds.length === 0) return undefined;
+
+    const targets = masks.filter((mask) => renameTargetMaskIds.includes(mask.id));
+    if (targets.length === 0) return undefined;
+
+    const trimmed = renameInputValue.trim();
+    const COLOR_PALETTE = [SAM2_OBJECT_RESERVED_COLOR, ...ANNOTATION_COLOR_PALETTE];
+
+    const labelColorMap = buildLabelColorMapFromSources({
+      projectLabelMappings,
+      masks,
+      boundingBoxes,
+    });
+
+    return resolveColorForLabelEdit({
+      newLabel: trimmed,
+      currentLabel: targets[0].label || '',
+      fallbackColor: targets[0].color,
+      labelColorMap,
+      palette: COLOR_PALETTE,
+    });
+  }, [showRenameModal, renameTargetMaskIds, renameInputValue, masks, boundingBoxes, projectLabelMappings]);
 
   // 渲染Mask
   const renderMasks = () => {
@@ -1061,8 +1426,15 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
     return masks.map(mask => {
       const isSelected =
         toolMode === 'mask-select' && selectedMaskIds.includes(mask.id);
+      const isRenamePreview = showRenameModal && renameTargetMaskIds.includes(mask.id);
       const baseColor = mask.color || '#ff0000';
       const fillColor = mask.color || 'rgba(255, 0, 0, 0.5)';
+
+      const previewStrokeColor = isRenamePreview ? renamePreviewColor || '#FFD54F' : '#FFD54F';
+      const previewFillColor = renamePreviewColor ? `${renamePreviewColor}40` : fillColor;
+      const effectiveMaskOpacityRaw = typeof mask.opacity === 'number' ? mask.opacity : 0.45;
+      // 全局再做一次上限裁剪：即使历史数据里 opacity 偏高，也不会过度遮挡
+      const effectiveMaskOpacity = Math.max(0, Math.min(1, Math.min(effectiveMaskOpacityRaw, 0.55)));
 
       return (
         <Line
@@ -1071,11 +1443,11 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
             // 统一按 imageScale 进行缩放，保证与图片缩放比例一致
             value * imageScale
           )}
-          fill={isSelected ? fillColor : fillColor}
-          stroke={isSelected ? '#FFD54F' : baseColor}
-          strokeWidth={isSelected ? 4 : 2}
+          fill={isRenamePreview ? previewFillColor : fillColor}
+          stroke={isRenamePreview ? previewStrokeColor : isSelected ? '#FFD54F' : baseColor}
+          strokeWidth={isRenamePreview ? 6 : isSelected ? 4 : 2}
           closed={true}
-          opacity={isSelected ? 0.9 : mask.opacity || 0.7}
+          opacity={isRenamePreview ? 0.85 : isSelected ? 0.7 : effectiveMaskOpacity}
         />
       );
     });
@@ -1221,72 +1593,8 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
   // 渲染R键改名弹窗
   const renderRenameModal = () => {
     if (!showRenameModal || !renameModalPosition) return null;
-
-    // 从后端项目映射读取 label -> color，并结合当前图像的 Mask / BBox 自动补全，
-    // 用于下拉选择，避免忽略掉例如“object”等已经存在于图上的标签。
-    let existingLabels: Array<{ label: string; color: string }> = [];
-    let currentColor: string | undefined;
-    try {
-      const map = new Map<string, string>();
-      projectLabelMappings.forEach((item) => {
-        const label = String(item?.label || '').trim();
-        const color = String(item?.color || '').trim();
-        if (!label || !color) return;
-        if (!map.has(label)) map.set(label, color);
-      });
-
-        // 补全：把当前图像上的 Mask / BBox 中已有的 label->color 也加进来（仅在 map 中还没有该 label 时）
-        // 注意：这个补全逻辑是为了处理"图上已有但 labelColorMap 中还没有"的情况（例如 AI 自动标注生成的）
-        // 但导入后，labelColorMap 应该已经包含了所有标签，所以这个补全主要是兜底
-        masks.forEach((mask) => {
-          const label = (mask.label || '').trim();
-          const color = mask.color;
-          if (!label || !color) return;
-          // 如果 labelColorMap 中还没有，则添加；如果已有但颜色不同，优先使用 labelColorMap 中的（项目级统一）
-          if (!map.has(label)) {
-            map.set(label, color);
-          }
-        });
-
-        boundingBoxes.forEach((bbox) => {
-          const label = (bbox.label || '').trim();
-          const color = bbox.color;
-          if (!label || !color) return;
-          // 如果 labelColorMap 中还没有，则添加；如果已有但颜色不同，优先使用 labelColorMap 中的（项目级统一）
-          if (!map.has(label)) {
-            map.set(label, color);
-          }
-        });
-
-      const usageOrderByLabel = new Map<string, number>();
-      projectLabelMappings.forEach((item) => {
-        const label = String(item?.label || '').trim();
-        const order = Number(item?.usageOrder ?? 9999);
-        if (!label) return;
-        if (!usageOrderByLabel.has(label)) usageOrderByLabel.set(label, order);
-      });
-
-        // 构建标签列表，并按最近使用顺序排序
-        const allLabels = Array.from(map.entries()).map(([label, color]) => ({
-              label,
-              color,
-            }));
-
-        // 排序：后端 usageOrder 优先，其次按字母顺序
-        existingLabels = allLabels.sort((a, b) => {
-          const ao = usageOrderByLabel.get(a.label) ?? 9999;
-          const bo = usageOrderByLabel.get(b.label) ?? 9999;
-          if (ao !== bo) return ao - bo;
-          return a.label.localeCompare(b.label);
-        });
-
-            const trimmed = renameInputValue.trim();
-      if (trimmed && map.has(trimmed)) {
-        currentColor = map.get(trimmed);
-      }
-    } catch (err) {
-      console.warn('[AnnotationCanvas] 渲染重命名弹窗时读取 / 汇总 labelColorMap 失败', err);
-    }
+    const existingLabels = renameExistingLabels;
+    const currentColor = existingLabels.find((x) => x.label === renameInputValue.trim())?.color;
 
     return createPortal(
       <div className="rename-modal-backdrop" onClick={handleRenameCancel}>
@@ -1338,7 +1646,7 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
                       color: '#ffffff',
                     }}
                   >
-                    {item.label}
+                    {item.labelZh ? `${item.labelZh} (${item.label})` : item.label}
                   </option>
                 ))}
               </select>
@@ -1357,6 +1665,20 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
                 handleRenameConfirm();
               } else if (e.key === 'Escape') {
                 handleRenameCancel();
+              } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                e.preventDefault();
+                const list = existingLabels;
+                if (!list || list.length === 0) return;
+
+                const cur = renameInputValue.trim();
+                let idx = list.findIndex((item) => item.label === cur);
+                if (idx < 0) idx = 0;
+                idx = e.key === 'ArrowUp' ? idx - 1 : idx + 1;
+                if (idx < 0) idx = list.length - 1;
+                if (idx >= list.length) idx = 0;
+
+                const nextLabel = list[idx]?.label;
+                if (nextLabel) setRenameInputValue(nextLabel);
               }
             }}
             placeholder="请输入标签名"

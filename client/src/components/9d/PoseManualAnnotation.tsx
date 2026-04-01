@@ -16,6 +16,7 @@ import PosePointCloudLayer from './PosePointCloudLayer';
 type DepthInfo = {
   id: number;
   filename: string;
+  originalName?: string | null;
   url: string;
   depthRawFixUrl?: string | null;
   depthPngFixUrl?: string | null;
@@ -41,7 +42,8 @@ const PoseManualAnnotation: React.FC = () => {
   const [pointCloudSaveRequestId, setPointCloudSaveRequestId] = useState(0);
   const [pointCloudSaveDoneRequestId, setPointCloudSaveDoneRequestId] = useState(0);
   const [pointCloudInitSaveRequestId, setPointCloudInitSaveRequestId] = useState(0);
-  const [pointCloudCancelInitRequestId, setPointCloudCancelInitRequestId] = useState(0);
+  const [pointCloudFillInitRequestId, setPointCloudFillInitRequestId] = useState(0);
+  const [pointCloudConvertInitToFinalRequestId, setPointCloudConvertInitToFinalRequestId] = useState(0);
   const [pointCloudClear6dRequestId, setPointCloudClear6dRequestId] = useState(0);
   const [savingFinalPoseProgress, setSavingFinalPoseProgress] = useState<{
     active: boolean;
@@ -189,14 +191,37 @@ const PoseManualAnnotation: React.FC = () => {
       try {
         const listRaw = await depthApi.getDepth(projectId, currentImage.id);
         if (reqId !== depthFetchReqIdRef.current) return;
+        // 后端把 cameras 表内参虚拟成 depth 条目时 id 为 null；若整行过滤掉会导致 hasIntrinsics 永远为 false。
         const list = (Array.isArray(listRaw) ? listRaw : [])
-          .filter((d: any) => d && d.id != null && Number.isFinite(Number(d.id)))
-          .map((d: any) => ({ ...d, id: Number(d.id) }));
+          .map((d: any) => {
+            if (!d) return null;
+            if (d.id != null && Number.isFinite(Number(d.id))) {
+              return { ...d, id: Number(d.id) };
+            }
+            const camId = Number(d.cameraId);
+            if (
+              String(d.modality || '').toLowerCase() === 'intrinsics' &&
+              Number.isFinite(camId) &&
+              camId > 0 &&
+              d.url
+            ) {
+              return { ...d, id: -camId };
+            }
+            return null;
+          })
+          .filter((d): d is DepthInfo => d != null);
         setDepthList(list);
         const firstPng = list.find(
           (d) => d.modality === 'depth_png' || String(d.filename).toLowerCase().endsWith('.png'),
         );
-        setSelectedDepthId(firstPng ? Number((firstPng as any).id) : list[0] ? Number((list[0] as any).id) : null);
+        const firstDepthRow = list.find(
+          (d) =>
+            d.modality === 'depth_png' ||
+            d.modality === 'depth_raw' ||
+            String(d.filename || '').toLowerCase().endsWith('.png') ||
+            String(d.filename || '').toLowerCase().endsWith('.npy'),
+        );
+        setSelectedDepthId(firstPng ? Number(firstPng.id) : firstDepthRow ? Number(firstDepthRow.id) : null);
       } catch (e) {
         if (reqId !== depthFetchReqIdRef.current) return;
         console.warn('[PoseManualAnnotation] 加载深度列表失败:', e);
@@ -436,7 +461,8 @@ const PoseManualAnnotation: React.FC = () => {
             depthMode={pointCloudMode}
             saveRequestId={pointCloudSaveRequestId}
             saveInitialRequestId={pointCloudInitSaveRequestId}
-            cancelInitialRequestId={pointCloudCancelInitRequestId}
+            fillInitialPosesRequestId={pointCloudFillInitRequestId}
+                    convertInitialToFinalRequestId={pointCloudConvertInitToFinalRequestId}
             clear6dRequestId={pointCloudClear6dRequestId}
             onSaveFinalPoseStart={({ total }) => {
               setSavingFinalPoseProgress({
@@ -536,6 +562,9 @@ const PoseManualAnnotation: React.FC = () => {
                   onClick={() => {
                     setShowPointCloudRawLayer(false);
                     setShowPointCloudFixLayer(false);
+                    // 拟合图层依赖 imageDisplayRect，而 imageDisplayRect 的计算需要 RGB 图像（rgbImageElRef）。
+                    // 点云开启后会把 RGB 关掉；直接点拟合图层会导致 fit 层渲染成空/白屏，因此启用 RGB 作为底图。
+                    if (!showFitLayer && !showRgbLayer) setShowRgbLayer(true);
                     setShowFitLayer((v) => !v);
                   }}
                   title="拟合图层（Diff-DOPE）"
@@ -718,7 +747,8 @@ const PoseManualAnnotation: React.FC = () => {
                   {selectedDepth && (
                     <div style={{ marginBottom: '0.6rem', fontSize: '0.8rem', color: '#6c757d' }}>
                       当前深度（{depthMode === 'fix' ? '修复' : '原始'}）：
-                      {(selectedDepth.role ? `[${selectedDepth.role}] ` : '') + selectedDepth.filename}
+                      {(selectedDepth.role ? `[${selectedDepth.role}] ` : '') +
+                        (selectedDepth.originalName || selectedDepth.filename)}
                     </div>
                   )}
                   <div style={{ marginTop: '0.75rem' }}>
@@ -748,21 +778,22 @@ const PoseManualAnnotation: React.FC = () => {
                   style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}
                 >
                   {/* 第 1 行：人工初始位姿相关 */}
-                  <div style={{ display: 'flex', gap: '0.55rem', width: '100%' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem', width: '100%' }}>
                     <button
                       type="button"
                       className="primary-button"
                       style={{
-                        background: '#ef4444',
-                        borderColor: '#dc2626',
-                        flex: 1,
-                        height: '47px',
-                        whiteSpace: 'nowrap',
+                        background: '#60a5fa',
+                        borderColor: '#3b82f6',
+                        width: '100%',
+                        height: 'auto',
+                        minHeight: '47px',
+                        whiteSpace: 'normal',
                       }}
-                      onClick={() => setPointCloudCancelInitRequestId((v) => v + 1)}
-                      title="删除当前点云窗口中选中 Mesh 的人工初始位姿"
+                      onClick={() => setPointCloudFillInitRequestId((v) => v + 1)}
+                      title="补全初始位姿：根据当前图片 masks 导入缺失实例并写入初始位姿"
                     >
-                      取消初始位姿
+                      补全初始位姿
                     </button>
                     <button
                       type="button"
@@ -770,28 +801,48 @@ const PoseManualAnnotation: React.FC = () => {
                       style={{
                         background: '#16a34a',
                         borderColor: '#15803d',
-                        flex: 1,
-                        height: '47px',
-                        whiteSpace: 'nowrap',
+                        width: '100%',
+                        height: 'auto',
+                        minHeight: '47px',
+                        whiteSpace: 'normal',
                       }}
                       onClick={() => setPointCloudInitSaveRequestId((v) => v + 1)}
-                      title="保存当前点云窗口中选中 Mesh 的人工初始位姿"
+                      title="保存为初始位姿（并清空最终位姿）"
                     >
-                      保存初始位姿
+                      保存为初始位姿
                     </button>
-                  </div>
-
-                  {/* 第 2 行：最终位姿保存 / 清除 */}
-                  <div style={{ display: 'flex', gap: '0.55rem', width: '100%' }}>
                     <button
                       type="button"
                       className="primary-button"
                       style={{
+                        // 颜色对调：选中实例“保存为最终位姿” -> 橙色
                         background: '#f59e0b',
                         borderColor: '#d97706',
-                        flex: 1,
-                        height: '47px',
-                        whiteSpace: 'nowrap',
+                        width: '100%',
+                        height: 'auto',
+                        minHeight: '47px',
+                        whiteSpace: 'normal',
+                      }}
+                      onClick={() => setPointCloudConvertInitToFinalRequestId((v) => v + 1)}
+                      title="将当前选中 Mesh 的人工初始位姿转为最终位姿（diffdope_json），并清除人工初始位姿"
+                    >
+                      保存为最终位姿
+                    </button>
+                  </div>
+
+                  {/* 第 2 行：最终位姿保存 / 清除 */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem', width: '100%' }}>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{
+                        // 颜色对调：保存“全部实例最终位姿” -> 紫色
+                        background: '#8b5cf6',
+                        borderColor: '#7c3aed',
+                        width: '100%',
+                        height: 'auto',
+                        minHeight: '47px',
+                        whiteSpace: 'normal',
                       }}
                       onClick={async () => {
                         const ok = await confirm(
@@ -801,9 +852,9 @@ const PoseManualAnnotation: React.FC = () => {
                         if (!ok) return;
                         setPointCloudSaveRequestId((v) => v + 1);
                       }}
-                      title="保存当前点云窗口中的 Mesh 位姿矩阵到数据库（保存图内所有最终位姿）"
+                      title="保存全部实例最终位姿到数据库（diffdope_json）"
                     >
-                      保存位置
+                      保存全部实例最终位姿
                     </button>
                     <button
                       type="button"
@@ -811,14 +862,15 @@ const PoseManualAnnotation: React.FC = () => {
                       style={{
                         background: '#ef4444',
                         borderColor: '#dc2626',
-                        flex: 1,
-                        height: '47px',
-                        whiteSpace: 'nowrap',
+                        width: '100%',
+                        height: 'auto',
+                        minHeight: '47px',
+                        whiteSpace: 'normal',
                       }}
                       onClick={() => setPointCloudClear6dRequestId((v) => v + 1)}
-                      title="清除本图内所有 6D 姿态标注（删除 diffdope_json 与 initial_pose_json）"
+                      title="清除所有实例位姿（删除 diffdope_json 与 initial_pose_json）"
                     >
-                      清除本图 6D 标注
+                      清除所有实例位姿
                     </button>
                   </div>
                 </div>

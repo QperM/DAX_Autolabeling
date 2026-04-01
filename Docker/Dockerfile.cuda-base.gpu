@@ -1,0 +1,85 @@
+# dax-cuda-base: CUDA 12.1 toolkit + build deps + PyTorch (cu121) shared by GPU services
+#
+# Uses `Docker/wheels` when present: COPY into /wheels, then if torch-*.whl exists pip installs
+# from disk first (--no-deps), then resolves nvidia-* / deps from indexes. If the folder is empty
+# or missing torch wheels, build falls back to downloading from TORCH_INDEX_URL.
+#
+# Build (repo root):
+#   docker build -f Docker/Dockerfile.cuda-base.gpu -t dax-cuda-base:12.1 .
+#
+# Child images:
+#   ARG BASE_IMAGE=dax-cuda-base:12.1
+#   FROM ${BASE_IMAGE} AS runner
+
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS cuda-base
+
+WORKDIR /app
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Core system deps shared by GPU services (compile CUDA extensions, Python native wheels).
+# Mirror tweak + IPv4 helps flaky VPN / DNS setups (same idea as former pose Dockerfile).
+RUN sed -i 's|http://security.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list \
+  && apt-get update \
+    -o Acquire::Retries=10 \
+    -o Acquire::http::Timeout=120 \
+    -o Acquire::ForceIPv4=true \
+  && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python3-dev \
+    ca-certificates \
+    git \
+    wget \
+    gnupg \
+    build-essential \
+    cmake \
+    pkg-config \
+    libgl1 \
+    libglib2.0-0 \
+  && rm -rf /var/lib/apt/lists/*
+
+# CUDA toolkit 12.1 (nvcc + headers such as cusparse.h) for extension builds (nvdiffrast, xformers, etc.).
+RUN wget -qO /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
+  && dpkg -i /tmp/cuda-keyring.deb \
+  && rm -f /tmp/cuda-keyring.deb \
+  && apt-get update \
+    -o Acquire::Retries=10 \
+    -o Acquire::http::Timeout=120 \
+    -o Acquire::ForceIPv4=true \
+  && (apt-get install -y --no-install-recommends cuda-toolkit-12-1 \
+      || apt-get install -y --no-install-recommends cuda-nvcc-12-1 cuda-libraries-dev-12-1 libcusparse-dev-12-1) \
+  && test -f /usr/local/cuda/include/cusparse.h \
+  && rm -rf /var/lib/apt/lists/*
+
+ENV PATH=/usr/local/cuda/bin:/usr/local/cuda-12.1/bin:${PATH}
+
+# ---------------------------------------------------------------------------
+# Shared PyTorch CUDA stack — pin cu121 + versions across all GPU services.
+# ---------------------------------------------------------------------------
+COPY Docker/wheels /wheels
+
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+ENV TORCH_INDEX_URL=${TORCH_INDEX_URL}
+ENV PIP_DEFAULT_TIMEOUT=120
+ENV PIP_RETRIES=10
+
+# Prefetch wheels (optional): Docker/prefetch_torch_wheels.ps1 → Docker/wheels/
+RUN --mount=type=cache,target=/root/.cache/pip \
+  if ls /wheels/torch-*.whl >/dev/null 2>&1; then \
+    echo "[dax-cuda-base] Staging torch/vision/audio from local /wheels (--no-deps)"; \
+    pip3 install --no-cache-dir --no-index --no-deps --find-links=/wheels --timeout ${PIP_DEFAULT_TIMEOUT} --retries ${PIP_RETRIES} \
+      torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0; \
+    echo "[dax-cuda-base] Resolving CUDA dependency wheels from ${TORCH_INDEX_URL} + PyPI"; \
+    pip3 install --no-cache-dir --timeout ${PIP_DEFAULT_TIMEOUT} --retries ${PIP_RETRIES} \
+      torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+      --index-url ${TORCH_INDEX_URL} --extra-index-url https://pypi.org/simple; \
+  else \
+    echo "[dax-cuda-base] Downloading torch/vision/audio from ${TORCH_INDEX_URL}"; \
+    pip3 install --no-cache-dir --timeout ${PIP_DEFAULT_TIMEOUT} --retries ${PIP_RETRIES} \
+      torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+      --index-url ${TORCH_INDEX_URL} --extra-index-url https://pypi.org/simple; \
+  fi

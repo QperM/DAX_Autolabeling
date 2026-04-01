@@ -10,6 +10,8 @@ import { toAbsoluteUrl } from '../../utils/urls';
 import './2DManualAnnotation.css';
 import { useAppAlert } from '../common/AppAlert';
 import { useProjectSessionGuard } from '../../utils/projectSessionGuard';
+import { assignMissingColorsForAnnotations, buildLabelColorMapFromSources } from '../common/annotationColorLogic';
+import { SAM2_OBJECT_LABEL, SAM2_OBJECT_RESERVED_COLOR } from '../common/annotationColors';
 
 const ManualAnnotation: React.FC = () => {
   const dispatch = useDispatch();
@@ -17,7 +19,10 @@ const ManualAnnotation: React.FC = () => {
   const { currentImage, images, annotations } = useSelector((state: any) => state.annotation);
   const appAlert = useAppAlert();
   const [selectedTool, setSelectedTool] = useState<'eraser' | 'mask' | 'point' | 'draw'>('mask');
+  const [selectedMaskIds, setSelectedMaskIds] = useState<string[]>([]);
+  const [mergeRequestNonce, setMergeRequestNonce] = useState(0);
   const [brushSize, setBrushSize] = useState(20);
+  const [pointSpacingPx, setPointSpacingPx] = useState<number>(6);
   // 需求：每次进入人工标注页，默认显示“标注图层”
   // 图层类型：背景 / 标注(Mask+BBox) / 仅 Bounding Box
   const [activeLayer, setActiveLayer] = useState<'background' | 'annotation' | 'bbox'>('annotation');
@@ -31,9 +36,46 @@ const ManualAnnotation: React.FC = () => {
   const eraserWrapperRef = useRef<HTMLDivElement | null>(null);
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(true); // 默认开启自动保存
   const lastKeyNavigateAtRef = useRef<number | null>(null); // 记录上一次键盘切图时间，用于限速
-  const [projectLabelMappings, setProjectLabelMappings] = useState<Array<{ label: string; color: string; usageOrder?: number }>>([]);
+  const [projectLabelMappings, setProjectLabelMappings] = useState<Array<{ label: string; labelZh?: string; color: string; usageOrder?: number }>>([]);
   const projectId = getStoredCurrentProject<any>()?.id;
+  const GLOBAL_MODEL_PARAMS_STORAGE_KEY = 'modelParams:globalDefault';
   useProjectSessionGuard(projectId ? Number(projectId) : null, !!projectId);
+  const [singleAnnotating, setSingleAnnotating] = useState(false);
+  /** 项目图片总数（数据库 project_images 聚合，与 Redux 分页列表长度解耦） */
+  const [totalProjectImages, setTotalProjectImages] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const summary = await projectApi.getAnnotationSummary(Number(projectId));
+        if (!cancelled && summary) setTotalProjectImages(Number(summary.totalImages) || 0);
+      } catch {
+        if (!cancelled) setTotalProjectImages(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  // 继承模型参数：用于合并/橡皮擦时的“轮廓点间距”
+  useEffect(() => {
+    if (!projectId) return;
+    const perProjectKey = `modelParams:${projectId}`;
+    try {
+      const raw =
+        localStorage.getItem(perProjectKey) ??
+        localStorage.getItem(GLOBAL_MODEL_PARAMS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<{ maxPolygonPoints: number }>;
+      const v = Number(parsed?.maxPolygonPoints);
+      if (Number.isFinite(v) && v > 0) setPointSpacingPx(Math.max(1, Math.min(30, v)));
+    } catch (e) {
+      // ignore
+    }
+  }, [projectId]);
 
   // 权限检查和图片检查
   useEffect(() => {
@@ -52,8 +94,15 @@ const ManualAnnotation: React.FC = () => {
           try {
             const project = savedProject;
             if (!authStatus.isAdmin) {
-              const accessibleProjects = await authApi.getAccessibleProjects();
-              const hasAccess = accessibleProjects.some(p => p.id === project.id);
+              // checkAuth() 已在 session 中返回 accessibleProjectIds，优先使用它，避免每次都回源查询所有可访问项目
+              let hasAccess = false;
+              const accessibleIds = (authStatus as any).accessibleProjectIds;
+              if (Array.isArray(accessibleIds) && accessibleIds.length > 0) {
+                hasAccess = accessibleIds.includes(project.id);
+              } else {
+                const accessibleProjects = await authApi.getAccessibleProjects();
+                hasAccess = accessibleProjects.some((p) => p.id === project.id);
+              }
               if (!hasAccess) {
                 await appAlert.alert('您没有访问该项目的权限，请重新输入验证码');
                 navigate('/');
@@ -85,6 +134,7 @@ const ManualAnnotation: React.FC = () => {
   }, [currentImage, navigate]);
 
   // 加载当前图片的标注（mask / bbox 等）
+  const cachedAnnotationForCurrent = currentImage ? annotations?.[currentImage.id] : undefined;
   useEffect(() => {
     const loadAnnotation = async () => {
       if (!currentImage) {
@@ -101,7 +151,7 @@ const ManualAnnotation: React.FC = () => {
 
       try {
         // 优先从 Redux 中读（如果之前已经加载过）
-        const cached = annotations?.[currentImage.id];
+        const cached = cachedAnnotationForCurrent;
         if (cached) {
           const nextMasks = cached.masks || [];
           const nextBBoxes = cached.boundingBoxes || [];
@@ -151,7 +201,7 @@ const ManualAnnotation: React.FC = () => {
     };
 
     loadAnnotation();
-  }, [currentImage, annotations]);
+  }, [currentImage?.id, cachedAnnotationForCurrent]);
 
   const handleToolSelect = (tool: 'eraser' | 'mask' | 'point' | 'draw') => {
     setSelectedTool(tool);
@@ -308,13 +358,31 @@ const ManualAnnotation: React.FC = () => {
         const key = label.toLowerCase().replace(/\s+/g, ' ');
         if (!entries.has(key)) entries.set(key, { label, color });
       });
+      const zhByLabel = new Map<string, string>();
+      projectLabelMappings.forEach((item) => {
+        const label = String(item?.label || '').trim();
+        const labelZh = String(item?.labelZh || '').trim();
+        if (!label || !labelZh) return;
+        const key = label.toLowerCase().replace(/\s+/g, ' ');
+        if (!zhByLabel.has(key)) zhByLabel.set(key, labelZh);
+      });
+
       const payload = Array.from(entries.values())
         .sort((a, b) => Number(a.usageOrder ?? 9999) - Number(b.usageOrder ?? 9999))
-        .map((v, idx) => ({ label: v.label, color: v.color, usageOrder: Number.isFinite(Number(v.usageOrder)) ? Number(v.usageOrder) : idx }));
+        .map((v, idx) => {
+          const key = String(v.label || '').toLowerCase().replace(/\s+/g, ' ');
+          return {
+            label: v.label,
+            labelZh: zhByLabel.get(key) || '',
+            color: v.color,
+            usageOrder: Number.isFinite(Number(v.usageOrder)) ? Number(v.usageOrder) : idx,
+          };
+        });
       await projectApi.saveLabelColors(projectId, payload);
       setProjectLabelMappings(
         payload.map((v) => ({
           label: String(v.label || ''),
+          labelZh: String((v as any).labelZh || ''),
           color: String(v.color || ''),
           usageOrder: Number(v.usageOrder || 0),
         })),
@@ -351,6 +419,95 @@ const ManualAnnotation: React.FC = () => {
     }
   };
 
+  const getModelParamsForAutoAnnotate = () => {
+    // 与 2DAnnotationPage 完全对齐：优先使用项目级参数，其次全局默认
+    const pid = projectId ? String(projectId) : '';
+    const perProjectKey = pid ? `modelParams:${pid}` : '';
+    try {
+      const raw = (perProjectKey && localStorage.getItem(perProjectKey)) || localStorage.getItem(GLOBAL_MODEL_PARAMS_STORAGE_KEY);
+      if (!raw) return undefined;
+      const parsed = JSON.parse(raw) as {
+        maxPolygonPoints?: number;
+        sam2PointsPerSide?: number;
+        sam2PredIouThresh?: number;
+        sam2StabilityScoreThresh?: number;
+        sam2BoxNmsThresh?: number;
+        sam2MinMaskRegionArea?: number;
+      };
+      return {
+        maxPolygonPoints:
+          typeof parsed.maxPolygonPoints === 'number'
+            ? Math.max(1, Math.min(30, parsed.maxPolygonPoints))
+            : 6,
+        sam2PointsPerSide:
+          typeof parsed.sam2PointsPerSide === 'number' ? parsed.sam2PointsPerSide : 20,
+        sam2PredIouThresh:
+          typeof parsed.sam2PredIouThresh === 'number' ? parsed.sam2PredIouThresh : 0.88,
+        sam2StabilityScoreThresh:
+          typeof parsed.sam2StabilityScoreThresh === 'number'
+            ? parsed.sam2StabilityScoreThresh
+            : 0.95,
+        sam2BoxNmsThresh:
+          typeof parsed.sam2BoxNmsThresh === 'number' ? parsed.sam2BoxNmsThresh : 0.35,
+        sam2MinMaskRegionArea:
+          typeof parsed.sam2MinMaskRegionArea === 'number'
+            ? parsed.sam2MinMaskRegionArea
+            : 6000,
+      };
+    } catch {
+      return undefined;
+    }
+  };
+
+  const handleSingleAIAutoAnnotate = async () => {
+    if (!currentImage) return;
+    if (singleAnnotating) return;
+
+    const ok = await appAlert.confirm(
+      `确认开始对当前图片执行 AI 标注吗？\n\n图片：${currentImage.originalName || currentImage.filename}`,
+      { title: '确认执行 AI 标注' },
+    );
+    if (!ok) return;
+
+    try {
+      setSingleAnnotating(true);
+
+      const modelParams = getModelParamsForAutoAnnotate();
+      const result = await annotationApi.autoAnnotate(currentImage.id, modelParams);
+      const anno = result?.annotations || { masks: [], boundingBoxes: [] };
+
+      // 确保颜色稳定：object 固定色，其它按项目映射+调色板补齐
+      const seedMap = buildLabelColorMapFromSources({
+        projectLabelMappings,
+        masks,
+        boundingBoxes,
+      });
+      seedMap.set(SAM2_OBJECT_LABEL, SAM2_OBJECT_RESERVED_COLOR);
+      const colored = assignMissingColorsForAnnotations(
+        { masks: anno.masks || [], boundingBoxes: anno.boundingBoxes || [] },
+        seedMap,
+      );
+
+      await annotationApi.saveAnnotation(currentImage.id, {
+        masks: colored.masks,
+        boundingBoxes: colored.boundingBoxes,
+        polygons,
+      });
+
+      setMasks(colored.masks);
+      setBoundingBoxes(colored.boundingBoxes);
+      pushHistory(colored.masks, colored.boundingBoxes, polygons);
+
+      await persistProjectLabelMapsFromCurrentImage();
+      await appAlert.alert('当前图片 AI 标注完成（结果已保存，可继续人工微调）');
+    } catch (e: any) {
+      console.error('[ManualAnnotation] 单张 AI 标注失败:', e);
+      await appAlert.alert(e?.message || 'AI 标注失败，请稍后重试');
+    } finally {
+      setSingleAnnotating(false);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     const loadMappings = async () => {
@@ -361,6 +518,7 @@ const ManualAnnotation: React.FC = () => {
         const mappings = await projectApi.getLabelColors(projectId);
         if (!cancelled) setProjectLabelMappings((mappings || []).map((m: any) => ({
           label: String(m?.label || ''),
+          labelZh: String(m?.labelZh || ''),
           color: String(m?.color || ''),
           usageOrder: Number(m?.usageOrder || 0),
         })));
@@ -456,6 +614,11 @@ const ManualAnnotation: React.FC = () => {
     return null;
   }
 
+  const loadedIndex = images ? images.findIndex((img: Image) => img.id === currentImage.id) : -1;
+  const counterNumerator = loadedIndex >= 0 ? loadedIndex + 1 : '…';
+  const counterDenominator =
+    totalProjectImages != null && totalProjectImages > 0 ? totalProjectImages : images?.length ?? 0;
+
   return (
     <div className="manual-annotation">
       {/* 顶部导航栏 */}
@@ -479,8 +642,8 @@ const ManualAnnotation: React.FC = () => {
           >
             ←
           </button>
-          <span className="image-counter">
-            {images.findIndex((img: Image) => img.id === currentImage.id) + 1} / {images.length}
+          <span className="image-counter" title="分母为数据库中该项目的图片总数；分子为当前在已加载列表中的序号">
+            {counterNumerator} / {counterDenominator}
           </span>
           <button
             type="button"
@@ -594,6 +757,36 @@ const ManualAnnotation: React.FC = () => {
                 <div className="select-title">新建 Mask</div>
               </div>
             </button>
+
+            <button
+              type="button"
+              className="select-card"
+              onClick={handleSingleAIAutoAnnotate}
+              disabled={singleAnnotating}
+              title="对当前图片执行 AI 标注（结果会覆盖当前图片的 Mask/BBox，并保存到后端）"
+            >
+              <div className="select-icon-box">
+                <span className="select-icon">🤖</span>
+              </div>
+              <div className="select-text-box">
+                <div className="select-title">{singleAnnotating ? 'AI标注中...' : 'AI标注'}</div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              className="select-card"
+              disabled={selectedTool !== 'mask' || selectedMaskIds.length < 2}
+              onClick={() => setMergeRequestNonce((n) => n + 1)}
+              title="合并mask：在“选择”模式下按住 Ctrl 多选多个 Mask，然后点击合并为一个"
+            >
+              <div className="select-icon-box">
+                <span className="select-icon">🔗</span>
+              </div>
+              <div className="select-text-box">
+                <div className="select-title">合并mask</div>
+              </div>
+            </button>
           </div>
         </div>
 
@@ -616,6 +809,15 @@ const ManualAnnotation: React.FC = () => {
                       : 'select'
               }
               brushSize={brushSize}
+              pointSpacingPx={pointSpacingPx}
+              mergeRequestNonce={mergeRequestNonce}
+              onSelectedMaskIdsChange={(ids) => setSelectedMaskIds(ids)}
+              onMergeUpdate={({ masks: mergedMasks, boundingBoxes: mergedBBoxes, polygons: mergedPolygons }) => {
+                setMasks(mergedMasks);
+                setBoundingBoxes(mergedBBoxes);
+                setPolygons(mergedPolygons);
+                pushHistory(mergedMasks, mergedBBoxes, mergedPolygons);
+              }}
               onMaskUpdate={(updatedMasks) => {
                 setMasks(updatedMasks);
                 pushHistory(updatedMasks, boundingBoxes, polygons);
@@ -641,7 +843,7 @@ const ManualAnnotation: React.FC = () => {
               <h4>当前工具</h4>
               <div className="current-tool">
                 {selectedTool === 'eraser' && '橡皮擦'}
-                {selectedTool === 'mask' && '选择（整块 Mask：点击选中，长按框选，Delete 删除，R 改颜色和标签）'}
+                {selectedTool === 'mask' && '选择（整块 Mask：点击选中，长按框选；Delete 删除；R 或右键弹出改色改名；重命名弹窗中可用↑/↓或鼠标滚轮切换标签）'}
                 {selectedTool === 'point' && '点编辑（拖动/删除"Delete"/插入"I"）'}
                 {selectedTool === 'draw' && '新建 Mask：鼠标点击依次创建点，连成一圈后自动闭合生成新的 Mask。'}
               </div>

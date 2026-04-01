@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { toAbsoluteUrl } from "../../utils/urls";
+import { debugLog } from "../../utils/debugSettings";
 
 type Props = {
   meshUrl: string | null;
@@ -61,17 +62,25 @@ const MeshThumbnail: React.FC<Props> = ({ meshUrl, label, assetDirUrl, assets, s
       if (!url) return url;
       if (/^(blob:|data:|https?:\/\/)/i.test(url)) return url;
       const clean = String(url).replace(/\\/g, "/");
+      // Root-relative path (e.g. /uploads/...) should be treated as absolute URL.
+      if (/^\//.test(clean)) return toAbsoluteUrl(clean) || clean;
       if (!assets || assets.length === 0) return `${absBaseDir}${clean}`;
       const base = clean.split("/").filter(Boolean).pop() || clean;
       const lower = base.toLowerCase();
-      const hit = assets.find((a) => (a || "").toLowerCase() === lower);
+      const hit = assets.find((a) => {
+        const n = String(a || "").replace(/\\/g, "/");
+        const bn = n.split("/").filter(Boolean).pop() || n;
+        return bn.toLowerCase() === lower;
+      });
       const finalName = hit || clean;
       const encoded = finalName
         .split("/")
         .filter(Boolean)
         .map((seg) => encodeURIComponent(seg))
         .join("/");
-      return `${absBaseDir}${encoded}`;
+      const finalUrl = `${absBaseDir}${encoded}`;
+      debugLog("frontend", "frontendMeshAssets", "[MeshThumbnail] urlModifier", { in: url, clean, picked: finalName, out: finalUrl });
+      return finalUrl;
     });
 
     const loadText = async (url: string) => {
@@ -143,19 +152,39 @@ const MeshThumbnail: React.FC<Props> = ({ meshUrl, label, assetDirUrl, assets, s
         // 尽量加载 mtl + 贴图（如果存在）
         const mtlName = parseMtlName(objText);
         const mtlToLoad = pickMtlCandidate(mtlName, assets);
+        debugLog("frontend", "frontendMeshAssets", "[MeshThumbnail] parsed obj", {
+          meshUrl,
+          absMeshUrl,
+          assetDirUrl,
+          baseDir,
+          absBaseDir,
+          mtlName,
+          mtlToLoad,
+          assetsCount: Array.isArray(assets) ? assets.length : 0,
+        });
         if (mtlToLoad) {
           try {
             const mtlLoader = new MTLLoader(manager);
-            mtlLoader.setPath(absBaseDir);
+            const mtlAbs = toAbsoluteUrl(mtlToLoad) || mtlToLoad;
+            const mtlIsAbsolute = /^(https?:\/\/|\/)/i.test(mtlToLoad);
+            debugLog("frontend", "frontendMeshAssets", "[MeshThumbnail] load mtl", {
+              mtlToLoad,
+              mtlAbs,
+              mtlIsAbsolute,
+              setPath: mtlIsAbsolute ? "" : absBaseDir,
+              resourcePath: absBaseDir,
+            });
+            mtlLoader.setPath(mtlIsAbsolute ? "" : absBaseDir);
             mtlLoader.setResourcePath(absBaseDir);
             const materials = await new Promise<any>((resolve, reject) => {
-              mtlLoader.load(mtlToLoad, resolve, undefined, reject);
+              mtlLoader.load(mtlIsAbsolute ? mtlAbs : mtlToLoad, resolve, undefined, reject);
             });
             materials.preload();
             objLoader.setMaterials(materials);
           } catch (e) {
             // mtl/贴图加载失败不阻塞：回退到纯几何渲染
             console.warn("[MeshThumbnail] MTL 加载失败，将回退为纯几何:", mtlToLoad, e);
+            debugLog("frontend", "frontendMeshAssets", "[MeshThumbnail] mtl failed", { mtlToLoad, e });
           }
         }
         const obj = objLoader.parse(objText);
@@ -198,6 +227,7 @@ const MeshThumbnail: React.FC<Props> = ({ meshUrl, label, assetDirUrl, assets, s
         }
       } catch (e) {
         console.warn("[MeshThumbnail] 加载缩略 Mesh 失败:", meshUrl, e);
+        debugLog("frontend", "frontendMeshAssets", "[MeshThumbnail] load failed", { meshUrl, assetDirUrl, assets, e });
       }
     })();
 

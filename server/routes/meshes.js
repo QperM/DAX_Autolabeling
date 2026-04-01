@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { getUploadsRootDir } = require('../utils/dataPaths');
 const { debugLog } = require('../utils/debugSettingsStore');
+const { buildProjUuidStoredBasename } = require('../utils/storedUploadFilename');
 
 function registerMeshRoutes(app, { db, computeObjBoundingBox, buildImageUrl, buildUploadsDirUrl }) {
   const router = express.Router();
@@ -73,7 +74,9 @@ function registerMeshRoutes(app, { db, computeObjBoundingBox, buildImageUrl, bui
           .basename(original || f.filename, path.extname(original || f.filename))
           .replace(/[^\w.\-() ]+/g, '_')
           .trim();
-        const finalName = `${base || 'asset'}${ext || ''}`;
+        // OBJ：磁盘名 proj_{pid}_{uuid}.obj；MTL/贴图保留清洗后的原始基名，避免破坏 OBJ/MTL 内引用路径。
+        const finalName =
+          ext === '.obj' ? buildProjUuidStoredBasename(projectId, original, f.path) : `${base || 'asset'}${ext || ''}`;
         const finalPath = path.join(packDir, finalName);
         try {
           fs.renameSync(f.path, finalPath);

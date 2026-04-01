@@ -104,7 +104,11 @@ server/depthrepair-service/debug_outputs/
 
 # Embedded SAM2 / checkpoints（仅本地使用，不入 Git）
 server/sam2-service/grounded-sam2/
+# PyTorch / checkpoint weights（允许镜像构建目录下的 SAM2 权重纳入版本，如有需要）
 *.pt
+!Docker/sam2-assets/**/*.pt
+
+# Docker/wheels：见 Docker/.gitignore（wheel 不入库；占位文件 Docker/wheels/.gitkeep）
 
 # Large local artifacts / images (do not commit)
 *.tar
@@ -112,6 +116,12 @@ server/sam2-service/grounded-sam2/
 *.tgz
 *.tar.bz2
 *.tar.xz
+*.ckpt
+*.pth
+*.safetensors
+
+# pose-service：nvdiffrast 子树（按需 git clone / Docker 构建拉取；若本地有完整检出可自行取消忽略）
+server/pose-service/nvdiffrast/
 
 # Package lock files (uncomment if you want to ignore them)
 # package-lock.json

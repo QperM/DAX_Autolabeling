@@ -8,7 +8,6 @@ type Sam2ModelParams = {
   sam2StabilityScoreThresh: number;
   sam2BoxNmsThresh: number;
   sam2MinMaskRegionArea: number;
-  sam2MergeGapPx: number;
 };
 
 type Props = {
@@ -171,37 +170,14 @@ const ModelConfigModal: React.FC<Props> = ({
 
                 <div className="model-param-row">
                   <div className="model-param-label">
-                    SAM2 merge_gap_px（后处理合并）
-                    <span className="model-param-value">{modelParams.sam2MergeGapPx}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={40}
-                    step={1}
-                    value={modelParams.sam2MergeGapPx}
-                    onChange={(e) =>
-                      setModelParams((prev) => ({
-                        ...prev,
-                        sam2MergeGapPx: Number(e.target.value),
-                      }))
-                    }
-                  />
-                  <div className="model-param-hint">
-                    专门用于“相邻区域合并”。值越大，越会把距离很近的 mask（如瓶身与瓶盖）并成一个；设为 0 则关闭该后处理。
-                  </div>
-                </div>
-
-                <div className="model-param-row">
-                  <div className="model-param-label">
-                    轮廓精细度（最大点数）
+                    轮廓点间距（像素）
                     <span className="model-param-value">{modelParams.maxPolygonPoints}</span>
                   </div>
                   <input
                     type="range"
-                    min={40}
-                    max={400}
-                    step={10}
+                    min={1}
+                    max={30}
+                    step={1}
                     value={modelParams.maxPolygonPoints}
                     onChange={(e) =>
                       setModelParams((prev) => ({
@@ -210,7 +186,9 @@ const ModelConfigModal: React.FC<Props> = ({
                       }))
                     }
                   />
-                  <div className="model-param-hint">控制从 mask 轮廓抽样的最大点数。越大边缘越贴合，但生成/渲染更重。</div>
+                  <div className="model-param-hint">
+                    控制轮廓点与点之间的间距（单位：原图像素）。值越大点越少（更稀疏），值越小点越密集（更贴合但更重）。
+                  </div>
                 </div>
               </div>
 

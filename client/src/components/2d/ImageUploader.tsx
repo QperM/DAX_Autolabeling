@@ -21,6 +21,7 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
   const [extractProgress, setExtractProgress] = useState<number | null>(null);
   const [extractMessage, setExtractMessage] = useState<string>('');
   const [extracting, setExtracting] = useState(false);
+  const [activeStageKind, setActiveStageKind] = useState<'extract' | 'ingest'>('extract');
   const pollTimerRef = useRef<any>(null);
 
   const hasActiveProgress = useMemo(() => {
@@ -36,56 +37,47 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
     };
   }, []);
 
-  const startPollJob = (jobId: string) => {
+  const pollJobToCompletion = (jobId: string, kind: 'extract' | 'ingest'): Promise<Image[]> => {
+    setActiveStageKind(kind);
     setExtractJobId(jobId);
     setExtracting(true);
     setExtractProgress(0);
-    setExtractMessage('等待解压...');
+    setExtractMessage(kind === 'ingest' ? '等待入库...' : '等待解压...');
 
     if (pollTimerRef.current) {
       clearInterval(pollTimerRef.current);
     }
 
-    pollTimerRef.current = setInterval(async () => {
-      try {
-        const resp = await uploadJobApi.getJob(jobId);
-        const job = resp?.job;
-        if (!job) return;
+    return new Promise<Image[]>((resolve, reject) => {
+      pollTimerRef.current = setInterval(async () => {
+        try {
+          const resp = await uploadJobApi.getJob(jobId);
+          const job = resp?.job;
+          if (!job) return;
 
-        setExtractMessage(job.message || '');
-        setExtractProgress(typeof job.progress === 'number' ? job.progress : 0);
+          setExtractMessage(job.message || '');
+          setExtractProgress(typeof job.progress === 'number' ? job.progress : 0);
 
-        if (job.status === 'completed') {
-          // 将解压出的图片加入 Redux
-          const newImages: Image[] = job.files || [];
-          newImages.forEach((img) => dispatch(addImage(img)));
-
-          if (onUploadComplete) {
-            onUploadComplete(newImages);
+          if (job.status === 'completed') {
+            clearInterval(pollTimerRef.current);
+            pollTimerRef.current = null;
+            setExtracting(false);
+            resolve(job.files || []);
+            return;
           }
 
-          setExtracting(false);
-          setExtractProgress(100);
-          setTimeout(() => {
-            setExtractProgress(null);
-            setExtractMessage('');
-            setExtractJobId(null);
-          }, 1200);
-
-          clearInterval(pollTimerRef.current);
-          pollTimerRef.current = null;
+          if (job.status === 'error') {
+            clearInterval(pollTimerRef.current);
+            pollTimerRef.current = null;
+            setExtracting(false);
+            reject(new Error(job.error || 'job failed'));
+            return;
+          }
+        } catch (e: any) {
+          console.warn('[ImageUploader] 轮询上传阶段失败:', e);
         }
-
-        if (job.status === 'error') {
-          setExtracting(false);
-          clearInterval(pollTimerRef.current);
-          pollTimerRef.current = null;
-          alert(`解压失败：${job.error || '未知错误'}`);
-        }
-      } catch (e: any) {
-        console.warn('[ImageUploader] 轮询解压进度失败:', e);
-      }
-    }, 600);
+      }, 600);
+    });
   };
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
@@ -112,20 +104,44 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
         setUploadProgress(pct);
       });
       debugLog('frontend', 'frontend2DUpload', '[ImageUploader] upload response', { files: response?.files?.length || 0, zipJobs: response?.zipJobs?.length || 0 });
-      
-      // 将上传的图像添加到状态中
-      response.files.forEach(image => {
-        dispatch(addImage(image));
-      });
-      
-      if (onUploadComplete) {
-        onUploadComplete(response.files);
+
+      const immediateFiles = response.files || [];
+      if (immediateFiles.length > 0) {
+        immediateFiles.forEach((img) => dispatch(addImage(img)));
       }
 
-      // ZIP 解压进度（如果有）
+      const jobsToPoll: Array<{ jobId: string; kind: 'extract' | 'ingest' }> = [];
+      if (response.imageJobs && response.imageJobs.length > 0) {
+        for (const j of response.imageJobs) jobsToPoll.push({ jobId: j.jobId, kind: 'ingest' });
+      }
       if (response.zipJobs && response.zipJobs.length > 0) {
-        // 目前先支持单个 job（如需支持多个，可扩展为列表）
-        startPollJob(response.zipJobs[0].jobId);
+        for (const j of response.zipJobs) jobsToPoll.push({ jobId: j.jobId, kind: 'extract' });
+      }
+
+      if (jobsToPoll.length > 0) {
+        void (async () => {
+          try {
+            const allNewImages: Image[] = [];
+            for (const job of jobsToPoll) {
+              const newImages = await pollJobToCompletion(job.jobId, job.kind);
+              newImages.forEach((img) => dispatch(addImage(img)));
+              allNewImages.push(...newImages);
+            }
+
+            if (onUploadComplete && allNewImages.length > 0) onUploadComplete(allNewImages);
+          } catch (e: any) {
+            console.error('[ImageUploader] 后台处理失败:', e);
+            alert(`入库/解压失败：${e?.message || '未知错误'}`);
+          } finally {
+            setExtractProgress(null);
+            setExtractMessage('');
+            setExtractJobId(null);
+            setActiveStageKind('extract');
+          }
+        })();
+      } else {
+        // 没有后台 job，则直接回调 immediateFiles
+        if (onUploadComplete && immediateFiles.length > 0) onUploadComplete(immediateFiles);
       }
       
     } catch (error: any) {
@@ -179,7 +195,7 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
 
       <ProgressPopupModal
         open={hasActiveProgress}
-        title="图片上传 / 解压进度"
+        title="图片上传 / 处理进度"
         bars={(() => {
           const bars: ProgressPopupBar[] = [];
           if (uploadProgress !== null) {
@@ -193,10 +209,10 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onUploadComplete, project
 
           if (extracting || extractProgress !== null) {
             bars.push({
-              key: 'extract',
-              title: '解压进度',
+              key: 'stage',
+              title: activeStageKind === 'ingest' ? '入库进度' : '解压进度',
               percent: extractProgress ?? 0,
-              tone: 'extract',
+              tone: activeStageKind === 'ingest' ? 'primary' : 'extract',
             });
           }
 

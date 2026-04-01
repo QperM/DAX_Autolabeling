@@ -30,6 +30,22 @@ function buildImageUrl(filePath, filename) {
           .join('/');
         return `/uploads/${encoded}`;
       }
+
+      // Backward compatibility:
+      // Some historical rows may still store absolute host paths
+      // (e.g. Windows paths under old data roots). If so, preserve
+      // the project-relative suffix like `project_2/images/xxx.png`.
+      const normalized = String(filePath).replace(/\\/g, '/');
+      const markerIdx = normalized.search(/\/project_\d+\//i);
+      if (markerIdx >= 0) {
+        const relFromProject = normalized.slice(markerIdx + 1); // remove leading '/'
+        const encoded = relFromProject
+          .split('/')
+          .filter(Boolean)
+          .map((seg) => encodeURIComponent(seg))
+          .join('/');
+        if (encoded) return `/uploads/${encoded}`;
+      }
     } catch (_) {}
   }
 

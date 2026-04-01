@@ -7,7 +7,7 @@ function makeProjectLabelColorsRepo(db) {
   return {
     listProjectLabelColors: (projectId, callback) => {
       const sql = `
-        SELECT project_id, label, label_key, color, usage_order, created_at, updated_at
+        SELECT project_id, label, label_zh, label_key, color, usage_order, created_at, updated_at
         FROM project_label_colors
         WHERE project_id = ?
         ORDER BY usage_order ASC, updated_at DESC, label ASC
@@ -17,6 +17,7 @@ function makeProjectLabelColorsRepo(db) {
         const out = (rows || []).map((r) => ({
           projectId: Number(r.project_id),
           label: String(r.label || ''),
+          labelZh: String(r.label_zh || ''),
           labelKey: String(r.label_key || ''),
           color: String(r.color || ''),
           usageOrder: Number(r.usage_order || 0),
@@ -37,11 +38,12 @@ function makeProjectLabelColorsRepo(db) {
       const rows = (Array.isArray(mappings) ? mappings : [])
         .map((it, index) => {
           const label = String(it?.label || '').trim();
+          const labelZh = String(it?.labelZh || '').trim();
           const color = normalizeColor(it?.color);
           if (!label || !color) return null;
           const labelKey = normalizeLabelKey(label);
           const usageOrder = Number.isFinite(Number(it?.usageOrder)) ? Number(it.usageOrder) : index;
-          return { label, labelKey, color, usageOrder };
+          return { label, labelZh, labelKey, color, usageOrder };
         })
         .filter(Boolean);
       debugLog('node', 'nodeProjectLabelColors', '[replaceProjectLabelColors] replace request', {
@@ -62,13 +64,13 @@ function makeProjectLabelColorsRepo(db) {
           }
 
           const stmt = db.prepare(`
-            INSERT INTO project_label_colors (project_id, label, label_key, color, usage_order, updated_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO project_label_colors (project_id, label, label_zh, label_key, color, usage_order, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
           `);
           let done = 0;
           let failed = false;
           rows.forEach((r) => {
-            stmt.run([pid, r.label, r.labelKey, r.color, r.usageOrder], (insErr) => {
+            stmt.run([pid, r.label, r.labelZh, r.labelKey, r.color, r.usageOrder], (insErr) => {
               if (failed) return;
               if (insErr) {
                 failed = true;
@@ -100,7 +102,7 @@ function makeProjectLabelColorsRepo(db) {
         const color = normalizeColor(it?.color);
         if (!label || !color) return;
         const labelKey = normalizeLabelKey(label);
-        collected.push({ label, labelKey, color });
+        collected.push({ label, labelZh: '', labelKey, color });
       });
       if (!collected.length) return callback(null, 0);
 
@@ -116,9 +118,9 @@ function makeProjectLabelColorsRepo(db) {
       });
 
       const stmt = db.prepare(`
-        INSERT INTO project_label_colors (project_id, label, label_key, color, usage_order, updated_at)
+        INSERT INTO project_label_colors (project_id, label, label_zh, label_key, color, usage_order, updated_at)
         VALUES (
-          ?, ?, ?, ?,
+          ?, ?, ?, ?, ?,
           COALESCE(
             (SELECT usage_order FROM project_label_colors WHERE project_id = ? AND label_key = ?),
             (SELECT COALESCE(MAX(usage_order), -1) + 1 FROM project_label_colors WHERE project_id = ?)
@@ -133,7 +135,7 @@ function makeProjectLabelColorsRepo(db) {
       let done = 0;
       let failed = false;
       rows.forEach((r) => {
-        stmt.run([pid, r.label, r.labelKey, r.color, pid, r.labelKey, pid], (err) => {
+        stmt.run([pid, r.label, r.labelZh, r.labelKey, r.color, pid, r.labelKey, pid], (err) => {
           if (failed) return;
           if (err) {
             failed = true;

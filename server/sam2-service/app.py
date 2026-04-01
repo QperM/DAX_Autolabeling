@@ -209,96 +209,6 @@ def _bbox_iou_xyxy(a: List[float], b: List[float]) -> float:
     return float(inter / union)
 
 
-def _bbox_gap_xyxy(a: List[float], b: List[float]) -> float:
-    try:
-        ax1, ay1, ax2, ay2 = [float(x) for x in a]
-        bx1, by1, bx2, by2 = [float(x) for x in b]
-    except Exception:
-        return 1e9
-    dx = max(ax1 - bx2, bx1 - ax2, 0.0)
-    dy = max(ay1 - by2, by1 - ay2, 0.0)
-    return float(max(dx, dy))
-
-
-def _merge_candidates_by_gap(candidates: List[dict], merge_gap_px: float) -> List[dict]:
-    if not candidates:
-        return []
-    if merge_gap_px <= 0:
-        return candidates
-
-    n = len(candidates)
-    parent = list(range(n))
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
-
-    for i in range(n):
-        bi = candidates[i].get("bbox_xyxy", None)
-        if not isinstance(bi, list) or len(bi) != 4:
-            continue
-        for j in range(i + 1, n):
-            bj = candidates[j].get("bbox_xyxy", None)
-            if not isinstance(bj, list) or len(bj) != 4:
-                continue
-            if _bbox_gap_xyxy(bi, bj) <= float(merge_gap_px):
-                union(i, j)
-
-    groups: dict = {}
-    for idx in range(n):
-        root = find(idx)
-        groups.setdefault(root, []).append(idx)
-
-    merged: List[dict] = []
-    for indices in groups.values():
-        if len(indices) == 1:
-            merged.append(candidates[indices[0]])
-            continue
-
-        binaries = []
-        bboxes = []
-        max_score = 0.0
-        for k in indices:
-            it = candidates[k]
-            b = it.get("binary_proc", None)
-            bb = it.get("bbox_xyxy", None)
-            if isinstance(b, np.ndarray):
-                binaries.append(b.astype(bool))
-            if isinstance(bb, list) and len(bb) == 4:
-                bboxes.append(bb)
-            try:
-                max_score = max(max_score, float(it.get("score", 0.0) or 0.0))
-            except Exception:
-                pass
-
-        if not binaries or not bboxes:
-            merged.append(candidates[indices[0]])
-            continue
-
-        merged_binary = np.logical_or.reduce(binaries)
-        x1 = min(float(bb[0]) for bb in bboxes)
-        y1 = min(float(bb[1]) for bb in bboxes)
-        x2 = max(float(bb[2]) for bb in bboxes)
-        y2 = max(float(bb[3]) for bb in bboxes)
-
-        merged.append(
-            {
-                "binary_proc": merged_binary.astype(float),
-                "bbox_xyxy": [x1, y1, x2, y2],
-                "score": max_score,
-                "area": max(0.0, (x2 - x1) * (y2 - y1)),
-            }
-        )
-    return merged
-
-
 def _dedupe_candidates_by_bbox_iou(candidates: List[dict], iou_thresh: float = 0.92) -> List[dict]:
     """
     对 SAM2 候选做二次去重：
@@ -468,13 +378,12 @@ async def auto_label(
     image: UploadFile = File(..., description="要标注的图片文件"),
     imageId: Optional[int] = Form(None, description="上游传入的 imageId（用于 debug 关联 UI）"),
     imageOriginalName: Optional[str] = Form(None, description="上游传入的图片原名（用于 debug 关联 UI）"),
-    max_polygon_points: int = Form(60, description="轮廓最大点数（默认 60）"),
+    max_polygon_points: float = Form(6, description="轮廓点间距（像素，默认 6；值越大点越少）"),
     sam2_points_per_side: int = Form(20, description="SAM2 AMG points_per_side（默认 20）"),
     sam2_pred_iou_thresh: float = Form(0.88, description="SAM2 AMG pred_iou_thresh（默认 0.88）"),
     sam2_stability_score_thresh: float = Form(0.95, description="SAM2 AMG stability_score_thresh（默认 0.95）"),
     sam2_box_nms_thresh: float = Form(0.35, description="SAM2 AMG box_nms_thresh（默认 0.35）"),
     sam2_min_mask_region_area: int = Form(6000, description="SAM2 AMG min_mask_region_area（默认 6000）"),
-    sam2_merge_gap_px: int = Form(0, description="SAM2 后处理合并阈值（像素）"),
 ):
     try:
         image_bytes = await image.read()
@@ -496,19 +405,18 @@ async def auto_label(
             f"sam2_stability_score_thresh={sam2_stability_score_thresh}, "
             f"sam2_box_nms_thresh={sam2_box_nms_thresh}, "
             f"sam2_min_mask_region_area={sam2_min_mask_region_area}, "
-            f"sam2_merge_gap_px={sam2_merge_gap_px}, "
-            f"max_polygon_points={max_polygon_points}",
+            f"max_polygon_points(point_spacing_px)={max_polygon_points}",
         )
 
         load_sam2_model()
 
-        max_polygon_points_clamped = int(max(10, min(2000, max_polygon_points)))
+        # 这里 max_polygon_points 现在表示“点间距(px)”，需要限制上下界避免极端值导致点数爆炸/过稀疏
+        point_spacing_px = float(max(0.5, min(200.0, float(max_polygon_points))))
         pps = int(max(4, min(128, sam2_points_per_side)))
         pred_iou = float(max(0.01, min(0.99, sam2_pred_iou_thresh)))
         stab = float(max(0.01, min(0.99, sam2_stability_score_thresh)))
         nms = float(max(0.01, min(0.99, sam2_box_nms_thresh)))
         min_area = int(max(0, min(10_000_000, sam2_min_mask_region_area)))
-        merge_gap_px = int(max(0, min(200, sam2_merge_gap_px)))
 
         try:
             ppb_env = int(os.environ.get("SAM2_POINTS_PER_BATCH", "16"))
@@ -601,11 +509,9 @@ async def auto_label(
                 }
             )
 
-        merged_candidates = _merge_candidates_by_gap(candidates, merge_gap_px=merge_gap_px)
-        merge_removed_count = max(0, len(candidates) - len(merged_candidates))
         dedup_iou_thresh = float(max(0.5, min(0.99, float(os.environ.get("SAM2_DEDUP_BBOX_IOU", "0.92")))))
-        deduped = _dedupe_candidates_by_bbox_iou(merged_candidates, iou_thresh=dedup_iou_thresh)
-        dedup_removed_count = max(0, len(merged_candidates) - len(deduped))
+        deduped = _dedupe_candidates_by_bbox_iou(candidates, iou_thresh=dedup_iou_thresh)
+        dedup_removed_count = max(0, len(candidates) - len(deduped))
 
         result_masks = []
         result_segments = []
@@ -617,9 +523,46 @@ async def auto_label(
                 contours = measure.find_contours(binary, 0.5)
                 if contours:
                     contour = max(contours, key=lambda c: c.shape[0])
-                    step = max(1, len(contour) // max_polygon_points_clamped)
-                    for row, col in contour[::step]:
-                        polygon_points.extend([float(col * sx), float(row * sy)])
+                    # 轮廓点间距采样：沿主轮廓“原图坐标(px)”距离累积 >= 点间距时才落点
+                    sampled_points: List[tuple[float, float]] = []
+                    if len(contour) > 0:
+                        # 用相邻轮廓点之间的“弧长累积”来做点间距，避免欧氏距离导致的大/小物体不一致
+                        first_row, first_col = contour[0]
+                        last_x = float(first_col * sx)
+                        last_y = float(first_row * sy)
+                        sampled_points.append((last_x, last_y))
+                        acc = 0.0
+
+                        for row, col in contour[1:]:
+                            x = float(col * sx)
+                            y = float(row * sy)
+                            step_dist = ((x - last_x) * (x - last_x) + (y - last_y) * (y - last_y)) ** 0.5
+                            acc += step_dist
+                            if acc >= point_spacing_px:
+                                sampled_points.append((x, y))
+                                acc = 0.0
+                            last_x, last_y = x, y
+
+                    # 兜底：尽量把最后一个轮廓点也纳入（保证轮廓更完整）
+                    if len(contour) > 0 and sampled_points:
+                        last_row = float(contour[-1][0])
+                        last_col = float(contour[-1][1])
+                        x_last = last_col * sx
+                        y_last = last_row * sy
+                        dx = x_last - sampled_points[-1][0]
+                        dy = y_last - sampled_points[-1][1]
+                        dist = (dx * dx + dy * dy) ** 0.5
+                        if dist >= point_spacing_px * 0.5:
+                            sampled_points.append((float(x_last), float(y_last)))
+
+                    # 安全上限：避免点间距过小导致点数爆炸
+                    MAX_POINTS_HARD_CAP = 2000
+                    if len(sampled_points) > MAX_POINTS_HARD_CAP:
+                        step = max(1, len(sampled_points) // MAX_POINTS_HARD_CAP)
+                        sampled_points = sampled_points[::step]
+
+                    for x, y in sampled_points:
+                        polygon_points.extend([float(x), float(y)])
             if not polygon_points:
                 polygon_points = [x1, y1, x2, y1, x2, y2, x1, y2]
             result_masks.append(
@@ -649,8 +592,6 @@ async def auto_label(
                 "filename": getattr(image, "filename", None),
                 "masks": int(len(result_masks)),
                 "segments": int(len(result_segments)),
-                "merge_removed": int(merge_removed_count),
-                "merge_gap_px": int(merge_gap_px),
                 "dedup_removed": int(dedup_removed_count),
                 "dedup_iou_thresh": float(dedup_iou_thresh),
                 "image_size": {"width": int(width), "height": int(height)},

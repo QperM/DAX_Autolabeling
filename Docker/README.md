@@ -1,4 +1,4 @@
-# Docker & K8s 部署（推荐路线：Web + API + SAM2 三镜像）
+# Docker & K8s 部署（推荐路线：Web + API + SAM2 + Pose + DepthRepair 五镜像）
 
 本目录提供一套可直接落地到 **Kubernetes（上海服务器）** 的打包/部署步骤与模板文件。
 
@@ -6,6 +6,8 @@
 > - **web**：`client` 构建后的静态站点，用 **Nginx** 托管，并反代 `/api`、`/uploads` 到后端  
 > - **api**：Node/Express（`server`），负责业务 + SQLite + uploads 静态文件  
 > - **sam2**：Python/FastAPI（`server/sam2-service`），仅做 SAM2 推理服务  
+> - **pose**：Python/FastAPI（`server/pose-service`），做 Diff-DOPE 6D 推理/渲染  
+> - **depthrepair**：Python/FastAPI（`server/depthrepair-service`），做深度补全推理  
 
 ---
 
@@ -18,7 +20,7 @@
 
 ---
 
-## 1. 镜像打包（3 个镜像）
+## 1. 镜像打包（5 个镜像）
 
 下面命令以仓库根目录为构建上下文（context），这样 Dockerfile 可以复制 `client/`、`server/` 等目录。
 
@@ -35,7 +37,7 @@ docker push <registry>/<repo>/dax-api:<tag>
 - **端口**：3001（可用 `PORT` 环境变量覆盖）
 - **持久化卷**：
   - `/app/database`（SQLite：`annotations.db`）
-  - `/app/server/uploads`（图片/ZIP 解压内容）
+  - `/app/uploads`（图片/ZIP 解压内容）
 - **SAM2 地址**：通过环境变量 `GROUNDED_SAM2_API_URL` 指向 K8s service，例如  
   `http://dax-sam2:7860/api/auto-label`
 
@@ -68,21 +70,24 @@ docker push <registry>/<repo>/dax-sam2:<tag>
   - `SAM2_CHECKPOINT`：checkpoint 文件路径（容器内路径）
   - `SAM2_MODEL_CFG`：cfg 文件路径（容器内路径）
 - **注意**：
-  - `Docker/Dockerfile.sam2.gpu` 默认使用 CUDA 12.1（PyTorch cu121 wheels）。如果你们上海服务器驱动/期望 CUDA 版本不同，需要同步调整 `CUDA_IMAGE` / `TORCH_INDEX_URL`。
+  - GPU 服务共享 `Docker/Dockerfile.cuda-base.gpu` 构建的 `dax-cuda-base:12.1`（CUDA 12.1 + cu121 PyTorch）。若驱动或 CUDA 版本不同，需同步调整基础 Dockerfile 中的版本与 `TORCH_INDEX_URL`，并重建 `dax-cuda-base` 后重打业务镜像。
   - 集群侧必须安装 **NVIDIA device plugin**，并确保节点可分配 `nvidia.com/gpu` 资源。
 
 ---
 
 ## 1.5 上线前测试（强烈建议：先在本地/测试机用 Docker Compose 跑通）
 
-我们在本目录提供了一份本地联调用的 `docker-compose.yml`：`Docker/docker-compose.yml`
+我们在本目录提供了一份本地联调用的 `docker-compose.yml`（GPU 版）：`Docker/docker-compose.gpu.yml`
 
-### 1.5.1 本地构建三镜像（打 `:local` 标签）
+### 1.5.1 本地构建五镜像（打 `:local` 标签）
 
 ```bash
+docker build -f Docker/Dockerfile.cuda-base.gpu -t dax-cuda-base:12.1 .
 docker build -f Docker/Dockerfile.api -t dax-api:local .
 docker build -f Docker/Dockerfile.web -t dax-web:local .
 docker build -f Docker/Dockerfile.sam2.gpu -t dax-sam2:local .
+docker build -f Docker/Dockerfile.pose.gpu -t dax-pose:local .
+docker build -f Docker/Dockerfile.depthrepair.gpu -t dax-depthrepair:local .
 ```
 
 ### 1.5.2 准备 SAM2 资产（checkpoint/cfg，随镜像打包）
@@ -96,7 +101,7 @@ docker build -f Docker/Dockerfile.sam2.gpu -t dax-sam2:local .
 ### 1.5.3 启动（不需要本地跑 npm）
 
 ```bash
-docker compose -f Docker/docker-compose.yml up -d --build
+docker compose -f Docker/docker-compose.gpu.yml up -d --build
 ```
 
 可选：确认权重/配置已被打进镜像（容器内能看到文件）：
@@ -124,24 +129,10 @@ pwsh -File Docker/smoke-test.ps1
 - 已安装 NVIDIA 驱动（`nvidia-smi` 正常）
 - 已安装 **NVIDIA Container Toolkit**（否则容器里看不到 GPU）
 
-本项目提供两种启动方式（对方电脑“自己挑一个跑”）：
-
-- **CPU 版**（任何机器都能跑）：
+本项目只提供 GPU 版本：
 
 ```bash
-docker compose -f Docker/docker-compose.cpu.yml up -d
-```
-
-- **GPU 版**（需要 NVIDIA Driver + NVIDIA Container Toolkit）：
-
-```bash
-docker compose -f Docker/docker-compose.gpu.yml up -d
-```
-
-如果你希望保持“基础文件 + override”的写法，也可以用 override 文件 `Docker/docker-compose.gpu.yml`：
-
-```bash
-docker compose -f Docker/docker-compose.yml -f Docker/docker-compose.gpu.yml up -d --build
+docker compose -f Docker/docker-compose.gpu.yml up -d --build
 ```
 
 验证容器是否拿到 GPU：
@@ -159,11 +150,13 @@ docker exec -it dax-autolabeling-sam2-1 nvidia-smi
 
 推荐顺序：
 1. 创建 namespace（可选）
-2. 创建 PVC（`uploads`、`database`、`sam2-checkpoints`）
+2. 创建 PVC（`uploads`、`database`）
 3. 部署 `sam2`（先让 `/health` 200）
-4. 部署 `api`（确认 `/api/health` 200，且能访问 sam2）
-5. 部署 `web`（确认页面可用、cookie 登录正常）
-6. 配 Ingress（或用你们现有网关体系）
+4. 部署 `pose`（先让 `/health` 200）
+5. 部署 `depthrepair`（先让 `/health` 200）
+6. 部署 `api`（确认 `/api/health` 200，且能访问 sam2/pose/depthrepair）
+7. 部署 `web`（确认页面可用、cookie 登录正常）
+8. 配 Ingress（或用你们现有网关体系）
 
 ### 2.1 应用 YAML（示例）
 
@@ -172,6 +165,8 @@ kubectl apply -f Docker/k8s/00-namespace.yaml
 kubectl apply -f Docker/k8s/31-secret.example.yaml
 kubectl apply -f Docker/k8s/10-pvc.yaml
 kubectl apply -f Docker/k8s/20-sam2.yaml
+kubectl apply -f Docker/k8s/21-pose.yaml
+kubectl apply -f Docker/k8s/22-depthrepair.yaml
 kubectl apply -f Docker/k8s/30-api.yaml
 kubectl apply -f Docker/k8s/40-web.yaml
 kubectl apply -f Docker/k8s/50-ingress.yaml
@@ -218,6 +213,8 @@ kubectl apply -f Docker/k8s/50-ingress.yaml
 - `Docker/Dockerfile.api`：Node/Express API 镜像
 - `Docker/Dockerfile.web`：前端构建 + Nginx 托管/反代镜像
 - `Docker/nginx.web.conf`：web 反代配置
-- `Docker/Dockerfile.sam2`：SAM2 FastAPI（CPU 版模板）
+- `Docker/Dockerfile.sam2.gpu`：SAM2 FastAPI（GPU 版）
+- `Docker/Dockerfile.pose.gpu`：Pose-service（Diff-DOPE，GPU 版）
+- `Docker/Dockerfile.depthrepair.gpu`：DepthRepair-service（LingBot-Depth，GPU 版）
 - `Docker/k8s/*.yaml`：K8s 模板（PVC/Deploy/Service/Ingress）
 

@@ -2,7 +2,7 @@
 export interface Image {
   id: number;
   filename: string;
-  /** 上传时的客户端原始路径/文件名（可重复、可很长）；磁盘与 DB.filename 为 rgb_img{id}_… 稳定名 */
+  /** 上传时的原始文件名；磁盘与 DB.filename 为 proj_{projectId}_{uuid}.ext */
   originalName: string;
   url: string;
   size?: number;
@@ -82,6 +82,9 @@ export interface UploadResponse {
   zipJobs?: Array<{
     jobId: string;
     originalName: string;
+  }>;
+  imageJobs?: Array<{
+    jobId: string;
   }>;
 }
 

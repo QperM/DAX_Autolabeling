@@ -23,6 +23,7 @@ export interface ProjectAnnotationSummary {
 export interface ProjectLabelColorMapping {
   projectId: number;
   label: string;
+  labelZh?: string;
   labelKey: string;
   color: string;
   usageOrder: number;
@@ -74,7 +75,10 @@ export const imageApi = {
     // 为大体积上传单独实现“无进度超时”逻辑：
     // - 禁用 axios 自带的 30s 硬超时
     // - 仅在一段时间内完全没有收到上传进度事件时才中断
-    const INACTIVITY_TIMEOUT_MS = 30000; // 无进度累计 30s 才视为超时
+    // 之前这里是 30s，但大批量上传时：包体上传完后服务器可能还要较久写库/落文件，
+    // 这段时间不会再产生 onUploadProgress 事件，容易被误判为“无进度超时”并 abort。
+    // 因此把阈值放大到 10 分钟，并且在 loaded >= total 时立即停止该保护。
+    const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 无进度累计 10min 才视为超时
     const controller = new AbortController();
     let lastProgressTs = Date.now();
 
@@ -109,9 +113,23 @@ export const imageApi = {
 
           if (!onUploadProgress) return;
           const total = evt.total || 0;
+          const loaded = evt.loaded || 0;
+
+          // 如果 axios 给出了 total，则用 loaded >= total 判断“包体发送完成”，
+          // 这比仅依赖四舍五入后的百分比更可靠。
+          const bodyLikelyComplete = total > 0 && loaded >= total;
+          if (bodyLikelyComplete) {
+            clearInterval(inactivityTimer);
+          }
+
           if (!total) return;
-          const pct = Math.round((evt.loaded / total) * 100);
-          onUploadProgress(Math.max(0, Math.min(100, pct)));
+
+          const pct = Math.round((loaded / total) * 100);
+          const clamped = Math.max(0, Math.min(100, pct));
+          onUploadProgress(clamped);
+
+          // 兜底：如果 UI 侧已经显示 100%，也停止无进度保护
+          if (clamped >= 100) clearInterval(inactivityTimer);
         },
       });
       return response.data;
@@ -120,10 +138,18 @@ export const imageApi = {
     }
   },
 
-  // 获取图像列表
-  getImages: async (projectId?: number | string): Promise<Image[]> => {
+  // 获取图像列表（支持分页，避免一次性拉爆）
+  getImages: async (
+    projectId?: number | string,
+    options?: { offset?: number; limit?: number },
+  ): Promise<Image[]> => {
+    const params: any = {};
+    if (projectId) params.projectId = projectId;
+    if (options?.offset != null) params.offset = options.offset;
+    if (options?.limit != null) params.limit = options.limit;
+
     const response = await apiClient.get<{ images: Image[] }>('/images', {
-      params: projectId ? { projectId } : undefined,
+      params: Object.keys(params).length ? params : undefined,
     });
     return response.data.images;
   },
@@ -309,6 +335,7 @@ export const depthApi = {
     Array<{
       id: number | null;
       filename: string;
+      originalName?: string | null;
       size?: number;
       url: string;
       role?: string;
@@ -328,7 +355,17 @@ export const depthApi = {
 
   getCameras: async (
     projectId: number | string
-  ): Promise<Array<{ id: number; projectId: number; role: string; intrinsics: any; intrinsicsFileSize?: number | null; updatedAt?: string | null }>> => {
+  ): Promise<
+    Array<{
+      id: number;
+      projectId: number;
+      role: string;
+      intrinsics: any;
+      intrinsicsFileSize?: number | null;
+      intrinsicsOriginalName?: string | null;
+      updatedAt?: string | null;
+    }>
+  > => {
     const response = await apiClient.get<{ success: boolean; cameras: any[] }>('/depth/cameras', {
       params: { projectId },
     });
@@ -493,10 +530,30 @@ export const pose9dApi = {
     meshId: number | string,
     pose44: number[][],
     maskId?: string | null,
+    options?: { skipFitOverlay?: boolean },
   ): Promise<any> => {
     const payload: any = { pose44 };
     if (maskId != null && String(maskId).trim()) payload.maskId = String(maskId).trim();
+    if (options?.skipFitOverlay === true) payload.skipFitOverlay = true;
     const response = await apiClient.post(`/pose9d/${imageId}/${meshId}/diffdope-pose44`, payload);
+    return response.data;
+  },
+
+  // 清空“最终位姿”（diffdope_json）。写入 '{}' 以确保前端把 final 视为不存在。
+  clearDiffdopePose44: async (
+    imageId: number | string,
+    meshId: number | string,
+    maskId?: string | null,
+  ): Promise<any> => {
+    const params: any = {};
+    if (maskId != null && String(maskId).trim()) params.maskId = String(maskId).trim();
+    const response = await apiClient.delete(`/pose9d/${imageId}/${meshId}/diffdope-pose44`, { params: Object.keys(params).length ? params : undefined });
+    return response.data;
+  },
+
+  // 只对当前 image 的所有 diffdope 记录做一次拟合图层合成（生成并回写 fit_overlay_path）
+  regenerateCompositeFitOverlay: async (imageId: number | string): Promise<any> => {
+    const response = await apiClient.post(`/pose9d/${imageId}/regenerate-fit-overlay`);
     return response.data;
   },
 };
@@ -636,8 +693,11 @@ export const projectApi = {
 
   // 获取项目标注汇总
   getAnnotationSummary: async (projectId: number): Promise<ProjectAnnotationSummary> => {
+    // 该接口在压力测试下可能因 SQLite I/O/锁竞争变慢，
+    // 提高超时时间以避免前端误判“超时->掉线”。
     const response = await apiClient.get<{ success: boolean; summary: ProjectAnnotationSummary }>(
-      `/projects/${projectId}/annotation-summary`
+      `/projects/${projectId}/annotation-summary`,
+      { timeout: 60000 },
     );
     return response.data.summary;
   },
@@ -651,7 +711,7 @@ export const projectApi = {
 
   saveLabelColors: async (
     projectId: number,
-    mappings: Array<{ label: string; color: string; usageOrder?: number }>,
+    mappings: Array<{ label: string; labelZh?: string; color: string; usageOrder?: number }>,
   ): Promise<ProjectLabelColorMapping[]> => {
     const response = await apiClient.put<{ success: boolean; mappings: ProjectLabelColorMapping[] }>(
       `/projects/${projectId}/label-colors`,

@@ -10,6 +10,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+
+# NumPy: keep <2 (see requirements.txt). NumPy 2.x ndarray is immutable; cannot monkey-patch .ptp for third-party deps.
+
 import torch
 import uvicorn
 import logging

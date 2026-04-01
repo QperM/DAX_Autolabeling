@@ -1,0 +1,43 @@
+# Diff-DOPE Pose Service (GPU)
+# - Base: dax-cuda-base (CUDA toolkit + torch stack); add nvdiffrast + app
+# - Exposes 7900
+#
+# Prerequisite:
+#   docker build -f Docker/Dockerfile.cuda-base.gpu -t dax-cuda-base:12.1 .
+#   Vendored nvdiffrast: server/pose-service/nvdiffrast/ (upstream layout with setup.py).
+#
+# Build:
+#   docker build -f Docker/Dockerfile.pose.gpu -t <registry>/<repo>/dax-pose:<tag> .
+
+ARG BASE_IMAGE=dax-cuda-base:12.1
+FROM ${BASE_IMAGE} AS runner
+
+WORKDIR /app
+
+COPY server/pose-service/requirements.txt /app/requirements.txt
+
+RUN sed '/^torch[=[:space:]]*.*$/d' /app/requirements.txt > /app/requirements.no_torch.txt
+
+# nvdiffrast: strip VCS line; install from vendored source (COPY), not git in Docker.
+RUN sed -E '/^nvdiffrast[[:space:]]*@/d;/^[[:space:]]*\.\/diff-dope\/nvdiffrast[[:space:]]*$/d;/^[[:space:]]*\.\/nvdiffrast[[:space:]]*$/d' /app/requirements.no_torch.txt > /app/requirements.no_torch.no_nvdiffrast.txt
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+  pip3 install --no-cache-dir --timeout ${PIP_DEFAULT_TIMEOUT} --retries ${PIP_RETRIES} -r /app/requirements.no_torch.no_nvdiffrast.txt
+
+# Do NOT use `pip install -e .`: we remove vendored source after install; non-editable copies into site-packages.
+# Vendored nvdiffrast/setup.py must declare name/version/packages (upstream setup.py only had ext_modules → pip built "UNKNOWN").
+COPY server/pose-service/nvdiffrast /tmp/nvdiffrast-src
+RUN test -f /tmp/nvdiffrast-src/setup.py || (echo "Missing nvdiffrast: expected server/pose-service/nvdiffrast with setup.py"; exit 1) \
+  && cd /tmp/nvdiffrast-src \
+  && TORCH_CUDA_ARCH_LIST="8.6" pip3 install --no-cache-dir --timeout ${PIP_DEFAULT_TIMEOUT} --retries ${PIP_RETRIES} --no-build-isolation --no-deps . \
+  && python3 -c "import nvdiffrast.torch as dr; print('nvdiffrast OK:', dr.__name__)" \
+  && rm -rf /tmp/nvdiffrast-src
+
+COPY server/pose-service /app/pose-service
+RUN rm -rf /app/pose-service/nvdiffrast
+
+ENV DATA_ROOT=/app
+ENV POSE_SERVICE_PORT=7900
+
+EXPOSE 7900
+CMD ["python3", "/app/pose-service/app.py"]

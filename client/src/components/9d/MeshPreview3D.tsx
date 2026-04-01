@@ -5,6 +5,7 @@ import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { createAxisGizmo } from "./AxisGizmo";
 import { toAbsoluteUrl } from "../../utils/urls";
+import { debugLog } from "../../utils/debugSettings";
 
 interface MeshPreview3DProps {
   meshUrl: string | null;
@@ -72,18 +73,25 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({
         : meshUrl.includes("/")
           ? meshUrl.slice(0, meshUrl.lastIndexOf("/") + 1)
           : meshUrl;
+    const absBaseDir = toAbsoluteUrl(baseDir) || baseDir;
 
     const manager = new THREE.LoadingManager();
     manager.setURLModifier((url: string) => {
       if (!url) return url;
       if (/^(blob:|data:|https?:\/\/)/i.test(url)) return url;
       const clean = String(url).replace(/\\/g, "/");
+      // Root-relative path should be treated as absolute URL.
+      if (/^\//.test(clean)) return toAbsoluteUrl(clean) || clean;
 
       const tryPickExisting = (raw: string) => {
         if (!assets || assets.length === 0) return raw;
         const base = raw.split("/").filter(Boolean).pop() || raw;
         const lower = base.toLowerCase();
-        const hit = assets.find((a) => (a || "").toLowerCase() === lower);
+        const hit = assets.find((a) => {
+          const n = String(a || "").replace(/\\/g, "/");
+          const bn = n.split("/").filter(Boolean).pop() || n;
+          return bn.toLowerCase() === lower;
+        });
         return hit || raw;
       };
       const normalized = tryPickExisting(clean);
@@ -92,7 +100,9 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({
         .filter(Boolean)
         .map((seg) => encodeURIComponent(seg))
         .join("/");
-      return `${baseDir}${encoded2}`;
+      const finalUrl = `${absBaseDir}${encoded2}`;
+      debugLog("frontend", "frontendMeshAssets", "[MeshPreview3D] urlModifier", { in: url, clean, picked: normalized, out: finalUrl });
+      return finalUrl;
     });
 
     const loadText = async (url: string) => {
@@ -115,13 +125,27 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({
 
     const pickMtlCandidate = (mtl: string | null, assetList?: string[]) => {
       if (!mtl) return null;
-      if (!assetList || assetList.length === 0) return null;
+      // If backend didn't provide an assets list, still try loading the mtllib referenced in OBJ.
+      // This matches MeshThumbnail behavior and prevents "white model" fallback.
+      if (!assetList || assetList.length === 0) return mtl;
       const onlyMtl = assetList.filter((a) => a.toLowerCase().endsWith(".mtl"));
       if (!onlyMtl.length) return null;
-      const exact = onlyMtl.find((a) => a.toLowerCase() === mtl.toLowerCase());
+      const mtlLower = mtl.toLowerCase();
+      const mtlBaseLower = mtl.split("/").filter(Boolean).pop()?.toLowerCase() || mtlLower;
+      const exact = onlyMtl.find((a) => {
+        const n = String(a || "").replace(/\\/g, "/").toLowerCase();
+        const bn = n.split("/").filter(Boolean).pop() || n;
+        return n === mtlLower || bn === mtlBaseLower;
+      });
       if (exact) return exact;
       const stem = mtl.replace(/\.mtl$/i, "").toLowerCase();
-      return onlyMtl.find((a) => a.toLowerCase().includes(stem)) || null;
+      return (
+        onlyMtl.find((a) => {
+          const n = String(a || "").replace(/\\/g, "/").toLowerCase();
+          const bn = n.split("/").filter(Boolean).pop() || n;
+          return n.includes(stem) || bn.includes(stem);
+        }) || null
+      );
     };
 
     const fitToView = (obj: THREE.Object3D) => {
@@ -143,15 +167,34 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({
       try {
         const objText = await loadText(meshUrl);
         const mtlName = parseMtlName(objText);
+        debugLog("frontend", "frontendMeshAssets", "[MeshPreview3D] parsed obj", {
+          meshUrl,
+          assetDirUrl,
+          baseDir,
+          absBaseDir,
+          enableTexture,
+          mtlName,
+          assetsCount: Array.isArray(assets) ? assets.length : 0,
+        });
 
         const objLoader = new OBJLoader(manager);
         const mtlToLoad = pickMtlCandidate(mtlName, assets);
+        debugLog("frontend", "frontendMeshAssets", "[MeshPreview3D] pick mtl", { mtlName, mtlToLoad });
         if (enableTexture && mtlToLoad) {
           const mtlLoader = new MTLLoader(manager);
-          mtlLoader.setPath(baseDir);
-          mtlLoader.setResourcePath(baseDir);
+          const mtlAbs = toAbsoluteUrl(mtlToLoad) || mtlToLoad;
+          const mtlIsAbsolute = /^(https?:\/\/|\/)/i.test(mtlToLoad);
+          debugLog("frontend", "frontendMeshAssets", "[MeshPreview3D] load mtl", {
+            mtlToLoad,
+            mtlAbs,
+            mtlIsAbsolute,
+            setPath: mtlIsAbsolute ? "" : absBaseDir,
+            resourcePath: absBaseDir,
+          });
+          mtlLoader.setPath(mtlIsAbsolute ? "" : absBaseDir);
+          mtlLoader.setResourcePath(absBaseDir);
           const materials = await new Promise<any>((resolve, reject) => {
-            mtlLoader.load(mtlToLoad, resolve, undefined, reject);
+            mtlLoader.load(mtlIsAbsolute ? mtlAbs : mtlToLoad, resolve, undefined, reject);
           });
           materials.preload();
           objLoader.setMaterials(materials);
@@ -202,6 +245,7 @@ const MeshPreview3D: React.FC<MeshPreview3DProps> = ({
         scene.add(obj);
       } catch (err) {
         console.error("[MeshPreview3D] OBJ/MTL 加载失败:", meshUrl, err);
+        debugLog("frontend", "frontendMeshAssets", "[MeshPreview3D] load failed", { meshUrl, assetDirUrl, assets, err });
         onMeshBoundsChangeRef.current?.(null);
       }
     })();

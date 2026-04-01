@@ -1,17 +1,47 @@
+# Docker build context (repo root). Keeps api/web/GPU image builds fast and safe.
+# Docker/wheels：wheel 文件不进 Git；构建上下文也只带入 .gitkeep，cuda-base 无本地 torch 时走网络安装（见 Dockerfile.cuda-base.gpu）。
+Docker/wheels/*
+!Docker/wheels/.gitkeep
+
 **/node_modules
 **/.git
 **/.DS_Store
 **/dist
 **/.cache
+**/.vite
+**/*.tsbuildinfo
 **/.pytest_cache
 **/__pycache__
 **/*.log
 
-# runtime data (should be persisted externally, not baked into images)
-server/uploads
-database
+# Secrets & local env (never copy into image layers)
+**/.env
+**/.env.*
+!.env.example
 
-# ==== SAM2 vendored repo: keep runtime code only; exclude dev/demo artifacts ====
+# Editors / OS noise
+**/.vscode
+**/.idea
+**/Thumbs.db
+**/Desktop.ini
+
+# Test / coverage
+**/coverage
+**/.nyc_output
+
+# Runtime & local data (use volumes / PVC at runtime)
+
+dax-autolabel-data
+
+server/data/debug_settings.json
+server/data/*.local.json
+
+# Temp & dev scratch (align with .gitignore)
+tmp/
+temp/
+tempfile/
+
+# SAM2 vendored repo: keep runtime code only; exclude dev/demo artifacts
 server/sam2-service/grounded-sam2/.git
 server/sam2-service/grounded-sam2/checkpoints
 server/sam2-service/grounded-sam2/gdino_checkpoints
@@ -23,10 +53,21 @@ server/sam2-service/grounded-sam2/sav_dataset
 server/sam2-service/grounded-sam2/training
 server/sam2-service/grounded-sam2/tools
 
-# Exclude large media & notebooks anywhere
+# Pose: vendored nvdiffrast (keep .git out of build context)
+server/pose-service/nvdiffrast/.git
+
+# Pose / Diff-DOPE / depthrepair local outputs (not needed in images)
+server/pose-service/debug_outputs
+server/pose-service/diff-dope/outputs
+server/pose-service/diff-dope/multirun
+server/depthrepair-service/debug_outputs
+server/depthrepair-service/lingbot-depth/checkpoints
+
+# Large media & notebooks
 **/*.mp4
 **/*.ipynb
 
-# Exclude all PyTorch weights by default; we only bake the intended SAM2 weights under Docker/sam2-assets/
+# PyTorch weights by default; un-ignore paths that Dockerfiles intentionally COPY
 **/*.pt
 !Docker/sam2-assets/checkpoints/*.pt
+!server/depthrepair-service/lingbot-depth/model.pt

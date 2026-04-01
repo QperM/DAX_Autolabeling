@@ -176,8 +176,30 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
       if (fitOverlayPath) {
         try {
           const abs = path.join(getUploadsRootDir(), fitOverlayPath.replace(/^\/uploads\//, ''));
+          // 避免“HTTP 返回了但文件还没写完/合成仍在落盘”导致前端显示时机过早。
+          // 简单等待：文件 size 连续稳定几次（或超时）。
+          const deadline = Date.now() + 8000;
+          let lastSize = -1;
+          let stableCount = 0;
+          while (Date.now() < deadline) {
+            try {
+              if (fs.existsSync(abs)) {
+                const st = fs.statSync(abs);
+                const size = Number(st?.size || 0);
+                if (size > 0) {
+                  if (size === lastSize) stableCount += 1;
+                  else stableCount = 0;
+                  lastSize = size;
+                  if (stableCount >= 3) break; // 连续 3 次稳定
+                }
+              }
+            } catch (_) {}
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          }
+
           const exists = fs.existsSync(abs);
-          debugLog('node', 'nodeDiffdopeResult', { stage: 'disk', abs, exists });
+          debugLog('node', 'nodeDiffdopeResult', { stage: 'disk_wait', abs, exists, lastSize, stableCount });
+
           if (!exists) {
             const fitDir = path.dirname(abs);
             const names = fs.existsSync(fitDir) ? fs.readdirSync(fitDir).filter((n) => n.includes(`fit_image_${Number(imageId)}`)) : [];
@@ -338,11 +360,46 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
     }
   });
 
+  // 清空“最终位姿”（diffdope_json）：将 diffdope_json 置为 '{}'，前端按 diffdope.pose44 是否存在判断 final 是否存在。
+  router.delete('/pose9d/:imageId/:meshId/diffdope-pose44', requireImageProjectAccess, (req, res) => {
+    try {
+      const imageId = Number(req.params.imageId);
+      const meshId = Number(req.params.meshId);
+      const maskId =
+        typeof (req.query?.maskId ?? req.body?.maskId) === 'string' ? String(req.query?.maskId ?? req.body?.maskId).trim() : null;
+      if (!imageId || !meshId || Number.isNaN(meshId)) {
+        return res.status(400).json({ success: false, message: 'invalid imageId/meshId' });
+      }
+
+      // 尽量保留原 mask_index，避免更新时把 mask_index 写成 null
+      db.getPose9D(imageId, meshId, maskId, (err, row) => {
+        if (err) return res.status(500).json({ success: false, message: '读取现有姿态失败', error: err.message });
+        const maskIndex = row?.mask_index ?? row?.maskIndex ?? null;
+        const actualMaskId = row?.mask_id ?? row?.maskId ?? maskId ?? null;
+
+        db.updatePose9DDiffDope(
+          imageId,
+          meshId,
+          null,
+          null,
+          (uErr) => {
+            if (uErr) return res.status(500).json({ success: false, message: '清空 diffdope_json 失败', error: uErr.message });
+            return res.json({ success: true, imageId, meshId, maskId: actualMaskId, cleared: true });
+          },
+          { maskId: actualMaskId, maskIndex },
+        );
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: '清空 diffdope_json 失败', error: error?.message || String(error) });
+    }
+  });
+
   router.post('/pose9d/:imageId/:meshId/diffdope-pose44', requireImageProjectAccess, (req, res) => {
     try {
       const imageId = Number(req.params.imageId);
       const meshId = Number(req.params.meshId);
       const maskId = typeof req.body?.maskId === 'string' ? req.body.maskId.trim() : null;
+      const skipFitOverlay = req.body?.skipFitOverlay === true;
       const pose44 = req.body?.pose44;
       const valid =
         Array.isArray(pose44) &&
@@ -368,7 +425,7 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
               new Promise((resolve, reject) => db.getImageById(imageId, (e, r) => (e ? reject(e) : resolve(r || null)))),
             ]);
             const projectId = Array.isArray(projectIds) && projectIds.length ? Number(projectIds[0]) : null;
-            if (projectId) {
+            if (!skipFitOverlay && projectId) {
               await regenerateCompositeFitOverlay({ imageId, projectId, imageRow });
             }
           } catch (_) {}
@@ -377,6 +434,27 @@ function registerPoseRoutes(app, { db, requireImageProjectAccess, poseServiceUrl
       });
     } catch (error) {
       return res.status(500).json({ success: false, message: '保存 pose44 失败', error: error?.message || String(error) });
+    }
+  });
+
+  // 为“保存全部实例最终位姿”提供：只对当前 image 做一次拟合图层合成
+  router.post('/pose9d/:imageId/regenerate-fit-overlay', requireImageProjectAccess, async (req, res) => {
+    try {
+      const imageId = Number(req.params.imageId);
+      if (!imageId || Number.isNaN(imageId)) return res.status(400).json({ success: false, message: '非法的 imageId' });
+
+      const projectIds = await db.getProjectIdsByImageId(imageId);
+      const projectId = Array.isArray(projectIds) && projectIds.length ? Number(projectIds[0]) : null;
+      if (!projectId) return res.status(400).json({ success: false, message: '无法确定该图片所属项目（projectId 缺失）' });
+
+      const imageRow = await new Promise((resolve, reject) =>
+        db.getImageById(imageId, (e, r) => (e ? reject(e) : resolve(r || null))),
+      );
+
+      const fitOverlayPath = await regenerateCompositeFitOverlay({ imageId, projectId, imageRow });
+      return res.json({ success: true, imageId, projectId, fitOverlayPath });
+    } catch (e) {
+      return res.status(500).json({ success: false, message: '拟合图层合成失败', error: e?.message || String(e) });
     }
   });
 

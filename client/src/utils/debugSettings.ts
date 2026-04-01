@@ -4,6 +4,7 @@ export type DebugServiceId = 'frontend' | 'node' | 'sam2' | 'diffdope' | 'depthR
 
 export type DebugKind =
   | 'landingPage'
+  | 'frontendMeshAssets'
   | 'frontend2DUpload'
   | 'frontend2DDelete'
   | 'frontend9DMeshUpload'
@@ -63,6 +64,11 @@ export const DEFAULT_DEBUG_SETTINGS: DebugSettingsPayload = {
 export const DEBUG_KINDS_BY_SERVICE: Record<DebugServiceId, { kind: DebugKind; label: string; hint: string }[]> = {
   frontend: [
     { kind: 'landingPage', label: '项目管理页交互', hint: 'LandingPage 上模块切换/项目列表弹窗/创建项目等控制台输出' },
+    {
+      kind: 'frontendMeshAssets',
+      label: '9D Mesh 贴图/MTL 加载',
+      hint: 'three.js OBJ/MTL/贴图加载与 URL 解析日志（白模/贴图 404/路径拼接问题排查专用）',
+    },
     { kind: 'frontend2DUpload', label: '2D 上传模块日志', hint: '2D 图片上传模块的前端交互与进度日志' },
     { kind: 'frontend2DDelete', label: '2D 删除模块日志', hint: '2D 图片删除流程的前端日志' },
     { kind: 'frontend9DMeshUpload', label: '9D Mesh 上传模块日志', hint: '9D Mesh 上传组件的前端日志' },

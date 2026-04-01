@@ -83,23 +83,31 @@ function makeAnnotationsRepo(db) {
     },
 
     getProjectAnnotationSummary: (projectId, callback) => {
+      // Pressure test 场景下，原先的 COUNT(DISTINCT) + 多表 LEFT JOIN 在 SQLite 上会变得很慢。
+      // 这里改成用更轻量的聚合子查询，尽量让索引命中：
+      // - total_images: 只统计 project_images
+      // - annotated_images/latest_updated_at: join annotations + project_images（按 image_id）
       const sql = `
         SELECT
-          COUNT(DISTINCT i.id) AS total_images,
-          COUNT(DISTINCT a.image_id) AS annotated_images,
-          MAX(a.updated_at) AS latest_updated_at
-        FROM images i
-        INNER JOIN project_images pi ON pi.image_id = i.id
-        LEFT JOIN annotations a ON a.image_id = i.id
-        WHERE pi.project_id = ?
+          (SELECT COUNT(*) FROM project_images WHERE project_id = ?) AS total_images,
+          (SELECT COUNT(*) 
+            FROM annotations a
+            INNER JOIN project_images pi ON pi.image_id = a.image_id
+            WHERE pi.project_id = ?
+          ) AS annotated_images,
+          (SELECT MAX(a.updated_at)
+            FROM annotations a
+            INNER JOIN project_images pi ON pi.image_id = a.image_id
+            WHERE pi.project_id = ?
+          ) AS latest_updated_at
       `;
-      db.get(sql, [projectId], (err, row) => {
+
+      db.get(sql, [projectId, projectId, projectId], (err, row) => {
         if (err) return callback(err);
         const sqlLatest = `
           SELECT a.image_id AS image_id
           FROM annotations a
           INNER JOIN project_images pi ON pi.image_id = a.image_id
-          INNER JOIN images i ON i.id = a.image_id
           WHERE pi.project_id = ?
           ORDER BY a.updated_at DESC
           LIMIT 1

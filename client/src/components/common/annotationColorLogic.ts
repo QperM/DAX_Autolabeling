@@ -55,7 +55,7 @@ export const assignMissingColorsForAnnotations = (
 };
 
 export const buildLabelColorMapFromSources = (params: {
-  projectLabelMappings?: Array<{ label?: string; color?: string }>;
+  projectLabelMappings?: Array<{ label?: string; labelZh?: string; color?: string }>;
   masks?: Mask[];
   boundingBoxes?: BoundingBox[];
 }): Map<string, string> => {

@@ -381,6 +381,12 @@
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
 }
 
+.select-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  box-shadow: none;
+}
+
 .eraser-card.active,
 .select-card.active {
   border-color: #667eea;
